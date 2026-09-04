@@ -9,7 +9,7 @@ description = "Adaptive EEG quality control bench for clean commercial multi-dur
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "OI" }]
+authors = [{ name = "pentaoa" }]
 keywords = ["EEG", "quality-control", "QA", "QC", "ODQ", "GQI", "BIDS"]
 dependencies = [
   "numpy>=1.23",
