@@ -114,16 +114,16 @@ def compute_penalties(
             integrity -= 0.2
     pen.integrity = w.integrity * 100.0 * (1.0 - _clip01(integrity))
 
-    # Task validity: sync error (eye/wakefulness hooks later)
-    task = 1.0
+    # Stimulus sync only (AV alignment). Not cognitive / paradigm performance.
+    sync_score = 1.0
     if rec.sync_error_ms is not None:
         if rec.sync_error_ms >= cfg.sync_fail_ms:
-            task -= 0.8
+            sync_score -= 0.8
             reasons.append(f"sync error {rec.sync_error_ms:.0f} ms >= fail {cfg.sync_fail_ms}")
         elif rec.sync_error_ms >= cfg.sync_warn_ms:
-            task -= 0.35
+            sync_score -= 0.35
             reasons.append(f"sync error {rec.sync_error_ms:.0f} ms >= warn {cfg.sync_warn_ms}")
-    pen.task_validity = w.task_validity * 100.0 * (1.0 - _clip01(task))
+    pen.stimulus_sync = w.stimulus_sync * 100.0 * (1.0 - _clip01(sync_score))
 
     return pen, reasons
 

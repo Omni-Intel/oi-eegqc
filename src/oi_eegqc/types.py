@@ -66,7 +66,7 @@ class PenaltyBreakdown:
     cleanliness: float = 0.0
     usable_time: float = 0.0
     integrity: float = 0.0
-    task_validity: float = 0.0
+    stimulus_sync: float = 0.0
 
     def total(self) -> float:
         return (
@@ -74,7 +74,7 @@ class PenaltyBreakdown:
             + self.cleanliness
             + self.usable_time
             + self.integrity
-            + self.task_validity
+            + self.stimulus_sync
         )
 
     def as_dict(self) -> dict[str, float]:

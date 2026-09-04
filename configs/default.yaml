@@ -14,7 +14,7 @@ gqi_weights:
   cleanliness: 0.35
   usable_time: 0.25
   integrity: 0.10
-  task_validity: 0.10
+  stimulus_sync: 0.10
 duration_profiles:
   - name: ultra_short
     min_s: 0.0

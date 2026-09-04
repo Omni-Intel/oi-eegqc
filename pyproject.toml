@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "oi-eegqc"
 version = "0.1.0"
-description = "Adaptive multi-duration, multi-montage EEG quality validation bench (OI-EEGQC)."
+description = "Adaptive EEG quality control bench for clean commercial multi-duration, multi-montage intake."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

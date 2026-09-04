@@ -55,7 +55,7 @@ class GQIWeights:
     cleanliness: float = 0.35
     usable_time: float = 0.25
     integrity: float = 0.10
-    task_validity: float = 0.10
+    stimulus_sync: float = 0.10
 
 
 @dataclass
@@ -252,7 +252,7 @@ def dump_default_config(path: str | Path) -> None:
             "cleanliness": cfg.gqi_weights.cleanliness,
             "usable_time": cfg.gqi_weights.usable_time,
             "integrity": cfg.gqi_weights.integrity,
-            "task_validity": cfg.gqi_weights.task_validity,
+            "stimulus_sync": cfg.gqi_weights.stimulus_sync,
         },
         "duration_profiles": [p.__dict__ for p in cfg.duration_profiles],
         "montage_profiles": [p.__dict__ for p in cfg.montage_profiles],
