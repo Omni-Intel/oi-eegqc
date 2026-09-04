@@ -1,0 +1,82 @@
+threshold_version: oi-eegqc-v0.1
+highpass_hz: 1.0
+line_hz: 50.0
+impedance_good_kohm: 5.0
+impedance_ok_kohm: 10.0
+sync_warn_ms: 40.0
+sync_fail_ms: 100.0
+letter:
+  a: 90.0
+  b: 80.0
+  c: 60.0
+gqi_weights:
+  contact: 0.20
+  cleanliness: 0.35
+  usable_time: 0.25
+  integrity: 0.10
+  task_validity: 0.10
+duration_profiles:
+  - name: ultra_short
+    min_s: 0.0
+    max_s: 8.0
+    window_s: 1.0
+    hop_s: 0.5
+    usable_for_a: 0.90
+    usable_for_b: 0.75
+    usable_for_c: 0.55
+    usable_target: 0.85
+  - name: short
+    min_s: 8.0
+    max_s: 20.0
+    window_s: 1.5
+    hop_s: 0.75
+    usable_for_a: 0.88
+    usable_for_b: 0.72
+    usable_for_c: 0.55
+    usable_target: 0.82
+  - name: medium
+    min_s: 20.0
+    max_s: 45.0
+    window_s: 2.0
+    hop_s: 1.0
+    usable_for_a: 0.85
+    usable_for_b: 0.70
+    usable_for_c: 0.55
+    usable_target: 0.80
+  - name: long
+    min_s: 45.0
+    max_s: 1000000000.0
+    window_s: 2.5
+    hop_s: 1.25
+    usable_for_a: 0.82
+    usable_for_b: 0.68
+    usable_for_c: 0.50
+    usable_target: 0.78
+montage_profiles:
+  - name: low_density
+    min_channels: 1
+    max_channels: 16
+    corr_threshold: 0.45
+    bad_channel_broken_frac: 0.35
+    bad_ch_soft_pct: 15.0
+    bad_ch_hard_pct: 35.0
+    amp_z: 5.5
+    nsr_threshold: 0.8
+  - name: mid_density
+    min_channels: 17
+    max_channels: 64
+    corr_threshold: 0.55
+    bad_channel_broken_frac: 0.40
+    bad_ch_soft_pct: 12.0
+    bad_ch_hard_pct: 30.0
+    amp_z: 5.0
+    nsr_threshold: 0.7
+  - name: high_density
+    min_channels: 65
+    max_channels: 512
+    corr_threshold: 0.75
+    bad_channel_broken_frac: 0.40
+    bad_ch_soft_pct: 10.0
+    bad_ch_hard_pct: 25.0
+    amp_z: 5.0
+    nsr_threshold: 0.6

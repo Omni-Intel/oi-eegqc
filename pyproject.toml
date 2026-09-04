@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oi-eegqc"
+version = "0.1.0"
+description = "Adaptive multi-duration, multi-montage EEG quality validation bench (OI-EEGQC)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "OI" }]
+keywords = ["EEG", "quality-control", "QA", "QC", "ODQ", "GQI", "BIDS"]
+dependencies = [
+  "numpy>=1.23",
+  "scipy>=1.9",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+mne = ["mne>=1.5"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+oi-eegqc = "oi_eegqc.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+oi_eegqc = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
