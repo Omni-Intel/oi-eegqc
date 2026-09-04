@@ -2,21 +2,25 @@
 
 from ..types import AvailabilityFlag, LetterGrade
 from .grades import (
-    apply_usable_floor,
+    DIMENSIONS,
+    DimensionScore,
+    apply_bad_channel_ceiling,
     availability_from_report,
-    compute_penalties,
-    compute_usable_ratio,
-    gqi_from_penalties,
+    collect_hard_fails,
+    compute_dimension_scores,
+    gqi_from_scores,
     letter_from_odq,
 )
 
 __all__ = [
     "AvailabilityFlag",
     "LetterGrade",
-    "apply_usable_floor",
+    "DIMENSIONS",
+    "DimensionScore",
+    "apply_bad_channel_ceiling",
     "availability_from_report",
-    "compute_penalties",
-    "compute_usable_ratio",
-    "gqi_from_penalties",
+    "collect_hard_fails",
+    "compute_dimension_scores",
+    "gqi_from_scores",
     "letter_from_odq",
 ]

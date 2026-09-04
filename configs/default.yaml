@@ -1,82 +1,105 @@
-threshold_version: oi-eegqc-v0.1
+threshold_version: oi-eegqc-v0.2.0
 highpass_hz: 1.0
 line_hz: 50.0
+line_halfwidth_hz: 2.0
 impedance_good_kohm: 5.0
 impedance_ok_kohm: 10.0
 sync_warn_ms: 40.0
 sync_fail_ms: 100.0
+clip_frac_threshold: 0.01
+hard_fail_clipped_frac: 0.5
+hard_fail_present_channel_frac: 0.75
+spectral_blend: 0.4
 letter:
   a: 90.0
   b: 80.0
   c: 60.0
 gqi_weights:
-  contact: 0.20
-  cleanliness: 0.35
-  usable_time: 0.25
-  integrity: 0.10
-  stimulus_sync: 0.10
+  contact: 0.2
+  cleanliness: 0.3
+  usable_time: 0.3
+  integrity: 0.1
+  stimulus_sync: 0.1
 duration_profiles:
-  - name: ultra_short
-    min_s: 0.0
-    max_s: 8.0
-    window_s: 1.0
-    hop_s: 0.5
-    usable_for_a: 0.90
-    usable_for_b: 0.75
-    usable_for_c: 0.55
-    usable_target: 0.85
-  - name: short
-    min_s: 8.0
-    max_s: 20.0
-    window_s: 1.5
-    hop_s: 0.75
-    usable_for_a: 0.88
-    usable_for_b: 0.72
-    usable_for_c: 0.55
-    usable_target: 0.82
-  - name: medium
-    min_s: 20.0
-    max_s: 45.0
-    window_s: 2.0
-    hop_s: 1.0
-    usable_for_a: 0.85
-    usable_for_b: 0.70
-    usable_for_c: 0.55
-    usable_target: 0.80
-  - name: long
-    min_s: 45.0
-    max_s: 1000000000.0
-    window_s: 2.5
-    hop_s: 1.25
-    usable_for_a: 0.82
-    usable_for_b: 0.68
-    usable_for_c: 0.50
-    usable_target: 0.78
+- name: ultra_short
+  min_s: 0.0
+  max_s: 8.0
+  window_s: 1.0
+  hop_s: 0.5
+  odq_for_a: 95.0
+  odq_for_b: 85.0
+  odq_for_c: 65.0
+  usable_target: 0.9
+- name: short
+  min_s: 8.0
+  max_s: 20.0
+  window_s: 1.5
+  hop_s: 0.75
+  odq_for_a: 92.0
+  odq_for_b: 82.0
+  odq_for_c: 62.0
+  usable_target: 0.88
+- name: medium
+  min_s: 20.0
+  max_s: 45.0
+  window_s: 2.0
+  hop_s: 1.0
+  odq_for_a: 90.0
+  odq_for_b: 80.0
+  odq_for_c: 60.0
+  usable_target: 0.85
+- name: long
+  min_s: 45.0
+  max_s: 1000000000.0
+  window_s: 2.5
+  hop_s: 1.25
+  odq_for_a: 88.0
+  odq_for_b: 78.0
+  odq_for_c: 58.0
+  usable_target: 0.82
 montage_profiles:
-  - name: low_density
-    min_channels: 1
-    max_channels: 16
-    corr_threshold: 0.45
-    bad_channel_broken_frac: 0.35
-    bad_ch_soft_pct: 15.0
-    bad_ch_hard_pct: 35.0
-    amp_z: 5.5
-    nsr_threshold: 0.8
-  - name: mid_density
-    min_channels: 17
-    max_channels: 64
-    corr_threshold: 0.55
-    bad_channel_broken_frac: 0.40
-    bad_ch_soft_pct: 12.0
-    bad_ch_hard_pct: 30.0
-    amp_z: 5.0
-    nsr_threshold: 0.7
-  - name: high_density
-    min_channels: 65
-    max_channels: 512
-    corr_threshold: 0.75
-    bad_channel_broken_frac: 0.40
-    bad_ch_soft_pct: 10.0
-    bad_ch_hard_pct: 25.0
-    amp_z: 5.0
-    nsr_threshold: 0.6
+- name: low_density
+  min_channels: 1
+  max_channels: 16
+  corr_threshold: 0.3
+  corr_detector_enabled: false
+  bad_channel_broken_frac: 0.35
+  bad_ch_caution_pct: 10.0
+  bad_ch_soft_pct: 15.0
+  bad_ch_hard_pct: 35.0
+  amp_z: 5.5
+  nsr_threshold: 0.8
+  line_ratio_threshold: 1.2
+  ptp_max_uv: 400.0
+  ptp_min_uv: 1.0
+  max_bad_ch_frac_per_window: 0.34
+- name: mid_density
+  min_channels: 17
+  max_channels: 64
+  corr_threshold: 0.4
+  corr_detector_enabled: true
+  bad_channel_broken_frac: 0.4
+  bad_ch_caution_pct: 5.0
+  bad_ch_soft_pct: 12.0
+  bad_ch_hard_pct: 30.0
+  amp_z: 5.0
+  nsr_threshold: 0.7
+  line_ratio_threshold: 1.0
+  ptp_max_uv: 350.0
+  ptp_min_uv: 1.0
+  max_bad_ch_frac_per_window: 0.25
+- name: high_density
+  min_channels: 65
+  max_channels: 512
+  corr_threshold: 0.4
+  corr_detector_enabled: true
+  bad_channel_broken_frac: 0.4
+  bad_ch_caution_pct: 5.0
+  bad_ch_soft_pct: 10.0
+  bad_ch_hard_pct: 25.0
+  amp_z: 5.0
+  nsr_threshold: 0.6
+  line_ratio_threshold: 1.0
+  ptp_max_uv: 350.0
+  ptp_min_uv: 1.0
+  max_bad_ch_frac_per_window: 0.25

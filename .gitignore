@@ -12,4 +12,6 @@ venv/
 *.npy
 *.json
 !configs/**
+bench_runs/
+*.bdf
 .DS_Store
