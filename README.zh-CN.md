@@ -21,6 +21,7 @@
   <a href="#它能做什么">能力</a> ·
   <a href="#设计原则">原则</a> ·
   <a href="#三级评级">评级</a> ·
+  <a href="#机器协议">机器协议</a> ·
   <a href="#阈值标定">标定</a> ·
   <a href="#配置">配置</a>
 </p>
@@ -99,7 +100,15 @@ from oi_eegqc import load_npy, load_edf_bdf, open_dataset, score_adapter
 
 rec = load_npy("clip.npy", sfreq=250.0, unit="uV")
 adapter = open_dataset("hw", "./sessions")          # 或 "nod" / "npy" / "synthetic"
-rows, summary = score_adapter(adapter)
+rows, summary = score_adapter(adapter)              # 数据集字段只在 extras
+```
+
+机器可读 stdout（脚本或桌面 sidecar）：
+
+```bash
+oi-eegqc --json datasets
+oi-eegqc --ndjson bench synthetic --channels 32 --duration 12
+oi-eegqc serve --stdio
 ```
 
 | 适配器 | 输入 | 说明 |
@@ -175,6 +184,37 @@ rows, summary = score_adapter(adapter)
 
 字母等级按设计是**阶梯式**跳变的，因为它是档位决策。GQI 才是连续轨道：某种退化一次性把所有窗都推过坏道预算时，字母会陡降，而 GQI 因为混合了标记密度与连续频谱量，仍然平滑下降。
 
+## 机器协议
+
+人读 CLI 给终端用。Windows 上的 Electron 应用不要去刮它的 stdout。
+用 `--json` / `--ndjson`，或把 `oi-eegqc serve --stdio` 拉起当 sidecar，在
+stdin/stdout 上走 NDJSON。
+
+两套版本号刻意分开：
+
+| 字段 | 示例 | 何时改 |
+| --- | --- | --- |
+| 信封上的 `schema_version` | `oi-eegqc-protocol-v1` | 信封键（`ok` / `event` / `kind`） |
+| 报告体上的 `schema_version` | `oi-eegqc-report-v1` | `QualityReport.to_dict()` 的字段 |
+| `threshold_version` | `oi-eegqc-v0.2.0` | 评分阈值（与线协议正交） |
+
+机器模式下 stdout **只有 JSON**。警告和人读进度走 stderr。
+`--json` / `--ndjson` 必须显式给 `--root`，不会悄悄用工作站默认路径。
+
+```bash
+oi-eegqc --json datasets
+oi-eegqc --ndjson bench synthetic --channels 32 --duration 12
+```
+
+Sidecar 操作：`ping`、`list_datasets`、`score_file`、`score_dataset`、`cancel`、
+`shutdown`。`cancel` 在两条记录**之间**打断当前批次；正在跑的
+`evaluate_recording` 仍会跑完，已完成的行保留，并带 `cancelled: true`。
+错误形状是 `{ok:false, code, message}`，前端按 `code` 分支。数据集溯源只写在
+`report.extras`，不再平铺到报告体。
+
+`score_adapter(..., on_progress=..., cancel=...)` 与 sidecar 是同一套契约。
+Electron 应调这些 Python 入口，而不是解析人读 CLI。
+
 ## 管线（v0.2）
 
 1. 只去掉辅助导 —— 平坦导与死导留在分母里
@@ -234,6 +274,8 @@ oi-eegqc init-config -o my_qc.yaml
 ├── src/oi_eegqc/
 │   ├── io/                 # npy / EDF / BDF / 切段 / 报告
 │   ├── datasets/           # npy、hw、nod、things、synthetic 适配器
+│   ├── protocol.py         # 信封与结构化错误
+│   ├── serve.py            # NDJSON stdio sidecar
 │   ├── adapters.py         # 通道选择、削波、高通、分窗
 │   ├── config.py           # 自适应 profile 与阈值
 │   ├── qa/windows.py       # 窗级检测器 → clean_ratio + ODQ
@@ -273,6 +315,16 @@ oi-eegqc init-config -o my_qc.yaml
 - 所有 D 级片段都报 `Caution`。现在可用性由字母派生，D 一律 `Unavailable`。
 - 信号带 `(1, 50)` 与噪声带 `(50, 100)` 都包含工频，同一份功率被当作信号又当作噪声。现在改为 `(1, 45)` 与 `(55, 95)`，并配独立的工频检测器。
 - 时长与同步完整性从未被真正考核：bench 把每个片段自身的长度当作刺激时长传回，并硬编码一个合格的同步误差。现在华为 bench 改用采样数与墙钟时间互校，未标定的同步则记为未评估。
+
+### v0.3 — 机器协议
+
+包版本 `0.3.0`。评分与 `threshold_version` 不变（仍为 `oi-eegqc-v0.2.0`）。
+本版是给 Electron 用的接口层：
+
+- 协议信封（`oi-eegqc-protocol-v1`）与报告体（`oi-eegqc-report-v1`）分开。
+- `--json` / `--ndjson` / `--quiet`；机器模式下人读文字走 stderr。
+- `oi-eegqc serve --stdio`，批次可取消。
+- 数据集字段只留在 `extras`，不再平铺到报告。
 
 ## 许可证
 

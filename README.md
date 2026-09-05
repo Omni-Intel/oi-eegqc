@@ -21,6 +21,7 @@
   <a href="#what-it-does">What it does</a> ·
   <a href="#design-principles">Principles</a> ·
   <a href="#grade-tracks">Grade tracks</a> ·
+  <a href="#machine-protocol">Machine protocol</a> ·
   <a href="#threshold-calibration">Calibration</a> ·
   <a href="#configuration">Config</a>
 </p>
@@ -99,7 +100,15 @@ from oi_eegqc import load_npy, load_edf_bdf, open_dataset, score_adapter
 
 rec = load_npy("clip.npy", sfreq=250.0, unit="uV")
 adapter = open_dataset("hw", "./sessions")          # or "nod" / "npy" / "synthetic"
-rows, summary = score_adapter(adapter)
+rows, summary = score_adapter(adapter)              # extras only; no flattened fields
+```
+
+Machine-readable stdout (for scripts or a desktop sidecar):
+
+```bash
+oi-eegqc --json datasets
+oi-eegqc --ndjson bench synthetic --channels 32 --duration 12
+oi-eegqc serve --stdio
 ```
 
 | Adapter | Input | Notes |
@@ -194,6 +203,53 @@ the continuous track: a degradation that pushes every window past the
 bad-channel budget at once will drop the letter sharply while GQI declines
 smoothly, since it blends flag density with continuous spectral measures.
 
+## Machine protocol
+
+Human CLI output is for terminals. A Windows Electron app should not scrape it.
+Use `--json` / `--ndjson`, or spawn `oi-eegqc serve --stdio` as a sidecar and
+speak NDJSON on stdin/stdout.
+
+Two version strings stay distinct:
+
+| Field | Example | When it changes |
+| --- | --- | --- |
+| `schema_version` on the envelope | `oi-eegqc-protocol-v1` | Envelope keys (`ok`, `event`, `kind`) |
+| `schema_version` on a report | `oi-eegqc-report-v1` | Fields inside `QualityReport.to_dict()` |
+| `threshold_version` | `oi-eegqc-v0.2.0` | Scoring cutoffs (orthogonal to the wire format) |
+
+Stdout in machine mode is JSON only. Warnings and human progress go to stderr.
+`--json` / `--ndjson` require an explicit `--root` for on-disk datasets — the
+workstation defaults are never used silently.
+
+```bash
+oi-eegqc --json datasets
+oi-eegqc --ndjson bench synthetic --channels 32 --duration 12
+```
+
+```text
+{"ok":true,"schema_version":"oi-eegqc-protocol-v1","kind":"batch","event":"progress","done":1,"total":4,"clip_id":"synthetic_clean","letter_grade":"A","gqi":98.2}
+{"ok":true,"schema_version":"oi-eegqc-protocol-v1","kind":"batch","event":"done","reports":[...],"summary":{...},"cancelled":false}
+```
+
+Sidecar ops: `ping`, `list_datasets`, `score_file`, `score_dataset`, `cancel`,
+`shutdown`. A `cancel` line interrupts the in-flight batch *between* recordings;
+the current `evaluate_recording` call still finishes, and already-scored rows
+are kept with `cancelled: true`. Errors are `{ok:false, code, message}` —
+switch on `code` (`unknown_dataset`, `missing_root`, `missing_sfreq`,
+`mne_required`, `file_not_found`, `unknown_unit`, `invalid_request`,
+`unknown_op`, `eval_failed`). Dataset provenance lives in `report.extras` only;
+bench fields are not flattened onto the report body.
+
+```json
+{"id":"1","op":"score_dataset","dataset":"synthetic","n_channels":32}
+{"id":"1","event":"progress","done":3,"total":4,"clip_id":"synthetic_dead_quarter"}
+{"id":"1","event":"done","kind":"batch","summary":{"n_total":4,"cancelled":false},"reports":[]}
+```
+
+`score_adapter(..., on_progress=..., cancel=...)` is the same contract the
+sidecar uses. Prefer calling those Python functions from the sidecar over
+parsing human CLI text.
+
 ## Pipeline (v0.2)
 
 1. Drop aux channels only — flat and dead channels stay in the denominator
@@ -268,6 +324,8 @@ Or edit [`configs/default.yaml`](configs/default.yaml). Bump `threshold_version`
 ├── src/oi_eegqc/
 │   ├── io/                 # npy / EDF / BDF / clips / reports
 │   ├── datasets/           # npy, hw, nod, things, synthetic adapters
+│   ├── protocol.py         # envelope + structured errors
+│   ├── serve.py            # NDJSON stdio sidecar
 │   ├── adapters.py         # channel pick, clipping, high-pass, windows
 │   ├── config.py           # adaptive profiles + thresholds
 │   ├── qa/windows.py       # window detectors → clean_ratio + ODQ
@@ -326,6 +384,17 @@ comparable. Fixed in this release:
   own length as its stimulus duration and hard-coded a passing sync error. The
   Huawei bench now checks sample count against wall-clock time and leaves
   uncalibrated sync unassessed.
+
+### v0.3 — machine protocol
+
+Package version `0.3.0`. Scoring and `threshold_version` are unchanged
+(`oi-eegqc-v0.2.0`). This release is the Electron seam:
+
+- Protocol envelope (`oi-eegqc-protocol-v1`) separate from the report body
+  (`oi-eegqc-report-v1`).
+- `--json` / `--ndjson` / `--quiet`; human text on stderr in machine mode.
+- `oi-eegqc serve --stdio` with cancellable `score_dataset`.
+- Dataset fields stay in `extras`; they are no longer flattened onto reports.
 
 ## License
 

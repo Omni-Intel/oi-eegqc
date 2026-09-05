@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .base import AdapterError, DatasetAdapter, DatasetSpec
+from ..protocol import ProtocolError
 from .bench import iter_scored, score_adapter
 from .epoched import NodEegAdapter, ThingsEeg2Adapter
 from .hw import HuaweiSessionAdapter
@@ -40,7 +41,11 @@ def get_adapter_class(name: str) -> type[DatasetAdapter]:
     key = name.strip().lower()
     if key not in ADAPTERS:
         known = ", ".join(sorted(ADAPTERS))
-        raise KeyError(f"Unknown dataset {name!r}. Registered: {known}")
+        raise ProtocolError(
+            "unknown_dataset",
+            f"Unknown dataset {name!r}. Registered: {known}",
+            details={"known": sorted(ADAPTERS)},
+        )
     return ADAPTERS[key]
 
 

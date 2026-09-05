@@ -87,6 +87,10 @@ class HuaweiSessionAdapter(DatasetAdapter):
     def iter_sessions(self) -> Iterator[Path]:
         if not self.root.is_dir():
             raise FileNotFoundError(f"session root does not exist: {self.root}")
+        # A single session directory (session.json + BDF) is a valid root.
+        if find_bdf(self.root) is not None:
+            yield self.root
+            return
         found = False
         for path in sorted(p for p in self.root.iterdir() if p.is_dir()):
             if find_bdf(path) is not None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Iterator
 
 from ..types import RecordingInput
@@ -17,6 +17,9 @@ class DatasetSpec:
     unit_is_nominal: bool = False
     requires_mne: bool = False
     default_unit: str = "uV"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class DatasetAdapter(ABC):
@@ -35,6 +38,10 @@ class DatasetAdapter(ABC):
 
     def recordings(self) -> list[RecordingInput]:
         return list(self.iter_recordings())
+
+    def estimate_count(self) -> int | None:
+        """Best-effort clip count for progress bars. ``None`` means unknown."""
+        return None
 
 
 @dataclass

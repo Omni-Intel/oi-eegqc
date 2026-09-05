@@ -58,8 +58,11 @@ def test_dataset_registry_contains_expected_adapters():
 
 
 def test_unknown_dataset_raises():
-    with pytest.raises(KeyError):
+    from oi_eegqc.protocol import ProtocolError
+
+    with pytest.raises(ProtocolError) as exc:
         open_dataset("not-a-dataset")
+    assert exc.value.code == "unknown_dataset"
 
 
 def test_npy_dir_adapter(tmp_path: Path):
@@ -77,9 +80,14 @@ def test_synthetic_adapter_scores():
     adapter = open_dataset("synthetic", n_channels=16, duration_s=8.0)
     rows, summary = score_adapter(adapter)
     assert summary["n_total"] == 4
+    assert summary["cancelled"] is False
     by_id = {r["clip_id"]: r for r in rows}
     assert by_id["synthetic_clean"]["letter_grade"] == "A"
     assert by_id["synthetic_saturated"]["letter_grade"] == "D"
+    assert "schema_version" in rows[0]
+    assert rows[0]["extras"]["dataset"] == "synthetic"
+    assert "device" not in rows[0]
+    assert "plan" not in rows[0]
 
 
 def test_cli_lists_datasets():

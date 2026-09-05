@@ -46,6 +46,9 @@ class SyntheticAdapter(DatasetAdapter):
         self.sfreq = sfreq
         self.seed = seed
 
+    def estimate_count(self) -> int | None:
+        return 4
+
     def iter_recordings(self) -> Iterator[RecordingInput]:
         rng = np.random.default_rng(self.seed)
         n_ch = self.n_channels

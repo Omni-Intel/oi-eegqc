@@ -18,6 +18,10 @@ class AvailabilityFlag(str, Enum):
     UNAVAILABLE = "Unavailable"
 
 
+#: Frozen into every ``QualityReport.to_dict()``. Bump when report fields change.
+REPORT_SCHEMA_VERSION = "oi-eegqc-report-v1"
+
+
 #: Multipliers converting a declared input unit into microvolts.
 UNIT_TO_UV: dict[str, float] = {
     "uv": 1.0,
@@ -175,6 +179,7 @@ class QualityReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": REPORT_SCHEMA_VERSION,
             "subject_id": self.subject_id,
             "session_id": self.session_id,
             "clip_id": self.clip_id,

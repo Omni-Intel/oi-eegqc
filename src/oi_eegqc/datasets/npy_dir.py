@@ -43,6 +43,11 @@ class NpyDirAdapter(DatasetAdapter):
         self.session_id = session_id
         self.channels_first = channels_first
 
+    def estimate_count(self) -> int | None:
+        if not self.root.is_dir():
+            return 0
+        return len(list(self.root.glob(self.pattern)))
+
     def iter_recordings(self) -> Iterator[RecordingInput]:
         files = sorted(self.root.glob(self.pattern))
         if not files:
