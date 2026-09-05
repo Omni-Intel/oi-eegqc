@@ -22,6 +22,7 @@
   <a href="#design-principles">Principles</a> ·
   <a href="#grade-tracks">Grade tracks</a> ·
   <a href="#machine-protocol">Machine protocol</a> ·
+  <a href="docs/windows-app.md">Windows app</a> ·
   <a href="#threshold-calibration">Calibration</a> ·
   <a href="#configuration">Config</a>
 </p>
@@ -250,6 +251,9 @@ bench fields are not flattened onto the report body.
 sidecar uses. Prefer calling those Python functions from the sidecar over
 parsing human CLI text.
 
+The Windows intake shell is a native viewer, not Electron — see
+[docs/windows-app.md](docs/windows-app.md).
+
 ## Pipeline (v0.2)
 
 1. Drop aux channels only — flat and dead channels stay in the denominator
@@ -317,7 +321,9 @@ Or edit [`configs/default.yaml`](configs/default.yaml). Bump `threshold_version`
 .
 ├── assets/                 # hero + wordmark
 ├── configs/default.yaml    # duration + montage profiles
+├── docs/windows-app.md     # minimal native Windows QC shell
 ├── examples/
+│   ├── sidecar_session.py            # stdio sidecar client (Windows should mirror this)
 │   ├── calibrate_thresholds.py       # injected-fault threshold calibration
 │   ├── run_hw_bdf_bench.py           # Neuracle / TD10 BDF sessions
 │   └── run_public_dataset_bench.py   # NOD-EEG (THINGS opt-in)

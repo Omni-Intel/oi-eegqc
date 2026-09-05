@@ -22,6 +22,7 @@
   <a href="#设计原则">原则</a> ·
   <a href="#三级评级">评级</a> ·
   <a href="#机器协议">机器协议</a> ·
+  <a href="docs/windows-app.zh-CN.md">Windows 壳层</a> ·
   <a href="#阈值标定">标定</a> ·
   <a href="#配置">配置</a>
 </p>
@@ -213,7 +214,10 @@ Sidecar 操作：`ping`、`list_datasets`、`score_file`、`score_dataset`、`ca
 `report.extras`，不再平铺到报告体。
 
 `score_adapter(..., on_progress=..., cancel=...)` 与 sidecar 是同一套契约。
-Electron 应调这些 Python 入口，而不是解析人读 CLI。
+桌面壳层应调这些 Python 入口，而不是解析人读 CLI。
+
+Windows 入库界面是原生薄壳，不是 Electron —— 见
+[docs/windows-app.zh-CN.md](docs/windows-app.zh-CN.md)。
 
 ## 管线（v0.2）
 
@@ -267,7 +271,9 @@ oi-eegqc init-config -o my_qc.yaml
 .
 ├── assets/                 # hero 与字标
 ├── configs/default.yaml    # 时长与 montage 配置
+├── docs/windows-app.zh-CN.md  # Windows 原生 QC 薄壳
 ├── examples/
+│   ├── sidecar_session.py            # stdio sidecar 客户端（Windows 应对齐这份）
 │   ├── calibrate_thresholds.py       # 注入式故障阈值标定
 │   ├── run_hw_bdf_bench.py           # Neuracle / TD10 BDF 会话
 │   └── run_public_dataset_bench.py   # NOD-EEG（THINGS 需显式开启）

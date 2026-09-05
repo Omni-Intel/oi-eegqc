@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from io import StringIO
 from pathlib import Path
 
@@ -180,3 +183,19 @@ def test_protocol_error_maps_unknown_unit():
     assert body["ok"] is False
     assert body["id"] == "1"
     assert body["schema_version"] == PROTOCOL_SCHEMA_VERSION
+
+
+def test_example_sidecar_session_synthetic():
+    root = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONPATH": str(root / "src")}
+    proc = subprocess.run(
+        [sys.executable, str(root / "examples" / "sidecar_session.py"), "--score-synthetic"],
+        cwd=str(root),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "pong" in proc.stdout
+    assert "n_total 4" in proc.stdout
