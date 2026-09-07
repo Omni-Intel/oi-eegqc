@@ -20,9 +20,14 @@ dependencies = [
 [project.optional-dependencies]
 mne = ["mne>=1.5"]
 dev = ["pytest>=7.0"]
+desktop = ["PySide6>=6.8,<7", "mne>=1.5"]
+packaging = ["pyinstaller>=6.12,<7"]
 
 [project.scripts]
 oi-eegqc = "oi_eegqc.cli:main"
+
+[project.gui-scripts]
+oi-eegqc-desktop = "oi_eegqc.desktop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

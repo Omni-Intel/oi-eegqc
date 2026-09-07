@@ -1,5 +1,7 @@
 <h1 align="center">oi-eegqc</h1>
 
+桌面版：极简原生界面，支持 Windows，选择文件后即可评分。[使用与打包说明](docs/desktop.md)。
+
 <p align="center">
   <strong>简体中文</strong> · <a href="README.md">English</a>
 </p>

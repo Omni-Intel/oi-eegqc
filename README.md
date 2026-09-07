@@ -1,5 +1,7 @@
 <h1 align="center">oi-eegqc</h1>
 
+Native desktop app: select or drop multiple files and score locally with default adaptive thresholds. [Desktop setup and Windows packaging](docs/desktop.md).
+
 <p align="center">
   <a href="README.zh-CN.md">简体中文</a> · <strong>English</strong>
 </p>
