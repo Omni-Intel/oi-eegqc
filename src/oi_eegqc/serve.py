@@ -20,6 +20,7 @@ from typing import Any, Mapping, TextIO
 from . import __version__
 from .config import load_config
 from .datasets import DEFAULT_NOD_CHANNELS_TSV, list_datasets, open_dataset, score_adapter
+from .datasets.avsession import looks_like_avsession
 from .io import load_edf_bdf, load_npy
 from .io.reports import batch_envelope
 from .pipeline import evaluate_recording
@@ -173,7 +174,12 @@ class StdioServer:
         rec_kwargs = {k: v for k, v in rec_kwargs.items() if v is not None or k == "event_ok"}
 
         if path.is_dir():
-            dataset = "hw" if (path / "session.json").exists() else "npy"
+            if (path / "session.json").exists():
+                dataset = "hw"
+            elif looks_like_avsession(path):
+                dataset = "avsession"
+            else:
+                dataset = "npy"
             payload = dict(req)
             payload["dataset"] = dataset
             payload.setdefault("root", str(path))
@@ -281,6 +287,10 @@ def _adapter_kwargs(name: str, req: dict[str, Any]) -> dict[str, Any]:
         kwargs["unit"] = req.get("unit") or "uV"
         if req.get("adc_to_uv") is not None:
             kwargs["adc_to_uv"] = req["adc_to_uv"]
+    if name == "avsession":
+        kwargs["unit"] = req.get("unit") or "uV"
+        if req.get("include_rest"):
+            kwargs["include_rest"] = bool(req["include_rest"])
     if name == "nod":
         if req.get("subjects") is not None:
             kwargs["subjects"] = req["subjects"]

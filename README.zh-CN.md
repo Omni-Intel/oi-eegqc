@@ -91,6 +91,7 @@ print(report.letter_grade, report.gqi, report.availability)
 ```bash
 oi-eegqc datasets
 oi-eegqc eval-bdf -i recording.bdf --unit V -o report.json   # 需要 oi-eegqc[mne]
+oi-eegqc bench avsession --root ./session_01 -o av.json
 oi-eegqc bench hw --root ./sessions -o hw.json
 oi-eegqc bench nod --root ./epochs_uV --subjects sub-01 sub-02
 oi-eegqc bench synthetic --channels 32 --duration 20
@@ -115,6 +116,7 @@ oi-eegqc serve --stdio
 | 适配器 | 输入 | 说明 |
 | --- | --- | --- |
 | `npy` | 二维 `.npy` 片段目录 | 必须给 `--sfreq` 与 `--unit` |
+| `avsession` | 观看视频会话目录（`continuous_eeg.npy` + events） | BrainCo 本地连续记录；按 video_on/off 切段 |
 | `hw` | 会话目录（`session.json` + BDF） | Neuracle 伏特 / TD10 ADC 计数 |
 | `nod` | `{subject}_epochs_uV.npy` | 物理 µV；可作为 QC 参照 |
 | `things` | THINGS-EEG2 预处理数组 | 无量纲；不可比，需显式开启 |
@@ -274,12 +276,13 @@ oi-eegqc init-config -o my_qc.yaml
 ├── docs/windows-app.zh-CN.md  # Windows 原生 QC 薄壳
 ├── examples/
 │   ├── sidecar_session.py            # stdio sidecar 客户端（Windows 应对齐这份）
+│   ├── qc_vs_decodability.py         # QC 成绩 vs 视频半段识别
 │   ├── calibrate_thresholds.py       # 注入式故障阈值标定
 │   ├── run_hw_bdf_bench.py           # Neuracle / TD10 BDF 会话
 │   └── run_public_dataset_bench.py   # NOD-EEG（THINGS 需显式开启）
 ├── src/oi_eegqc/
 │   ├── io/                 # npy / EDF / BDF / 切段 / 报告
-│   ├── datasets/           # npy、hw、nod、things、synthetic 适配器
+│   ├── datasets/           # npy、hw、avsession、nod、things、synthetic 适配器
 │   ├── protocol.py         # 信封与结构化错误
 │   ├── serve.py            # NDJSON stdio sidecar
 │   ├── adapters.py         # 通道选择、削波、高通、分窗

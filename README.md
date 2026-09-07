@@ -91,6 +91,7 @@ Registered dataset adapters all yield `RecordingInput` — they never score:
 ```bash
 oi-eegqc datasets
 oi-eegqc eval-bdf -i recording.bdf --unit V -o report.json   # needs oi-eegqc[mne]
+oi-eegqc bench avsession --root ./session_01 -o av.json
 oi-eegqc bench hw --root ./sessions -o hw.json
 oi-eegqc bench nod --root ./epochs_uV --subjects sub-01 sub-02
 oi-eegqc bench synthetic --channels 32 --duration 20
@@ -115,6 +116,7 @@ oi-eegqc serve --stdio
 | Adapter | Input | Notes |
 | --- | --- | --- |
 | `npy` | directory of 2D `.npy` clips | `--sfreq` and `--unit` required |
+| `avsession` | AV-watching session folders (`continuous_eeg.npy` + events) | BrainCo local continuous; video_on/off clips |
 | `hw` | session folders (`session.json` + BDF) | Neuracle volts / TD10 ADC counts |
 | `nod` | `{subject}_epochs_uV.npy` | physical µV; valid QC reference |
 | `things` | THINGS-EEG2 preprocessed arrays | unitless; not comparable, opt-in |
@@ -324,12 +326,13 @@ Or edit [`configs/default.yaml`](configs/default.yaml). Bump `threshold_version`
 ├── docs/windows-app.md     # minimal native Windows QC shell
 ├── examples/
 │   ├── sidecar_session.py            # stdio sidecar client (Windows should mirror this)
+│   ├── qc_vs_decodability.py         # QC grade vs split-half video identification
 │   ├── calibrate_thresholds.py       # injected-fault threshold calibration
 │   ├── run_hw_bdf_bench.py           # Neuracle / TD10 BDF sessions
 │   └── run_public_dataset_bench.py   # NOD-EEG (THINGS opt-in)
 ├── src/oi_eegqc/
 │   ├── io/                 # npy / EDF / BDF / clips / reports
-│   ├── datasets/           # npy, hw, nod, things, synthetic adapters
+│   ├── datasets/           # npy, hw, avsession, nod, things, synthetic adapters
 │   ├── protocol.py         # envelope + structured errors
 │   ├── serve.py            # NDJSON stdio sidecar
 │   ├── adapters.py         # channel pick, clipping, high-pass, windows

@@ -29,6 +29,7 @@ stdin/stdout are NDJSON. Reject envelopes whose `schema_version` is not
 | Drop | Request |
 | --- | --- |
 | Folder with `session.json` | `score_dataset` `hw` |
+| Folder with `session_summary.json` or `continuous_eeg.npy`+`metadata.json` | `score_dataset` `avsession` |
 | Folder of `.npy` | `score_dataset` `npy` (ask `sfreq` + `unit`) |
 | `.bdf` / `.edf` | `score_file` `unit=V` |
 | `.npy` file | `score_file` + `sfreq` |

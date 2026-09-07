@@ -80,7 +80,7 @@ def test_cli_datasets_json(capsys):
     assert payload["schema_version"] == PROTOCOL_SCHEMA_VERSION
     assert payload["kind"] == "datasets"
     names = {d["name"] for d in payload["datasets"]}
-    assert names == {"npy", "hw", "nod", "things", "synthetic"}
+    assert names == {"npy", "hw", "avsession", "nod", "things", "synthetic"}
 
 
 def test_cli_datasets_json_after_subcommand(capsys):

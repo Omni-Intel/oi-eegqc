@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import dump_default_config, load_config
 from .datasets import (
+    ADAPTERS,
     DEFAULT_NOD_CHANNELS_TSV,
     DEFAULT_ROOTS,
     SyntheticAdapter,
@@ -297,6 +298,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
                 "microvolt datasets.",
                 file=sys.stderr,
             )
+    if name == "avsession":
+        kwargs["unit"] = args.unit
+        kwargs["include_rest"] = bool(getattr(args, "include_rest", False))
     if name == "synthetic":
         kwargs["n_channels"] = args.channels
         kwargs["duration_s"] = args.duration
@@ -434,7 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench = sub.add_parser("bench", parents=[machine], help="Score a registered dataset adapter")
     p_bench.add_argument(
         "dataset",
-        choices=sorted(["npy", "hw", "nod", "things", "synthetic"]),
+        choices=sorted(ADAPTERS),
         help="Registered adapter name (see `oi-eegqc datasets`)",
     )
     p_bench.add_argument("--root", default=None, help="Dataset root (human CLI has workstation defaults)")
@@ -446,6 +450,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--sfreq", type=float, default=None)
     p_bench.add_argument("--glob", default="*.npy")
     p_bench.add_argument("--unit", default="uV")
+    p_bench.add_argument("--include-rest", action="store_true", help="avsession: also score rest windows")
     p_bench.add_argument("--adc-to-uv", type=float, default=None)
     p_bench.add_argument("--channels", type=int, default=32)
     p_bench.add_argument("--duration", type=float, default=20.0)

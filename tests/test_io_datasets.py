@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
 import numpy as np
 import pytest
 
@@ -51,7 +52,7 @@ def test_infer_unit_adc_vs_phys():
 
 def test_dataset_registry_contains_expected_adapters():
     names = {s.name for s in list_datasets()}
-    assert names == {"npy", "hw", "nod", "things", "synthetic"}
+    assert names == {"npy", "hw", "avsession", "nod", "things", "synthetic"}
     things = next(s for s in list_datasets() if s.name == "things")
     assert things.unit_is_nominal is True
     assert next(s for s in list_datasets() if s.name == "hw").requires_mne is True
@@ -74,6 +75,52 @@ def test_npy_dir_adapter(tmp_path: Path):
     assert len(recs) == 2
     assert {r.clip_id for r in recs} == {"a", "b"}
     assert recs[0].meta["dataset"] == "npy"
+
+
+def test_avsession_adapter_cuts_video_events(tmp_path: Path):
+    stamp = tmp_path / "20260101_000000"
+    stamp.mkdir()
+    sfreq, n_ch = 250.0, 8
+    data = synth_clean(n_ch, sfreq, 6.0, seed=4)
+    np.save(stamp / "continuous_eeg.npy", data)
+    (stamp / "metadata.json").write_text(
+        json.dumps(
+            {
+                "subject_id": "demo",
+                "sfreq": sfreq,
+                "n_channels": n_ch,
+                "device_type": "brainco",
+                "eeg_file": "continuous_eeg.npy",
+                "marker_mode": "noop",
+                "completed": False,
+                "task_mode": "video",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (stamp / "events.json").write_text(
+        json.dumps(
+            [
+                {"name": "video_on", "sample_index": 50},
+                {"name": "video_off", "sample_index": 50 + int(2.5 * sfreq)},
+                {"name": "video_on", "sample_index": 800},
+                {"name": "video_off", "sample_index": 800 + int(2.5 * sfreq)},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    from oi_eegqc.datasets import looks_like_avsession
+
+    assert looks_like_avsession(tmp_path)
+    recs = open_dataset("avsession", tmp_path).recordings()
+    assert len(recs) == 2
+    assert recs[0].clip_id.endswith("_video_001")
+    assert recs[0].meta["kind"] == "video"
+    assert recs[0].unit == "uV"
+    assert recs[0].data.shape == (8, int(2.5 * sfreq))
+    rows, summary = score_adapter(open_dataset("avsession", tmp_path))
+    assert summary["n_total"] == 2
+    assert rows[0]["extras"]["dataset"] == "avsession"
 
 
 def test_synthetic_adapter_scores():

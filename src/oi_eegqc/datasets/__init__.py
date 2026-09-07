@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .avsession import AvSessionAdapter, looks_like_avsession
 from .base import AdapterError, DatasetAdapter, DatasetSpec
 from ..protocol import ProtocolError
 from .bench import iter_scored, score_adapter
@@ -15,6 +16,7 @@ from .synthetic import SyntheticAdapter, synth_clean
 ADAPTERS: dict[str, type[DatasetAdapter]] = {
     "npy": NpyDirAdapter,
     "hw": HuaweiSessionAdapter,
+    "avsession": AvSessionAdapter,
     "nod": NodEegAdapter,
     "things": ThingsEeg2Adapter,
     "synthetic": SyntheticAdapter,
@@ -23,6 +25,7 @@ ADAPTERS: dict[str, type[DatasetAdapter]] = {
 # Common local defaults on this workstation; callers should still pass ``root``.
 DEFAULT_ROOTS: dict[str, str] = {
     "hw": "/vePFS-0x0e/xkp/oi-eegqc/bench_runs/hw_extract/hw",
+    "avsession": "/vePFS-0x0e/xkp/oi-eegqc/bench_runs/session_01_extract/session_01",
     "nod": "/vePFS-0x0e/xkp/dense-global-caption/data/nod_eeg/epochs_uV",
     "things": "/vePFS-0x0e/xkp/datasets/Things-EEG2/Preprocessed_data_250Hz",
 }
@@ -62,6 +65,7 @@ __all__ = [
     "DEFAULT_NOD_CHANNELS_TSV",
     "DEFAULT_ROOTS",
     "AdapterError",
+    "AvSessionAdapter",
     "DatasetAdapter",
     "DatasetSpec",
     "HuaweiSessionAdapter",
@@ -72,6 +76,7 @@ __all__ = [
     "get_adapter_class",
     "iter_scored",
     "list_datasets",
+    "looks_like_avsession",
     "open_dataset",
     "score_adapter",
     "synth_clean",

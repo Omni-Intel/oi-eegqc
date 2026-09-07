@@ -82,6 +82,7 @@ Windows 只看路径，不猜科学含义：
 | 拖入 | 发出的请求 |
 | --- | --- |
 | 目录且含 `session.json` | `score_dataset`，`dataset=hw`，`root=该目录` |
+| 目录且含 `session_summary.json` 或 `continuous_eeg.npy`+`metadata.json` | `score_dataset`，`dataset=avsession` |
 | 目录，里面是 `.npy` | `score_dataset`，`dataset=npy`，必须问 `sfreq` 和 `unit` |
 | `.bdf` / `.edf` | `score_file`，`unit=V`（MNE 读进来是伏特） |
 | 单个 `.npy` | `score_file` + `sfreq` |
