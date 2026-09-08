@@ -29,7 +29,7 @@ def test_npy_scoring_units_axes_and_invalid_inputs(tmp_path):
         score_file(path, sfreq=250)
 
 
-def write_edf(path):
+def write_edf(path, sfreq=250):
     """Small valid EDF fixture; avoids requiring an EDF export dependency."""
     def field(value, size):
         return str(value).encode("ascii").ljust(size)
@@ -42,14 +42,14 @@ def write_edf(path):
     for values, size in [(["Fp1", "Fp2", "C3", "C4"], 16), ([""]*n, 80),
                          (["uV"]*n, 8), ([-200]*n, 8), ([200]*n, 8),
                          ([-rail-1]*n, 8), ([rail]*n, 8), ([""]*n, 80),
-                         ([250]*n, 8), ([""]*n, 32)]:
+                         ([sfreq]*n, 8), ([""]*n, 32)]:
         header += b"".join(field(v, size) for v in values)
-    data = np.clip(synth_clean(n, 250, 5) / 200 * rail, -rail-1, rail).astype("<i4" if bdf else "<i2")
+    data = np.clip(synth_clean(n, sfreq, 5) / 200 * rail, -rail-1, rail).astype("<i4" if bdf else "<i2")
     if bdf:
         header = b"\xffBIOSEMI" + header[8:]
     records = []
     for i in range(5):
-        chunk = data[:, i*250:(i+1)*250].copy()
+        chunk = data[:, i*sfreq:(i+1)*sfreq].copy()
         records.append(chunk.view(np.uint8).reshape(-1, 4)[:, :3].tobytes() if bdf else chunk.tobytes())
     path.write_bytes(header + b"".join(records))
 
@@ -93,6 +93,7 @@ def test_batch_failure_retry_dedup_and_default(tmp_path):
     assert report.extras["adaptive"] is True
     assert report.duration_profile == "ultra_short"
     assert report.montage_profile == "low_density"
+    assert "50%" in window.status.text()
     assert window.score_button.isEnabled()
     np.save(bad, synth_clean(4, 250, 5))
     window.start_score()
@@ -100,6 +101,7 @@ def test_batch_failure_retry_dedup_and_default(tmp_path):
     assert window.entries[0].report is not None
     assert window.entries[1].report is report
     assert not window.score_button.isEnabled()
+    assert "100%" in window.status.text()
     window.table.selectAll()
     window.remove_selected()
     assert not window.entries
@@ -249,3 +251,84 @@ def test_discovery_permission_error_and_filtering(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery.os, "scandir", guarded)
     paths, errors = discovery.discover_files([tmp_path, tmp_path / "ok.EDF"])
     assert len(paths) == 1 and errors == 1
+
+
+@pytest.mark.parametrize("sfreq", [64, 128, 250, 256, 500, 1000, 2000])
+@pytest.mark.parametrize("suffix", [".npy", ".edf", ".bdf"])
+def test_dynamic_sample_rates(tmp_path, sfreq, suffix):
+    path = tmp_path / ("recording" + suffix)
+    if suffix == ".npy":
+        np.save(path, synth_clean(4, sfreq, 5))
+        report = score_file(path, sfreq=sfreq)
+    else:
+        write_edf(path, sfreq)
+        # Reader must use the header, regardless of an unrelated array default.
+        report = score_file(path, sfreq=250)
+    assert report.extras["sfreq_hz"] == sfreq
+    assert report.duration_s == 5
+    assert report.window_qa.n_windows == 9
+    assert np.isfinite(report.gqi)
+    assert report.extras["frequency_coverage"]["noise_band_complete"] == (sfreq >= 192)
+
+
+def test_mixed_rate_sidecars_override_batch_parameters(tmp_path):
+    import json
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    paths = []
+    for sfreq in (128, 256, 500, 1000):
+        path = tmp_path / f"{sfreq}.npy"
+        np.save(path, synth_clean(4, sfreq, 5))
+        path.with_suffix(".json").write_text(json.dumps({"sfreq": sfreq, "unit": "uV", "channels_first": True}))
+        paths.append(path)
+    window.add_files(paths, {"sfreq": 250})
+    window.start_score()
+    wait_for_batch(app, window)
+    assert [e.report.extras["sfreq_hz"] for e in window.entries] == [128, 256, 500, 1000]
+    assert all(e.report.duration_s == 5 for e in window.entries)
+    assert "4/4" in window.status.text()
+    window.close()
+
+
+def test_missing_rate_has_no_250_default(tmp_path):
+    from PySide6.QtWidgets import QDoubleSpinBox, QDialogButtonBox
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    seen = []
+    def inspect():
+        dialog = app.activeModalWidget()
+        rate = dialog.findChild(QDoubleSpinBox)
+        button = dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
+        seen.append((rate.value(), button.isEnabled()))
+        rate.setValue(512)
+        seen.append((rate.value(), button.isEnabled()))
+        dialog.accept()
+    QTimer.singleShot(0, inspect)
+    result = window.npy_parameters(tmp_path / "sample.npy", False)
+    assert seen == [(0, False), (512, True)]
+    assert result[0]["sfreq"] == 512
+    window.close()
+
+
+def test_summary_includes_pending_failed_and_caution():
+    from types import SimpleNamespace
+    from oi_eegqc.desktop import Entry
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    def entry(state):
+        return Entry("sample", report=SimpleNamespace(availability=SimpleNamespace(value=state)))
+    window.entries = [entry("Available"), entry("Caution"), entry("Unavailable"), Entry("pending"), Entry("failed", error="error")]
+    window.update_summary()
+    assert window.status.text() == "可用 20% · 1/5"
+    window.entries = []
+    window.close()
+
+
+def test_sidecar_rejects_conflicting_or_invalid_rates(tmp_path):
+    import json
+    from oi_eegqc.desktop_service import npy_metadata
+    path = tmp_path / "sample.npy"
+    for metadata in ({"sfreq": 0}, {"sfreq": True}, {"sfreq": 250, "SamplingFrequency": 500}):
+        path.with_suffix(".json").write_text(json.dumps(metadata))
+        with pytest.raises(ValueError):
+            npy_metadata(path)

@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView,
     QLabel, QMainWindow, QMenu, QPushButton, QStackedWidget, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget, QStyle, QStyleFactory,
+    QTableWidgetItem, QVBoxLayout, QWidget, QStyle, QStyleFactory, QMessageBox,
 )
-from .desktop_service import score_file
+from .desktop_service import score_file, npy_metadata
 from .desktop_import import SUPPORTED, discover_files
 
 STYLE = """
@@ -149,6 +149,7 @@ class Window(QMainWindow):
         QShortcut(QKeySequence.StandardKey.Open, self, activated=self.choose_files)
 
     def npy_parameters(self, path, multiple):
+        defaults = npy_metadata(path)
         dialog = QDialog(self)
         dialog.setWindowTitle("采样参数")
         dialog.setMinimumWidth(300)
@@ -159,18 +160,22 @@ class Window(QMainWindow):
         layout.addWidget(name)
         layout.addWidget(QLabel("采样率"))
         rate = QDoubleSpinBox()
-        rate.setRange(1, 1000000)
-        rate.setValue(250)
+        rate.setDecimals(6)
+        rate.setRange(0, 1000000)
+        rate.setSpecialValueText("请输入")
+        rate.setValue(defaults.get("sfreq", 0))
         rate.setSuffix(" 赫兹")
         layout.addWidget(rate)
         layout.addWidget(QLabel("单位"))
         unit = QComboBox()
         for label, value in [("微伏", "uV"), ("毫伏", "mV"), ("伏", "V")]:
             unit.addItem(label, value)
+        unit.setCurrentIndex(max(0, unit.findData(defaults.get("unit", "uV"))))
         layout.addWidget(unit)
         layout.addWidget(QLabel("排列"))
         order = QComboBox()
         order.addItems(["通道 × 采样点", "采样点 × 通道"])
+        order.setCurrentIndex(0 if defaults.get("channels_first", True) else 1)
         layout.addWidget(order)
         reuse = QCheckBox("应用于其余数组文件")
         reuse.setVisible(multiple)
@@ -178,6 +183,9 @@ class Window(QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setEnabled(rate.value() > 0)
+        rate.valueChanged.connect(lambda value: ok.setEnabled(value > 0))
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -249,7 +257,17 @@ class Window(QMainWindow):
         for path in pending:
             params = {}
             if Path(path).suffix.lower() == ".npy":
-                if shared is None:
+                try:
+                    declared = npy_metadata(path)
+                except (ValueError, OSError) as exc:
+                    notice = QMessageBox(QMessageBox.Icon.Warning, "参数无效",
+                                         f"{Path(path).name.lower()}\n{str(exc).lower()}", parent=self)
+                    notice.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
+                    notice.exec()
+                    continue
+                if {"sfreq", "unit", "channels_first"} <= declared.keys():
+                    params = declared
+                elif shared is None:
                     answer = self.npy_parameters(path, sum(Path(p).suffix.lower() == ".npy" for p in pending) > 1)
                     if answer is None:
                         continue
@@ -258,6 +276,7 @@ class Window(QMainWindow):
                         shared = params
                 else:
                     params = shared.copy()
+                    params.update(declared)
             self.entries.append(Entry(path, params.copy()))
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -294,7 +313,20 @@ class Window(QMainWindow):
             self.table.item(row, 0).setText(label)
         self.stack.setCurrentIndex(1 if self.entries else 0)
         self.score_button.setEnabled(any(e.report is None for e in self.entries))
-        self.status.setText(f"{len(self.entries)} 个文件" if self.entries else "")
+        self.update_summary()
+
+    def update_summary(self):
+        total = len(self.entries)
+        available = sum(e.report is not None and e.report.availability.value == "Available" for e in self.entries)
+        completed = sum(e.report is not None or bool(e.error) for e in self.entries)
+        failed = sum(bool(e.error) for e in self.entries)
+        if total and completed:
+            self.status.setText(f"可用 {available / total:.0%} · {available}/{total}")
+        else:
+            self.status.setText(f"{total} 个文件" if total else "")
+        self.status.setToolTip(f"可用文件数 ÷ 全部文件数\n已完成 {completed} · 失败 {failed} · 待完成 {total-completed}" if total else "")
+        if self.busy and not self.importing:
+            self.status.setText(self.status.text() + f"\n评分 {self.done}/{self.total}")
 
     def context_menu(self, pos):
         if self.busy or not self.entries:
@@ -352,20 +384,27 @@ class Window(QMainWindow):
 
     def started_file(self, index):
         self.table.item(index, 2).setText("评分中")
-        self.status.setText(f"{self.done} / {self.total}")
+        self.update_summary()
 
     def show_report(self, index, report):
         self.entries[index].report = report
         self.table.item(index, 1).setText(f"{report.gqi:.1f}")
         label = {"Available": "可用", "Caution": "需留意", "Unavailable": "不可用"}[report.availability.value]
         self.table.item(index, 2).setText(label)
+        rate = report.extras["sfreq_hz"]
+        detail = f"{rate:g} 赫兹 · {report.duration_s:g} 秒"
+        if not all(report.extras["frequency_coverage"].values()):
+            detail += "\n采样率限制了部分频段检测"
+        self.table.item(index, 1).setToolTip(detail)
         self.done += 1
+        self.update_summary()
 
     def show_error(self, index, message):
         self.entries[index].error = message
         self.table.item(index, 2).setText("失败")
         self.table.item(index, 2).setToolTip(message.lower())
         self.done += 1
+        self.update_summary()
 
     def finished(self):
         self.busy = False
@@ -419,7 +458,7 @@ def main():
         import json
         output = Path(sys.argv[-1])
         window.imported.connect(window.start_score)
-        window.add_files(sys.argv[2:-1], {"sfreq": 250})
+        window.add_files(sys.argv[2:-1])
         def finish():
             if window.busy:
                 return
