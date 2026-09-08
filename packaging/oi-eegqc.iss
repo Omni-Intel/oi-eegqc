@@ -1,14 +1,20 @@
 ; Compile from the repo root:
-;   ISCC /DAppVersion=0.3.0 packaging\oi-eegqc.iss
+;   ISCC /DAppVersion=0.3.3 packaging\oi-eegqc.iss
 ; Unsigned on purpose. Per-user install avoids an admin prompt.
 
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #error AppVersion must be supplied by the build script
 #endif
 
-#define AppName "OI-EEGQC"
+#define AppName "脑电质量评估"
 #define AppPublisher "Omni-Intelligence"
 #define AppExe "OI-EEGQC.exe"
+#ifndef SourceDir
+  #define SourceDir "..\dist\OI-EEGQC"
+#endif
+#ifndef OutputName
+  #define OutputName "OI-EEGQC-Setup-Windows-x64"
+#endif
 
 [Setup]
 AppId={{8F3C2A91-4B6D-4E17-9C5A-1D8E6F0B2A44}
@@ -29,24 +35,24 @@ WizardStyle=modern
 SetupIconFile="..\assets\omni-intelli logo\OMNI_LOGO_100x100.ico"
 UninstallDisplayIcon={app}\{#AppExe}
 OutputDir=..\dist
-OutputBaseFilename=OI-EEGQC-Setup-Windows-x64
+OutputBaseFilename={#OutputName}
 CloseApplications=yes
 RestartApplications=no
 UsePreviousAppDir=yes
 MinVersion=10.0
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
 
 [Files]
-Source: "..\dist\OI-EEGQC\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "启动{#AppName}"; Flags: nowait postinstall skipifsilent

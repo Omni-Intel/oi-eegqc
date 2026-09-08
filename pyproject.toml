@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oi-eegqc"
-version = "0.3.0"
+version = "0.3.3"
 description = "Adaptive EEG quality control bench for clean commercial multi-duration, multi-montage intake."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -33,7 +33,7 @@ oi-eegqc-desktop = "oi_eegqc.desktop:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-oi_eegqc = ["py.typed"]
+oi_eegqc = ["py.typed", "qml/*.qml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QStandardPaths, QSettings, QUrl
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QStandardPaths, QSettings, QUrl, QCoreApplication, QEvent
 from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -83,13 +83,14 @@ class ImportWorker(QThread):
 
 
 class UpdateWorker(QThread):
-    finished_check = Signal(object)
-
     def run(self):
         from . import __version__
-        from .desktop_update import check_update
-
-        self.finished_check.emit(check_update(__version__))
+        from .desktop_update import check_update, UpdateInfo
+        try:
+            self.result = check_update(__version__)
+        except Exception:
+            logging.getLogger("oi_eegqc.desktop").exception("Update check failed")
+            self.result = UpdateInfo(status="error", current=__version__)
 
 
 @dataclass
@@ -170,6 +171,7 @@ class Window(QMainWindow):
         self.setAcceptDrops(True)
         self.entries = []
         self.worker = None
+        self.update_workers = set()
         self.busy = False
         self.importing = False
         self.close_pending = False
@@ -360,17 +362,20 @@ class Window(QMainWindow):
             return
         button.setEnabled(False)
         button.setText("正在检查…")
-        worker = UpdateWorker(dialog)
+        worker = UpdateWorker(self)
+        self.update_workers.add(worker)
         dialog._update_worker = worker
 
-        def done(info):
+        def done():
+            self.update_workers.discard(worker)
             dialog._update_worker = None
             button.setEnabled(True)
             button.setText("检查更新")
-            self.show_update_result(info, dialog)
-            worker.deleteLater()
+            if dialog.isVisible() and self.isVisible():
+                self.show_update_result(worker.result, dialog)
 
-        worker.finished_check.connect(done)
+        worker.finished.connect(done)
+        worker.finished.connect(worker.deleteLater)
         worker.start()
 
     def show_update_result(self, info, parent):
@@ -699,13 +704,15 @@ class Window(QMainWindow):
             event.accept()
 
     def shutdown(self):
+        for update_worker in tuple(self.update_workers):
+            update_worker.wait()
         # Also cover programmatic application quit, which can bypass closeEvent.
         if self.worker is not None and self.worker.isRunning():
             self.worker.requestInterruption()
             self.worker.wait()
 
 
-def main():
+def widgets_main():
     # Required when launched through a console/gui entry point in a frozen app.
     from multiprocessing import freeze_support
     freeze_support()
@@ -727,6 +734,26 @@ def main():
     window = Window()
     app.aboutToQuit.connect(window.shutdown)
     window.show()
+    if len(sys.argv) == 3 and sys.argv[1] == "--update-check":
+        import json
+        from dataclasses import asdict
+        output = Path(sys.argv[2])
+        def checked(info, dialog):
+            output.write_text(json.dumps(asdict(info), ensure_ascii=False), encoding="utf-8")
+            dialog.grab().save(str(output.with_suffix(".png")))
+            dialog.accept()
+            QTimer.singleShot(0, lambda: app.exit(0 if info.status != "error" else 1))
+        window.show_update_result = checked
+        def click_check():
+            dialog = app.activeModalWidget()
+            for button in dialog.findChildren(QPushButton):
+                if button.text() == "检查更新":
+                    button.click()
+                    return
+        def open_settings():
+            QTimer.singleShot(0, click_check)
+            window.edit_prefs()
+        QTimer.singleShot(0, open_settings)
     if len(sys.argv) == 3 and sys.argv[1] == "--startup-check":
         import json
         output = Path(sys.argv[2])
@@ -755,7 +782,16 @@ def main():
         timer.timeout.connect(finish)
         window.start_score()
         timer.start(100)
-    return app.exec()
+    result = app.exec()
+    window.shutdown()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    return result
+
+
+def main():
+    from .quick import main as quick_main
+    return quick_main()
 
 
 if __name__ == "__main__":

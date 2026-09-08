@@ -225,6 +225,32 @@ def test_prefs_dialog_and_job_metadata(tmp_path):
     window.close()
 
 
+def test_close_settings_during_update(monkeypatch):
+    import oi_eegqc.desktop_update as updates
+    from PySide6.QtWidgets import QPushButton
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    window.show()
+    shown = []
+    def slow_check(version):
+        time.sleep(0.2)
+        return updates.UpdateInfo(status="current", current=version)
+    monkeypatch.setattr(updates, "check_update", slow_check)
+    monkeypatch.setattr(window, "show_update_result", lambda *args: shown.append(args))
+    def click_and_close():
+        dialog = app.activeModalWidget()
+        next(b for b in dialog.findChildren(QPushButton) if b.text() == "检查更新").click()
+        dialog.reject()
+    QTimer.singleShot(0, click_and_close)
+    window.edit_prefs()
+    assert window.update_workers
+    window.shutdown()
+    app.processEvents()
+    assert not shown
+    assert not window.update_workers
+    window.close()
+
+
 def test_no_uppercase_in_app_text(tmp_path):
     import re
     from PySide6.QtWidgets import QLabel, QPushButton
@@ -239,6 +265,13 @@ def test_no_uppercase_in_app_text(tmp_path):
     texts = []
     texts += [w.text() for cls in (QLabel, QPushButton) for w in window.findChildren(cls)]
     texts += [window.table.item(0, c).text() for c in range(3)]
+    assert not any(re.search("[A-Z]", text) for text in texts)
+    def inspect_settings():
+        dialog = app.activeModalWidget()
+        texts.extend(w.text() for cls in (QLabel, QPushButton) for w in dialog.findChildren(cls))
+        dialog.reject()
+    QTimer.singleShot(0, inspect_settings)
+    window.edit_prefs()
     assert not any(re.search("[A-Z]", text) for text in texts)
     assert not hasattr(window, "settings")
     window.close()

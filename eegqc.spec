@@ -6,6 +6,7 @@ root = Path(SPECPATH)
 datas = [(str(root / "LICENSE"), "licenses/oi-eegqc"),
          (str(root / "assets" / "omni-intelli logo" / "OMNI_LOGO_100x100.ico"), "assets/omni-intelli logo")]
 datas += collect_data_files("mne")
+datas += [(str(root / "src" / "oi_eegqc" / "qml"), "oi_eegqc/qml")]
 for package in ("mne", "numpy", "scipy", "PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6"):
     datas += copy_metadata(package)
 a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root / "src")],
