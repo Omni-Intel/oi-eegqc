@@ -8,8 +8,16 @@ import json
 from pathlib import Path
 
 from oi_eegqc.config import load_config
-from oi_eegqc.datasets import DEFAULT_NOD_CHANNELS_TSV, DEFAULT_ROOTS, open_dataset, score_adapter
+from oi_eegqc.datasets import open_dataset, score_adapter
 from oi_eegqc.io import summarize_reports, write_bench_json
+
+# Workstation copies; pass --nod-root / --things-root elsewhere.
+_NOD = "/vePFS-0x0e/xkp/dense-global-caption/data/nod_eeg/epochs_uV"
+_THINGS = "/vePFS-0x0e/xkp/datasets/Things-EEG2/Preprocessed_data_250Hz"
+_NOD_CHANNELS = (
+    "/vePFS-0x0e/xkp/ds005811/sub-01/ses-ImageNet01/eeg/"
+    "sub-01_ses-ImageNet01_task-ImageNet_run-01_channels.tsv"
+)
 
 
 def _log(rec, report) -> None:
@@ -28,8 +36,8 @@ def main() -> None:
         "--output",
         default="/vePFS-0x0e/xkp/oi-eegqc/bench_runs/things_nod_smoke.json",
     )
-    parser.add_argument("--nod-root", default=DEFAULT_ROOTS["nod"])
-    parser.add_argument("--things-root", default=DEFAULT_ROOTS["things"])
+    parser.add_argument("--nod-root", default=_NOD)
+    parser.add_argument("--things-root", default=_THINGS)
     parser.add_argument("--include-things", action="store_true")
     parser.add_argument("--seeds-per-subject", type=int, default=2)
     parser.add_argument("--nod-subjects", nargs="+", default=["sub-01", "sub-02", "sub-03"])
@@ -45,7 +53,7 @@ def main() -> None:
         args.nod_root,
         subjects=args.nod_subjects,
         seeds_per_subject=args.seeds_per_subject,
-        channels_tsv=DEFAULT_NOD_CHANNELS_TSV,
+        channels_tsv=_NOD_CHANNELS,
     )
     rows, _ = score_adapter(nod, cfg, on_recording=_log)
     all_rows.extend(rows)

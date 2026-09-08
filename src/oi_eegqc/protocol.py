@@ -5,7 +5,7 @@ Two version strings are kept distinct on purpose:
 * ``REPORT_SCHEMA_VERSION`` is frozen into every ``QualityReport.to_dict()``.
   Persist this with the recording; bump it when report fields change.
 * ``PROTOCOL_SCHEMA_VERSION`` wraps CLI and sidecar envelopes (ok/event/kind).
-  Electron should reject unknown protocol versions rather than guess.
+  Clients should reject unknown protocol versions rather than guess.
 
 Stdout in machine mode is JSON only. Human text belongs on stderr.
 """
@@ -124,6 +124,11 @@ def map_exception(exc: BaseException) -> ProtocolError:
         return ProtocolError("unknown_dataset", str(exc).strip("'\""))
     if isinstance(exc, ValueError):
         text = str(exc)
-        code = "unknown_unit" if "Unknown unit" in text or "unit=" in text else "invalid_request"
+        if "Unknown unit" in text or "unit=" in text:
+            code = "unknown_unit"
+        elif "采样率" in text:
+            code = "missing_sfreq"
+        else:
+            code = "invalid_request"
         return ProtocolError(code, text)
     return ProtocolError("eval_failed", f"{type(exc).__name__}: {exc}")

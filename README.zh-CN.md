@@ -15,14 +15,14 @@
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-111111?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-111111?style=flat-square">
   <img alt="qa/qc" src="https://img.shields.io/badge/QA%2FQC-separated-FF5A01?style=flat-square">
-  <img alt="grades" src="https://img.shields.io/badge/grades-A–D%20·%20GQI%20·%20Availability-555555?style=flat-square">
+  <img alt="score" src="https://img.shields.io/badge/score-GQI%200–100-555555?style=flat-square">
 </p>
 
 <p align="center">
   <a href="#快速开始"><strong>安装</strong></a> ·
   <a href="#它能做什么">能力</a> ·
   <a href="#设计原则">原则</a> ·
-  <a href="#三级评级">评级</a> ·
+  <a href="#质量分数">评分</a> ·
   <a href="#机器协议">机器协议</a> ·
   <a href="docs/windows-app.zh-CN.md">Windows 壳层</a> ·
   <a href="#阈值标定">标定</a> ·
@@ -51,6 +51,8 @@ oi-eegqc demo --channels 32 --duration 12
 评一条连续片段：
 
 ```bash
+oi-eegqc score -i clip.npy --sfreq 250
+oi-eegqc score -i recording.bdf
 oi-eegqc eval-npy \
   -i clip.npy \
   --sfreq 250 \
@@ -85,7 +87,7 @@ report = evaluate_recording(
         sync_error_ms=8.0,
     )
 )
-print(report.letter_grade, report.gqi, report.availability)
+print(report.gqi)
 ```
 
 注册过的数据集适配器一律产出 `RecordingInput`，它们自己不评分：
@@ -140,10 +142,10 @@ oi-eegqc serve --stdio
 | 相对离群检测 | 通道自身时间维 + 跨通道空间维 robust-z |
 | 频谱 QA | 宽带高频噪信比与工频干扰，并保留连续量 |
 | 空间耦合 | Top-3 邻道相关；导联过于稀疏时自动关闭 |
-| 字母评级 | WeBrain 式 **A / B / C / D**，作用于可用录制时长 |
-| 可分解 GQI | **0–100**，维度：接触 · 洁净 · 可用时长 · 完整性 · 刺激同步 |
+| 字母评级 | WeBrain 式 **A / B / C / D**，作用于可用录制时长（先只写进 JSON） |
+| 可分解 GQI | **0–100**，维度：接触 · 洁净 · 可用时长 · 完整性 · 刺激同步 —— **对外分数** |
 | 硬性否决门 | 事件损坏、放大器打满、导联大面积缺失 → 直接拒收 |
-| 可用性旗标 | HBN 式 **Available / Caution / Unavailable**，由字母派生 |
+| 可用性旗标 | HBN 式 **Available / Caution / Unavailable**，由字母派生（先只写进 JSON） |
 | 阈值版本化 | 每条分数携带 `threshold_version`，可审计 |
 
 ### 两个不能混为一谈的质量数
@@ -161,39 +163,35 @@ oi-eegqc serve --stdio
 - **假设数据纯粹。** 事件、montage、单位、片段边界属于协议，而不是事后考古。
 - **按时长适配，不写死一个窗。** 6 秒与 60 秒不能共用同一套统计。
 - **按通道密度适配，不写死一个阈值。** 低密度阵列不能照搬高密度相关门槛。
-- **先 QA 后 QC。** 连续指标在前，字母 / GQI / 可用性是其上的决策层。
+- **先 QA 后 QC。** 连续指标在前；对外分数是 GQI。字母 / 可用性仍写在报告里，入库线以后再定。
 - **一份权威报告体。** `report.to_dict()` 是机器契约；可视化是派生视图。
 - **绝不给认知打分。** 频带比、「专注」「投入」、难度相关 ERP 不进验收主分。
 - **绝不洗白分母。** 死导、平坦导留在导联里并扣分。悄悄剔掉它们，会让四分之一电极脱落的记录报出满分。
 - **没测的维度不白送分。** GQI 只在**实际有输入**的维度上做加权平均，其余权重按比例重分配。不提供同步元数据，就拿不到同步分。
 - **用注入式故障标定，不要用顺手的数据集标定。** 把阈值降到真实数据能过为止是循环论证，并且会毁掉该阈值本该具备的检出能力。
 
-## 三级评级
+## 质量分数
 
-| 轨道 | 刻度 | 用途 |
+CLI 和桌面显示的数是 **GQI（0–100）**。
+字母分和可用性仍写入报告 JSON，方便以后划入库线；界面上不再给第二套判定。
+
+| 字段 | 刻度 | 给人看 |
 | --- | --- | --- |
-| Letter | A / B / C / D | **权威依据。** 结算、重采、放行 |
-| GQI | 0–100 + 维度分解 | 排序、看板、连续监控 |
-| Availability | Available / Caution / Unavailable | 数据集过滤与目录旗标 |
+| **GQI** | 0–100 + 维度分解 | **是。** 现在用来排序，以后用来划线 |
+| 字母 | A / B / C / D | 目前只在 JSON 里 |
+| 可用性 | Available / Caution / Unavailable | 目前只在 JSON 里 |
 
-字母等级是结算依据，可用性旗标由它派生，因此两者不会互相矛盾：**D 一律为 Unavailable**，硬性否决同时置为两者。GQI 永不覆盖字母，它只在同一档内做排序。
+GQI 只在实际评估过的维度上加权（接触、洁净、可用时长、完整性、刺激同步）。没测的维度不白送分。
 
-商业读取建议：
+字母仍由 ODQ 加坏道上限阶梯得出。在按 GQI 定出入库线之前，不用它当产品判定。
 
-| 等级 | 含义 | 典型动作 |
-| --- | --- | --- |
-| **A** | 足够干净 | 主训练 / 对外交付 |
-| **B** | 良好，轻微缺陷 | 保留；可轻度清洗 |
-| **C** | 边缘 | 降权或人工复核 |
-| **D** | 差 | 拒收 / 重采 |
-
-字母等级按设计是**阶梯式**跳变的，因为它是档位决策。GQI 才是连续轨道：某种退化一次性把所有窗都推过坏道预算时，字母会陡降，而 GQI 因为混合了标记密度与连续频谱量，仍然平滑下降。
+字母按设计是阶梯跳变。GQI 才是连续轨道：某种退化一次性把所有窗都推过坏道预算时，字母会陡降，而 GQI 因为混合了标记密度与连续频谱量，仍然平滑下降。
 
 ## 机器协议
 
-人读 CLI 给终端用。Windows 上的 Electron 应用不要去刮它的 stdout。
+人读 CLI 给终端用，不要去刮它的 stdout。
 用 `--json` / `--ndjson`，或把 `oi-eegqc serve --stdio` 拉起当 sidecar，在
-stdin/stdout 上走 NDJSON。
+stdin/stdout 上走 NDJSON。Windows 交付是 Qt zip，不是 Electron。
 
 两套版本号刻意分开：
 
@@ -204,7 +202,7 @@ stdin/stdout 上走 NDJSON。
 | `threshold_version` | `oi-eegqc-v0.2.0` | 评分阈值（与线协议正交） |
 
 机器模式下 stdout **只有 JSON**。警告和人读进度走 stderr。
-`--json` / `--ndjson` 必须显式给 `--root`，不会悄悄用工作站默认路径。
+`--json` / `--ndjson` 必须显式给 `--root`，没有工作站默认路径。
 
 ```bash
 oi-eegqc --json datasets
@@ -220,8 +218,8 @@ Sidecar 操作：`ping`、`list_datasets`、`score_file`、`score_dataset`、`ca
 `score_adapter(..., on_progress=..., cancel=...)` 与 sidecar 是同一套契约。
 桌面壳层应调这些 Python 入口，而不是解析人读 CLI。
 
-Windows 入库界面是原生薄壳，不是 Electron —— 见
-[docs/windows-app.zh-CN.md](docs/windows-app.zh-CN.md)。
+Windows 入库界面是原生 Qt 安装器或 zip（`OI-EEGQC.exe`），不签名 —— 见
+[docs/windows-app.zh-CN.md](docs/windows-app.zh-CN.md)。更新走 GitHub Releases，设置里可检查。
 
 ## 管线（v0.2）
 
@@ -330,12 +328,14 @@ oi-eegqc init-config -o my_qc.yaml
 ### v0.3 — 机器协议
 
 包版本 `0.3.0`。评分与 `threshold_version` 不变（仍为 `oi-eegqc-v0.2.0`）。
-本版是给 Electron 用的接口层：
+本版是机器协议与桌面交付层：
 
 - 协议信封（`oi-eegqc-protocol-v1`）与报告体（`oi-eegqc-report-v1`）分开。
 - `--json` / `--ndjson` / `--quiet`；机器模式下人读文字走 stderr。
 - `oi-eegqc serve --stdio`，批次可取消。
+- `oi-eegqc score` 评单文件或文件夹；NPY sidecar 可补采样率 / 单位。
 - 数据集字段只留在 `extras`，不再平铺到报告。
+- Windows 交付是未签名的 Inno Setup 安装器加 zip，发布到 GitHub Releases。
 
 ## 许可证
 

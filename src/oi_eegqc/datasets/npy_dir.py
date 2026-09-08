@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator
 
+from ..intake import npy_metadata
 from ..io.array import load_npy
 from ..types import RecordingInput
 from .base import DatasetAdapter, DatasetSpec
@@ -53,12 +54,13 @@ class NpyDirAdapter(DatasetAdapter):
         if not files:
             raise FileNotFoundError(f"No files matched {self.root}/{self.pattern}")
         for path in files:
+            declared = npy_metadata(path)
             rec = load_npy(
                 path,
-                self.sfreq,
+                declared.get("sfreq", self.sfreq),
                 ch_names_path=self.ch_names_path,
-                channels_first=self.channels_first,
-                unit=self.unit,
+                channels_first=declared.get("channels_first", self.channels_first),
+                unit=declared.get("unit", self.unit),
                 adc_to_uv=self.adc_to_uv,
                 expected_n_channels=self.expected_n_channels,
                 subject_id=self.subject_id,

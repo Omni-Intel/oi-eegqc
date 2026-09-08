@@ -15,14 +15,14 @@ Native desktop app: select or drop multiple files and score locally with default
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-111111?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-111111?style=flat-square">
   <img alt="qa/qc" src="https://img.shields.io/badge/QA%2FQC-separated-FF5A01?style=flat-square">
-  <img alt="grades" src="https://img.shields.io/badge/grades-A–D%20·%20GQI%20·%20Availability-555555?style=flat-square">
+  <img alt="score" src="https://img.shields.io/badge/score-GQI%200–100-555555?style=flat-square">
 </p>
 
 <p align="center">
   <a href="#quick-start"><strong>Install</strong></a> ·
   <a href="#what-it-does">What it does</a> ·
   <a href="#design-principles">Principles</a> ·
-  <a href="#grade-tracks">Grade tracks</a> ·
+  <a href="#quality-score">Score</a> ·
   <a href="#machine-protocol">Machine protocol</a> ·
   <a href="docs/windows-app.md">Windows app</a> ·
   <a href="#threshold-calibration">Calibration</a> ·
@@ -51,6 +51,8 @@ oi-eegqc demo --channels 32 --duration 12
 Score one continuous clip:
 
 ```bash
+oi-eegqc score -i clip.npy --sfreq 250
+oi-eegqc score -i recording.bdf
 oi-eegqc eval-npy \
   -i clip.npy \
   --sfreq 250 \
@@ -85,7 +87,7 @@ report = evaluate_recording(
         sync_error_ms=8.0,
     )
 )
-print(report.letter_grade, report.gqi, report.availability)
+print(report.gqi)
 ```
 
 Registered dataset adapters all yield `RecordingInput` — they never score:
@@ -146,10 +148,10 @@ scale, and the absolute gates cannot be applied to it at all.
 | Relative outlier detection | Per-channel temporal and cross-channel spatial robust-z |
 | Spectral QA | Broadband HF noise-to-signal and mains-band interference, kept as continuous measures |
 | Spatial coupling | Top-3 neighbour correlation, auto-disabled on montages too sparse to be diagnostic |
-| Letter grading | WeBrain-style **A / B / C / D** on usable recording time |
-| Decomposable GQI | **0–100** over contact · cleanliness · usable time · integrity · stimulus sync |
+| Letter grading | WeBrain-style **A / B / C / D** on usable recording time (JSON only until a cutoff is chosen) |
+| Decomposable GQI | **0–100** over contact · cleanliness · usable time · integrity · stimulus sync — **the operator score** |
 | Hard-fail gates | Broken markers, railed amplifier or missing montage reject outright |
-| Availability flag | HBN-style **Available / Caution / Unavailable**, derived from the letter |
+| Availability flag | HBN-style **Available / Caution / Unavailable**, derived from the letter (JSON only) |
 | Versioned thresholds | Every score carries `threshold_version` for auditability |
 
 ### Two quality numbers that are not the same thing
@@ -174,45 +176,35 @@ Collapsing them into one number would double-count it across two GQI weights.
 - **Assume pure intake.** Events, montage, units, and clip boundaries are part of the protocol — not recovered archaeology.
 - **Adapt, don’t hard-code one window.** A 6s clip and a 60s clip need different statistics.
 - **Adapt, don’t hard-code one montage.** Low-density arrays must not inherit high-density correlation thresholds.
-- **QA then QC.** Continuous metrics first; letter / GQI / availability are criterion layers on top.
+- **QA then QC.** Continuous metrics first; GQI is the operator score. Letter / availability stay in the report for a later cutoff.
 - **One canonical report body.** `report.to_dict()` is the machine-readable contract; HTML dashboards are derived views.
 - **Never score cognition.** Band ratios, “focus”, “engagement”, or difficulty-dependent ERPs are out of scope for acceptance.
 - **Never launder the denominator.** Dead and flat channels stay in the montage and are penalised. Silently dropping them lets a recording with a quarter of its electrodes detached report a perfect score.
 - **No free credit for untested dimensions.** GQI is a weighted average over the dimensions that actually had inputs, and the weights of the rest are redistributed. Omitting sync metadata cannot earn sync points.
 - **Calibrate against injected faults, never against a convenient dataset.** Lowering a threshold until real data passes is circular and destroys sensitivity to the fault the threshold exists to catch.
 
-## Grade Tracks
+## Quality score
 
-| Track | Scale | Use |
+The number shown in the CLI and desktop app is **GQI (0–100)**.
+Letter grades and availability flags are still written into the report JSON so an intake cutoff can be chosen later; they are not a second on-screen verdict.
+
+| Field | Scale | Operator-facing |
 | --- | --- | --- |
-| Letter | A / B / C / D | **Authoritative.** Settlement, re-record, release gates |
-| GQI | 0–100 + dimension breakdown | Ranking, dashboards, continuous monitoring |
-| Availability | Available / Caution / Unavailable | Dataset filters and catalog flags |
+| **GQI** | 0–100 + dimension breakdown | **Yes.** Ranking now; cutoff later |
+| Letter | A / B / C / D | JSON only for now |
+| Availability | Available / Caution / Unavailable | JSON only for now |
 
-The letter grade is the contractual decision and the availability flag is
-derived from it, so the two cannot disagree: **D is always Unavailable**, and a
-hard fail is always both. GQI never overrides the letter; it ranks recordings
-*within* a tier.
+GQI is a weighted average over the dimensions that were actually assessed (contact, cleanliness, usable time, integrity, stimulus sync). Untested dimensions do not get free credit.
 
-Suggested commercial reading:
+Letters remain a stepped function of ODQ plus bad-channel caps. They will not be used as the product decision until a cutoff is set against GQI.
 
-| Letter | Meaning | Typical action |
-| --- | --- | --- |
-| **A** | Clean enough to ship | Primary training / delivery |
-| **B** | Good with mild defects | Keep; light cleaning OK |
-| **C** | Marginal | Down-weight or human review |
-| **D** | Bad | Reject / re-acquire |
-
-Letter grades move in steps by design, because they are tier decisions. GQI is
-the continuous track: a degradation that pushes every window past the
-bad-channel budget at once will drop the letter sharply while GQI declines
-smoothly, since it blends flag density with continuous spectral measures.
+Letter grades move in steps by design. GQI is the continuous track: a degradation that pushes every window past the bad-channel budget at once will drop the letter sharply while GQI declines smoothly, since it blends flag density with continuous spectral measures.
 
 ## Machine protocol
 
-Human CLI output is for terminals. A Windows Electron app should not scrape it.
+Human CLI output is for terminals. Do not scrape it.
 Use `--json` / `--ndjson`, or spawn `oi-eegqc serve --stdio` as a sidecar and
-speak NDJSON on stdin/stdout.
+speak NDJSON on stdin/stdout. The shipped Windows app is a Qt zip, not Electron.
 
 Two version strings stay distinct:
 
@@ -223,8 +215,8 @@ Two version strings stay distinct:
 | `threshold_version` | `oi-eegqc-v0.2.0` | Scoring cutoffs (orthogonal to the wire format) |
 
 Stdout in machine mode is JSON only. Warnings and human progress go to stderr.
-`--json` / `--ndjson` require an explicit `--root` for on-disk datasets — the
-workstation defaults are never used silently.
+`--json` / `--ndjson` require an explicit `--root` for on-disk datasets — there
+are no workstation default paths.
 
 ```bash
 oi-eegqc --json datasets
@@ -255,8 +247,8 @@ bench fields are not flattened onto the report body.
 sidecar uses. Prefer calling those Python functions from the sidecar over
 parsing human CLI text.
 
-The Windows intake shell is a native viewer, not Electron — see
-[docs/windows-app.md](docs/windows-app.md).
+The Windows intake app is a native Qt installer or zip (`OI-EEGQC.exe`), not Electron —
+see [docs/windows-app.md](docs/windows-app.md). Updates are GitHub Releases; Settings can check.
 
 ## Pipeline (v0.2)
 
@@ -399,13 +391,15 @@ comparable. Fixed in this release:
 ### v0.3 — machine protocol
 
 Package version `0.3.0`. Scoring and `threshold_version` are unchanged
-(`oi-eegqc-v0.2.0`). This release is the Electron seam:
+(`oi-eegqc-v0.2.0`). This release is the machine-protocol and desktop seam:
 
 - Protocol envelope (`oi-eegqc-protocol-v1`) separate from the report body
   (`oi-eegqc-report-v1`).
 - `--json` / `--ndjson` / `--quiet`; human text on stderr in machine mode.
 - `oi-eegqc serve --stdio` with cancellable `score_dataset`.
+- `oi-eegqc score` for a file or folder; NPY sidecar can supply `sfreq` / `unit`.
 - Dataset fields stay in `extras`; they are no longer flattened onto reports.
+- Windows delivery is an unsigned Inno Setup installer plus a zip, published to GitHub Releases.
 
 ## License
 

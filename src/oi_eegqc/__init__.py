@@ -9,6 +9,7 @@ _EXPORTS = {
     "datasets": ("list_datasets", "open_dataset", "score_adapter"),
     "io": ("load_edf_bdf", "load_npy"),
     "pipeline": ("evaluate_batch", "evaluate_recording", "load_npy_recording"),
+    "intake": ("score_file",),
     "protocol": ("PROTOCOL_SCHEMA_VERSION", "ProtocolError", "envelope"),
     "types": ("REPORT_SCHEMA_VERSION", "AvailabilityFlag", "LetterGrade", "QualityReport", "RecordingInput"),
 }
@@ -49,4 +50,5 @@ __all__ = [
     "load_npy_recording",
     "open_dataset",
     "score_adapter",
+    "score_file",
 ]

@@ -164,6 +164,15 @@ class BenchConfig:
             return None
         return (lo, hi)
 
+    def apply_line_hz(self, line_hz: float) -> None:
+        """Keep a guard gap around mains so 50/60 Hz is neither signal nor HF noise."""
+        hz = 60.0 if float(line_hz) == 60 else 50.0
+        self.line_hz = hz
+        if hz == 60:
+            self.noise_band_hz = (65.0, 95.0)
+        else:
+            self.noise_band_hz = (55.0, 95.0)
+
 
 def default_config() -> BenchConfig:
     return BenchConfig(
@@ -311,6 +320,7 @@ def load_config(path: str | Path | None = None) -> BenchConfig:
         cfg.duration_profiles = [_duration_from_dict(x) for x in raw["duration_profiles"]]
     if "montage_profiles" in raw:
         cfg.montage_profiles = [_montage_from_dict(x) for x in raw["montage_profiles"]]
+    cfg.apply_line_hz(cfg.line_hz)
     return cfg
 
 

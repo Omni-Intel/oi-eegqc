@@ -90,10 +90,11 @@ def test_batch_failure_retry_dedup_and_default(tmp_path):
     assert window.entries[0].error
     report = window.entries[1].report
     assert report is not None
+    assert window.table.item(1, 1).text()
     assert report.extras["adaptive"] is True
     assert report.duration_profile == "ultra_short"
     assert report.montage_profile == "low_density"
-    assert "50%" in window.status.text()
+    assert "1/2" in window.status.text()
     assert window.score_button.isEnabled()
     np.save(bad, synth_clean(4, 250, 5))
     window.start_score()
@@ -101,7 +102,7 @@ def test_batch_failure_retry_dedup_and_default(tmp_path):
     assert window.entries[0].report is not None
     assert window.entries[1].report is report
     assert not window.score_button.isEnabled()
-    assert "100%" in window.status.text()
+    assert "2/2" in window.status.text()
     window.table.selectAll()
     window.remove_selected()
     assert not window.entries
@@ -181,13 +182,46 @@ def test_multiselect_dialog_and_npy_parameters(tmp_path, monkeypatch):
         np.save(path, synth_clean(4, 250, 5))
     monkeypatch.setattr(desktop.QFileDialog, "getOpenFileNames", lambda *a: ([str(p) for p in paths], ""))
     calls = []
-    def parameters(path, multiple):
+    def parameters(path, multiple, defaults=None):
         calls.append((path, multiple))
         return {"sfreq": 500, "unit": "mV", "channels_first": False}, True
     monkeypatch.setattr(window, "npy_parameters", parameters)
     window.choose_files()
     assert len(calls) == 1 and calls[0][1]
     assert all(e.metadata["sfreq"] == 500 for e in window.entries)
+    window.close()
+
+
+def test_prefs_dialog_and_job_metadata(tmp_path):
+    from PySide6.QtWidgets import QComboBox, QPushButton
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    assert window.prefs == {"channels_first": None, "line_hz": 50.0}
+    seen = []
+    def inspect():
+        dialog = app.activeModalWidget()
+        combos = dialog.findChildren(QComboBox)
+        seen.append((combos[0].itemText(0), combos[0].currentIndex(), combos[1].currentData()))
+        seen.append([b.text() for b in dialog.findChildren(QPushButton)])
+        combos[0].setCurrentIndex(2)
+        combos[1].setCurrentIndex(1)
+        dialog.accept()
+    QTimer.singleShot(0, inspect)
+    window.edit_prefs()
+    assert seen[0] == ("默认", 0, 50.0)
+    assert "检查更新" in seen[1]
+    assert window.prefs["channels_first"] is False
+    assert window.prefs["line_hz"] == 60.0
+    path = tmp_path / "sample.npy"
+    np.save(path, synth_clean(4, 250, 5))
+    window.add_files([path], {"sfreq": 250, "unit": "uV"})
+    meta = window.job_metadata(window.entries[0])
+    assert meta["line_hz"] == 60.0
+    assert meta["channels_first"] is False
+    assert "expected_n_channels" not in meta
+    window.entries[0].metadata["channels_first"] = True
+    meta = window.job_metadata(window.entries[0])
+    assert meta["channels_first"] is True
     window.close()
 
 
@@ -306,6 +340,39 @@ def test_dynamic_sample_rates(tmp_path, sfreq, suffix):
     assert report.extras["frequency_coverage"]["noise_band_complete"] == (sfreq >= 192)
 
 
+def test_inspect_then_prompt_only_when_required(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    from oi_eegqc.desktop_service import inspect_edf_header, inspect_file
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    prompted = []
+
+    def parameters(path, multiple, defaults=None):
+        prompted.append((Path(path).name, defaults))
+        return {"sfreq": 512, "unit": "mV", "channels_first": True}, False
+
+    monkeypatch.setattr(window, "npy_parameters", parameters)
+
+    complete = tmp_path / "complete.npy"
+    np.save(complete, synth_clean(4, 500, 5))
+    complete.with_suffix(".json").write_text(json.dumps({"sfreq": 500, "unit": "uV"}))
+    partial = tmp_path / "partial.npy"
+    np.save(partial, synth_clean(4, 250, 5))
+    partial.with_suffix(".json").write_text(json.dumps({"sfreq": 250}))
+    edf = tmp_path / "header.edf"
+    write_edf(edf, 256)
+
+    window.add_files([complete, partial, edf])
+    assert [e.metadata["sfreq"] for e in window.entries] == [500, 512, 256]
+    assert window.entries[0].metadata["unit"] == "uV"
+    assert "channels_first" not in window.entries[0].metadata
+    assert window.entries[1].metadata["unit"] == "mV"
+    assert prompted == [("partial.npy", {"sfreq": 250.0})]
+    assert inspect_file(edf) == inspect_edf_header(edf) == {"sfreq": 256.0}
+    window.close()
+
+
 def test_mixed_rate_sidecars_override_batch_parameters(tmp_path):
     import json
     app = QApplication.instance() or QApplication([])
@@ -350,11 +417,11 @@ def test_summary_includes_pending_failed_and_caution():
     from oi_eegqc.desktop import Entry
     app = QApplication.instance() or QApplication([])
     window = Window()
-    def entry(state):
-        return Entry("sample", report=SimpleNamespace(availability=SimpleNamespace(value=state)))
-    window.entries = [entry("Available"), entry("Caution"), entry("Unavailable"), Entry("pending"), Entry("failed", error="error")]
+    def entry(gqi):
+        return Entry("sample", report=SimpleNamespace(gqi=gqi))
+    window.entries = [entry(80), entry(60), entry(40), Entry("pending"), Entry("failed", error="error")]
     window.update_summary()
-    assert window.status.text() == "可用 20% · 1/5"
+    assert window.status.text() == "平均 60 · 3/5"
     window.entries = []
     window.close()
 
@@ -367,6 +434,12 @@ def test_sidecar_rejects_conflicting_or_invalid_rates(tmp_path):
         path.with_suffix(".json").write_text(json.dumps(metadata))
         with pytest.raises(ValueError):
             npy_metadata(path)
+    path.with_suffix(".json").write_text(json.dumps({
+        "sfreq": 250, "unit": "uV", "impedance_kohm": {"Fp1": 4.2}, "sync_error_ms": 12
+    }))
+    parsed = npy_metadata(path)
+    assert parsed["impedance_kohm"] == {"Fp1": 4.2}
+    assert parsed["sync_error_ms"] == 12
 
 
 def test_startup_does_not_import_scientific_stack():
@@ -396,6 +469,7 @@ def test_import_crash_restores_controls(tmp_path, monkeypatch):
     wait_for_batch(app, window)
     assert window.status.text() == "导入失败，可重试"
     assert window.choose_button.isEnabled() and window.folder_button.isEnabled()
+    assert window.prefs_button.isEnabled()
     assert window.worker is None
     monkeypatch.setattr(desktop, "discover_files", lambda *args: ([], 0))
     window.add_files([tmp_path])

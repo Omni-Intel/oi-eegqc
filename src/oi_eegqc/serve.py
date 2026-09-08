@@ -1,4 +1,4 @@
-"""NDJSON stdio sidecar for an Electron (or any) frontend.
+"""NDJSON stdio sidecar for a desktop or automation frontend.
 
 One JSON object per line on stdin; one or more JSON objects per line on stdout.
 Requests are handled sequentially. A ``cancel`` line interrupts the in-flight
@@ -19,11 +19,10 @@ from typing import Any, Mapping, TextIO
 
 from . import __version__
 from .config import load_config
-from .datasets import DEFAULT_NOD_CHANNELS_TSV, list_datasets, open_dataset, score_adapter
+from .datasets import list_datasets, open_dataset, score_adapter
 from .datasets.avsession import looks_like_avsession
-from .io import load_edf_bdf, load_npy
+from .intake import EDF_SUFFIXES, score_file
 from .io.reports import batch_envelope
-from .pipeline import evaluate_recording
 from .protocol import (
     PROTOCOL_SCHEMA_VERSION,
     ProtocolError,
@@ -187,20 +186,26 @@ class StdioServer:
             return
 
         suffix = path.suffix.lower()
-        if suffix == ".npy":
-            sfreq = req.get("sfreq")
-            if sfreq is None:
-                raise ProtocolError("missing_sfreq", "score_file on .npy requires 'sfreq'")
-            rec = load_npy(path, float(sfreq), unit=unit or "uV", **rec_kwargs)
-        elif suffix in {".bdf", ".edf"}:
-            rec = load_edf_bdf(path, unit=unit or "V", **rec_kwargs)
-        else:
+        if suffix not in {".npy"} | EDF_SUFFIXES:
             raise ProtocolError(
                 "invalid_request",
                 f"Unsupported file type {suffix!r}",
                 details={"path": str(path)},
             )
-        report = evaluate_recording(rec, cfg)
+        try:
+            report = score_file(
+                path,
+                sfreq=req.get("sfreq"),
+                unit=unit,
+                channels_first=req.get("channels_first"),
+                line_hz=req.get("line_hz"),
+                config=cfg,
+                **rec_kwargs,
+            )
+        except ValueError as exc:
+            if "采样率" in str(exc):
+                raise ProtocolError("missing_sfreq", str(exc)) from exc
+            raise
         body = report.to_dict()
         extras = dict(body.get("extras") or {})
         extras.setdefault("source_path", str(path))
@@ -224,6 +229,8 @@ class StdioServer:
         kwargs = _adapter_kwargs(name, req)
         adapter = open_dataset(name, **kwargs)
         cfg = load_config(req.get("config"))
+        if req.get("line_hz") is not None:
+            cfg.apply_line_hz(req["line_hz"])
         self._cancel.clear()
         self._current_id = request_id
         total = adapter.estimate_count()
@@ -296,7 +303,8 @@ def _adapter_kwargs(name: str, req: dict[str, Any]) -> dict[str, Any]:
             kwargs["subjects"] = req["subjects"]
         if req.get("seeds_per_subject") is not None:
             kwargs["seeds_per_subject"] = int(req["seeds_per_subject"])
-        kwargs["channels_tsv"] = req.get("channels_tsv") or DEFAULT_NOD_CHANNELS_TSV
+        if req.get("channels_tsv"):
+            kwargs["channels_tsv"] = req["channels_tsv"]
     if name == "things":
         if req.get("subjects") is not None:
             kwargs["subjects"] = req["subjects"]

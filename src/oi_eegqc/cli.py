@@ -8,16 +8,15 @@ from pathlib import Path
 from .config import dump_default_config, load_config
 from .datasets import (
     ADAPTERS,
-    DEFAULT_NOD_CHANNELS_TSV,
-    DEFAULT_ROOTS,
     SyntheticAdapter,
     list_datasets,
     open_dataset,
     score_adapter,
 )
-from .io import load_edf_bdf, load_npy, write_bench_json
+from .desktop_import import discover_files
+from .intake import score_file
+from .io import write_bench_json
 from .io.reports import batch_envelope
-from .pipeline import evaluate_recording
 from .protocol import ProtocolError, envelope, map_exception, write_json, write_ndjson
 
 
@@ -35,9 +34,7 @@ def _emit_error(args: argparse.Namespace | None, exc: ProtocolError) -> None:
 def _print_one(report, stream=None) -> None:
     out = stream or sys.stdout
     print(
-        f"{report.clip_id or '-':24s} grade={report.letter_grade.value} "
-        f"GQI={report.gqi:5.1f} ODQ={report.odq:5.1f} clean={report.clean_ratio:.2f} "
-        f"{report.availability.value}",
+        f"{report.clip_id or '-':24s} GQI={report.gqi:5.1f}",
         file=out,
     )
     for reason in report.reasons[:3]:
@@ -89,19 +86,19 @@ def _emit_single_report(args: argparse.Namespace, report, *, source_path: str | 
     elif args.output:
         print(f"Wrote {args.output}", file=sys.stderr if _machine(args) else sys.stdout)
     else:
-        # Legacy: raw report body on stdout so existing scripts keep parsing.
-        print(json.dumps(body, indent=2, ensure_ascii=False))
+        _print_one(report)
     return 0
 
 
 def cmd_eval_npy(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config)
-    rec = load_npy(
+    report = score_file(
         args.input,
-        args.sfreq,
-        ch_names_path=args.ch_names,
-        channels_first=True if args.channels_first else False if args.times_first else None,
+        sfreq=args.sfreq,
         unit=args.unit,
+        channels_first=True if args.channels_first else False if args.times_first else None,
+        line_hz=args.line_hz,
+        config=args.config,
+        ch_names_path=args.ch_names,
         adc_to_uv=args.adc_to_uv,
         subject_id=args.subject,
         session_id=args.session,
@@ -111,7 +108,6 @@ def cmd_eval_npy(args: argparse.Namespace) -> int:
         event_ok=not args.events_bad,
         sync_error_ms=args.sync_error_ms,
     )
-    report = evaluate_recording(rec, cfg)
     return _emit_single_report(args, report, source_path=str(Path(args.input).resolve()))
 
 
@@ -138,9 +134,7 @@ def _batch_progress(args: argparse.Namespace, *, adapter_name: str):
         stream = sys.stderr if _machine(args) else sys.stdout
         print(
             f"[{adapter_name}] {rec.subject_id or ''} {rec.session_id or ''} {extra} "
-            f"grade={report.letter_grade.value} GQI={report.gqi:5.1f} "
-            f"ODQ={report.odq:5.1f} clean={report.clean_ratio:.2f} "
-            f"{report.availability.value}",
+            f"GQI={report.gqi:5.1f}",
             file=stream,
         )
         if rec.meta.get("integrity_problems"):
@@ -172,20 +166,22 @@ def _emit_batch(
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     if args.ndjson or args.json:
         write_json(payload)
-        return 0 if not summary.get("cancelled") else 0
+        return 0
     overall = summary.get("overall") or {}
+    mean = overall.get("mean_gqi", float("nan"))
+    n = summary.get("n_total", len(rows))
+    line = f"mean GQI={mean:.1f}  n={n}"
     if output:
-        print(f"Evaluated {len(rows)} clips → {output} (mean GQI={overall.get('mean_gqi', float('nan')):.1f})")
-    if not args.quiet:
-        print("\n=== SUMMARY ===")
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
-        if output:
-            print(f"\nWrote {output}")
+        print(f"Evaluated {n} clips → {output} ({line})")
+    elif not args.quiet:
+        print(f"\n{line}")
     return 0
 
 
 def cmd_eval_dir(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
+    if args.line_hz is not None:
+        cfg.apply_line_hz(args.line_hz)
     adapter = open_dataset(
         "npy",
         args.input,
@@ -214,10 +210,11 @@ def cmd_eval_dir(args: argparse.Namespace) -> int:
 
 
 def cmd_eval_bdf(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config)
-    rec = load_edf_bdf(
+    report = score_file(
         args.input,
         unit=args.unit,
+        line_hz=args.line_hz,
+        config=args.config,
         adc_to_uv=args.adc_to_uv,
         subject_id=args.subject,
         session_id=args.session,
@@ -227,7 +224,6 @@ def cmd_eval_bdf(args: argparse.Namespace) -> int:
         sync_error_ms=args.sync_error_ms,
         stimulus_duration_s=args.stimulus_duration,
     )
-    report = evaluate_recording(rec, cfg)
     return _emit_single_report(args, report, source_path=str(Path(args.input).resolve()))
 
 
@@ -255,24 +251,63 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_score(args: argparse.Namespace) -> int:
+    source = Path(args.input)
+    if source.is_file():
+        report = score_file(
+            source,
+            sfreq=args.sfreq,
+            unit=args.unit,
+            channels_first=True if args.channels_first else False if args.times_first else None,
+            line_hz=args.line_hz,
+            config=args.config,
+        )
+        return _emit_single_report(args, report, source_path=str(source.resolve()))
+    paths, errors = discover_files([source])
+    if not paths:
+        raise ProtocolError("file_not_found", "未找到支持的文件")
+    cfg = load_config(args.config)
+    rows = []
+    for path in paths:
+        report = score_file(
+            path,
+            sfreq=args.sfreq,
+            unit=args.unit,
+            channels_first=True if args.channels_first else False if args.times_first else None,
+            line_hz=args.line_hz,
+            config=cfg,
+        )
+        body = report.to_dict()
+        extras = dict(body.get("extras") or {})
+        extras.setdefault("source_path", path)
+        body["extras"] = extras
+        rows.append(body)
+        if not _machine(args) and not args.quiet:
+            _print_one(report)
+    from .io.reports import summarize_reports
+    summary = summarize_reports(rows)
+    if errors:
+        summary["discovery_errors"] = errors
+    return _emit_batch(
+        args,
+        threshold_version=rows[0]["threshold_version"] if rows else cfg.threshold_version,
+        rows=rows,
+        summary=summary,
+        extra={"dataset": "files"},
+        output=args.output,
+    )
+
+
 def _resolve_root(args: argparse.Namespace, name: str) -> str:
     if args.root:
         return args.root
-    default = DEFAULT_ROOTS.get(name)
-    if not default:
-        raise ProtocolError("missing_root", f"--root is required for dataset {name!r}")
-    if _machine(args):
-        raise ProtocolError(
-            "missing_root",
-            f"dataset {name!r} requires an explicit --root in --json/--ndjson mode",
-            details={"hint": default},
-        )
-    print(f"[warning] using workstation default --root {default}", file=sys.stderr)
-    return default
+    raise ProtocolError("missing_root", f"--root is required for dataset {name!r}")
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
+    if getattr(args, "line_hz", None) is not None:
+        cfg.apply_line_hz(args.line_hz)
     name = args.dataset
     kwargs: dict = {}
     if name != "synthetic":
@@ -287,7 +322,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
     if name == "nod":
         kwargs["subjects"] = args.subjects
         kwargs["seeds_per_subject"] = args.seeds_per_subject
-        kwargs["channels_tsv"] = args.channels_tsv or DEFAULT_NOD_CHANNELS_TSV
+        if args.channels_tsv:
+            kwargs["channels_tsv"] = args.channels_tsv
     if name == "things":
         kwargs["subjects"] = args.subjects
         kwargs["seeds_per_subject"] = args.seeds_per_subject
@@ -311,7 +347,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         cfg,
         on_progress=_batch_progress(args, adapter_name=adapter.spec.name),
     )
-    out = Path(args.output) if args.output else (None if _machine(args) else Path(f"{name}_bench.json"))
+    out = Path(args.output) if args.output else None
     return _emit_batch(
         args,
         threshold_version=cfg.threshold_version,
@@ -342,6 +378,7 @@ def _add_eval_common(p: argparse.ArgumentParser, *, default_unit: str = "uV") ->
     p.add_argument("--stimulus-duration", type=float, default=None)
     p.add_argument("--sync-error-ms", type=float, default=None)
     p.add_argument("--unit", default=default_unit)
+    p.add_argument("--line-hz", type=float, default=None)
     p.add_argument("--adc-to-uv", type=float, default=None)
     p.add_argument("--expected-channels", type=int, default=None)
     p.add_argument("--events-bad", action="store_true")
@@ -391,12 +428,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_eval = sub.add_parser("eval-npy", parents=[machine], help="Evaluate one .npy recording")
     p_eval.add_argument("-i", "--input", required=True)
-    p_eval.add_argument("--sfreq", type=float, required=True)
+    p_eval.add_argument("--sfreq", type=float, default=None)
     p_eval.add_argument("--ch-names", default=None, help=".npy or text list of channel names")
     p_eval.add_argument("--channels-first", action="store_true")
     p_eval.add_argument("--times-first", action="store_true")
-    _add_eval_common(p_eval)
+    _add_eval_common(p_eval, default_unit=None)
     p_eval.set_defaults(func=cmd_eval_npy)
+
+    p_score = sub.add_parser("score", parents=[machine], help="Score one EDF/BDF/NPY file or a folder")
+    p_score.add_argument("-i", "--input", required=True)
+    p_score.add_argument("--sfreq", type=float, default=None)
+    p_score.add_argument("--channels-first", action="store_true")
+    p_score.add_argument("--times-first", action="store_true")
+    _add_eval_common(p_score, default_unit=None)
+    p_score.set_defaults(func=cmd_score)
 
     p_dir = sub.add_parser(
         "eval-dir",
@@ -412,6 +457,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dir.add_argument("--subject", default=None)
     p_dir.add_argument("--session", default=None)
     p_dir.add_argument("--unit", default="uV")
+    p_dir.add_argument("--line-hz", type=float, default=None)
     p_dir.add_argument("--adc-to-uv", type=float, default=None)
     p_dir.add_argument("--expected-channels", type=int, default=None)
     p_dir.set_defaults(func=cmd_eval_dir)
@@ -419,7 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bdf = sub.add_parser(
         "eval-bdf",
         parents=[machine],
-        help="Evaluate one EDF/BDF file (requires mne extra)",
+        help="Evaluate one EDF or BDF file (requires mne extra)",
     )
     p_bdf.add_argument("-i", "--input", required=True)
     _add_eval_common(p_bdf, default_unit="V")
@@ -441,7 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(ADAPTERS),
         help="Registered adapter name (see `oi-eegqc datasets`)",
     )
-    p_bench.add_argument("--root", default=None, help="Dataset root (human CLI has workstation defaults)")
+    p_bench.add_argument("--root", default=None, help="Dataset root (required except synthetic)")
     p_bench.add_argument("-o", "--output", default=None)
     p_bench.add_argument("--config", default=None)
     p_bench.add_argument("--subjects", nargs="+", default=None)
@@ -454,12 +500,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--adc-to-uv", type=float, default=None)
     p_bench.add_argument("--channels", type=int, default=32)
     p_bench.add_argument("--duration", type=float, default=20.0)
+    p_bench.add_argument("--line-hz", type=float, default=None)
     p_bench.set_defaults(func=cmd_bench)
 
     p_serve = sub.add_parser(
         "serve",
         parents=[machine],
-        help="NDJSON sidecar on stdin/stdout for Electron",
+        help="NDJSON sidecar on stdin/stdout",
     )
     p_serve.add_argument(
         "--stdio",

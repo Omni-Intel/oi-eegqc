@@ -22,19 +22,6 @@ ADAPTERS: dict[str, type[DatasetAdapter]] = {
     "synthetic": SyntheticAdapter,
 }
 
-# Common local defaults on this workstation; callers should still pass ``root``.
-DEFAULT_ROOTS: dict[str, str] = {
-    "hw": "/vePFS-0x0e/xkp/oi-eegqc/bench_runs/hw_extract/hw",
-    "avsession": "/vePFS-0x0e/xkp/oi-eegqc/bench_runs/session_01_extract/session_01",
-    "nod": "/vePFS-0x0e/xkp/dense-global-caption/data/nod_eeg/epochs_uV",
-    "things": "/vePFS-0x0e/xkp/datasets/Things-EEG2/Preprocessed_data_250Hz",
-}
-
-DEFAULT_NOD_CHANNELS_TSV = (
-    "/vePFS-0x0e/xkp/ds005811/sub-01/ses-ImageNet01/eeg/"
-    "sub-01_ses-ImageNet01_task-ImageNet_run-01_channels.tsv"
-)
-
 
 def list_datasets() -> list[DatasetSpec]:
     return [cls.spec for cls in ADAPTERS.values()]
@@ -55,15 +42,11 @@ def get_adapter_class(name: str) -> type[DatasetAdapter]:
 def open_dataset(name: str, *args: Any, **kwargs: Any) -> DatasetAdapter:
     """Construct a registered adapter. ``root`` is required except for synthetic."""
     cls = get_adapter_class(name)
-    if cls is NodEegAdapter and "channels_tsv" not in kwargs:
-        kwargs["channels_tsv"] = DEFAULT_NOD_CHANNELS_TSV
     return cls(*args, **kwargs)
 
 
 __all__ = [
     "ADAPTERS",
-    "DEFAULT_NOD_CHANNELS_TSV",
-    "DEFAULT_ROOTS",
     "AdapterError",
     "AvSessionAdapter",
     "DatasetAdapter",

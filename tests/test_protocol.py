@@ -199,3 +199,63 @@ def test_example_sidecar_session_synthetic():
     assert proc.returncode == 0, proc.stderr
     assert "pong" in proc.stdout
     assert "n_total 4" in proc.stdout
+
+
+def test_cli_score_npy_json(tmp_path, capsys):
+    import numpy as np
+
+    path = tmp_path / "a.npy"
+    np.save(path, synth_clean(4, 250, 5))
+    with pytest.raises(SystemExit) as ei:
+        main(["--json", "score", "-i", str(path), "--sfreq", "250"])
+    assert ei.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "report"
+    assert "gqi" in payload["report"]
+    assert payload["report"]["extras"]["sfreq_hz"] == 250.0
+
+
+def test_cli_score_npy_reads_sidecar(tmp_path, capsys):
+    import numpy as np
+
+    path = tmp_path / "a.npy"
+    np.save(path, synth_clean(4, 250, 5))
+    path.with_suffix(".json").write_text(json.dumps({"sfreq": 256, "unit": "uV"}))
+    with pytest.raises(SystemExit) as ei:
+        main(["--json", "score", "-i", str(path)])
+    assert ei.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report"]["extras"]["sfreq_hz"] == 256.0
+
+
+def test_cli_score_npy_missing_sfreq(tmp_path, capsys):
+    import numpy as np
+
+    path = tmp_path / "a.npy"
+    np.save(path, synth_clean(4, 250, 5))
+    with pytest.raises(SystemExit) as ei:
+        main(["--json", "score", "-i", str(path)])
+    assert ei.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["code"] == "missing_sfreq"
+
+
+def test_cli_score_human_prints_gqi(tmp_path, capsys):
+    import numpy as np
+
+    path = tmp_path / "a.npy"
+    np.save(path, synth_clean(4, 250, 5))
+    with pytest.raises(SystemExit) as ei:
+        main(["score", "-i", str(path), "--sfreq", "250"])
+    assert ei.value.code == 0
+    out = capsys.readouterr().out
+    assert "GQI=" in out
+    assert "letter_grade" not in out
+
+
+def test_cli_bench_hw_human_requires_root(capsys):
+    with pytest.raises(SystemExit) as ei:
+        main(["bench", "hw"])
+    assert ei.value.code == 1
+    assert "--root" in capsys.readouterr().err

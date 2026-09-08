@@ -7,7 +7,7 @@ import argparse
 import json
 
 from oi_eegqc.config import load_config
-from oi_eegqc.datasets import DEFAULT_ROOTS, open_dataset, score_adapter
+from oi_eegqc.datasets import open_dataset, score_adapter
 from oi_eegqc.io import write_bench_json
 
 
@@ -24,7 +24,7 @@ def _log(rec, report) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", default=DEFAULT_ROOTS["hw"])
+    parser.add_argument("--root", default="/vePFS-0x0e/xkp/oi-eegqc/bench_runs/hw_extract/hw")
     parser.add_argument(
         "-o",
         "--output",

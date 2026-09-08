@@ -9,15 +9,15 @@ from types import SimpleNamespace
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QStandardPaths
-from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QStandardPaths, QSettings, QUrl
+from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView,
     QLabel, QMainWindow, QMenu, QPushButton, QStackedWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget, QStyle, QStyleFactory, QMessageBox, QProgressBar,
 )
-from .desktop_service import npy_metadata
+from .desktop_service import inspect_file, npy_metadata, npy_ready
 from .desktop_import import SUPPORTED, discover_files
 from .desktop_process import ScoringProcess, DEFAULT_FILE_TIMEOUT_S
 
@@ -57,6 +57,13 @@ QMenu::item { padding: 8px 24px; }
 QMenu::item:selected { background: #eeeeee; }
 """
 
+DEFAULT_PREFS = {"channels_first": None, "line_hz": 50.0}
+
+
+def default_prefs():
+    return dict(DEFAULT_PREFS)
+
+
 class ImportWorker(QThread):
     def __init__(self, paths):
         super().__init__()
@@ -73,6 +80,16 @@ class ImportWorker(QThread):
             logging.getLogger("oi_eegqc.desktop").exception("Folder import failed")
         finally:
             self.cancelled = self.isInterruptionRequested()
+
+
+class UpdateWorker(QThread):
+    finished_check = Signal(object)
+
+    def run(self):
+        from . import __version__
+        from .desktop_update import check_update
+
+        self.finished_check.emit(check_update(__version__))
 
 
 @dataclass
@@ -160,6 +177,7 @@ class Window(QMainWindow):
         self.active_index = None
         self.active_phase = "准备"
         self.active_started = 0
+        self.prefs = self.load_prefs()
         self.elapsed_timer = QTimer(self)
         self.elapsed_timer.setInterval(250)
         self.elapsed_timer.timeout.connect(self.refresh_activity)
@@ -174,7 +192,7 @@ class Window(QMainWindow):
         empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stack.addWidget(empty)
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["文件", "分数", "结果"])
+        self.table.setHorizontalHeaderLabels(["文件", "分数", "状态"])
         self.table.setShowGrid(False)
         self.table.setWordWrap(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -213,20 +231,23 @@ class Window(QMainWindow):
         self.status = QLabel("")
         self.status.setObjectName("muted")
         actions.addWidget(self.status, 1, Qt.AlignmentFlag.AlignCenter)
+        self.prefs_button = QPushButton("设置")
+        self.prefs_button.clicked.connect(self.edit_prefs)
+        actions.addWidget(self.prefs_button)
         self.score_button = QPushButton("评分")
         self.score_button.setDefault(True)
         self.score_button.setEnabled(False)
         self.score_button.clicked.connect(self.score_or_stop)
         actions.addWidget(self.score_button)
-        for button, width in ((self.choose_button, 106), (self.folder_button, 120), (self.score_button, 72)):
+        for button, width in ((self.choose_button, 106), (self.folder_button, 120), (self.prefs_button, 60), (self.score_button, 72)):
             button.setMinimumSize(width, 34)
             button.setIconSize(QSize(16, 16))
         layout.addLayout(actions)
         QShortcut(QKeySequence.StandardKey.Delete, self.table, activated=self.remove_selected)
         QShortcut(QKeySequence.StandardKey.Open, self, activated=self.choose_files)
 
-    def npy_parameters(self, path, multiple):
-        defaults = npy_metadata(path)
+    def npy_parameters(self, path, multiple, defaults=None):
+        defaults = dict(defaults) if defaults is not None else npy_metadata(path)
         dialog = QDialog(self)
         dialog.setWindowTitle("采样参数")
         dialog.setMinimumWidth(300)
@@ -249,11 +270,6 @@ class Window(QMainWindow):
             unit.addItem(label, value)
         unit.setCurrentIndex(max(0, unit.findData(defaults.get("unit", "uV"))))
         layout.addWidget(unit)
-        layout.addWidget(QLabel("排列"))
-        order = QComboBox()
-        order.addItems(["通道 × 采样点", "采样点 × 通道"])
-        order.setCurrentIndex(0 if defaults.get("channels_first", True) else 1)
-        layout.addWidget(order)
         reuse = QCheckBox("应用于其余数组文件")
         reuse.setVisible(multiple)
         layout.addWidget(reuse)
@@ -268,7 +284,125 @@ class Window(QMainWindow):
         layout.addWidget(buttons)
         if not dialog.exec():
             return None
-        return dict(sfreq=rate.value(), unit=unit.currentData(), channels_first=order.currentIndex() == 0), reuse.isChecked()
+        return dict(sfreq=rate.value(), unit=unit.currentData()), reuse.isChecked()
+
+    def load_prefs(self):
+        prefs = default_prefs()
+        app = QApplication.instance()
+        if app is None or app.organizationName() != "Omni-Intelligence":
+            return prefs
+        store = QSettings("Omni-Intelligence", "EEGQC")
+        try:
+            prefs["line_hz"] = 60.0 if int(float(store.value("line_hz", 50))) == 60 else 50.0
+        except (TypeError, ValueError):
+            prefs["line_hz"] = 50.0
+        order = store.value("channels_first", "")
+        if order in (True, "true", "True", "1", 1):
+            prefs["channels_first"] = True
+        elif order in (False, "false", "False", "0", 0):
+            prefs["channels_first"] = False
+        else:
+            prefs["channels_first"] = None
+        return prefs
+
+    def save_prefs(self):
+        app = QApplication.instance()
+        if app is None or app.organizationName() != "Omni-Intelligence":
+            return
+        store = QSettings("Omni-Intelligence", "EEGQC")
+        store.setValue("line_hz", int(self.prefs["line_hz"]))
+        order = self.prefs["channels_first"]
+        store.setValue("channels_first", "" if order is None else ("true" if order else "false"))
+
+    def edit_prefs(self):
+        if self.busy:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("设置")
+        dialog.setMinimumWidth(300)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("数组排列"))
+        order = QComboBox()
+        order.addItem("默认", "")
+        order.addItem("通道 × 采样点", True)
+        order.addItem("采样点 × 通道", False)
+        current = self.prefs["channels_first"]
+        order.setCurrentIndex(0 if current is None else (1 if current else 2))
+        layout.addWidget(order)
+        layout.addWidget(QLabel("电网频率"))
+        mains = QComboBox()
+        mains.addItem("50 赫兹", 50.0)
+        mains.addItem("60 赫兹", 60.0)
+        mains.setCurrentIndex(0 if self.prefs["line_hz"] != 60 else 1)
+        layout.addWidget(mains)
+        from . import __version__
+        version = QLabel(f"当前版本 {__version__}")
+        version.setObjectName("muted")
+        layout.addWidget(version)
+        check = QPushButton("检查更新")
+        check.clicked.connect(lambda: self.start_update_check(dialog, check))
+        layout.addWidget(check)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if not dialog.exec():
+            return
+        order_value = order.currentData()
+        self.prefs["channels_first"] = None if order_value in (None, "") else bool(order_value)
+        self.prefs["line_hz"] = float(mains.currentData())
+        self.save_prefs()
+
+    def start_update_check(self, dialog, button):
+        if getattr(dialog, "_update_worker", None) is not None:
+            return
+        button.setEnabled(False)
+        button.setText("正在检查…")
+        worker = UpdateWorker(dialog)
+        dialog._update_worker = worker
+
+        def done(info):
+            dialog._update_worker = None
+            button.setEnabled(True)
+            button.setText("检查更新")
+            self.show_update_result(info, dialog)
+            worker.deleteLater()
+
+        worker.finished_check.connect(done)
+        worker.start()
+
+    def show_update_result(self, info, parent):
+        if info.status == "available":
+            notice = QMessageBox(parent)
+            notice.setWindowTitle("检查更新")
+            notice.setIcon(QMessageBox.Icon.Information)
+            notice.setText(f"发现新版本 {info.latest}。")
+            notice.setInformativeText("将打开下载页，用安装器覆盖当前版本。")
+            open_btn = notice.addButton("打开", QMessageBox.ButtonRole.AcceptRole)
+            notice.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            notice.exec()
+            if notice.clickedButton() is open_btn:
+                QDesktopServices.openUrl(QUrl(info.asset_url or info.release_url))
+            return
+        notice = QMessageBox(parent)
+        notice.setWindowTitle("检查更新")
+        if info.status == "current":
+            notice.setIcon(QMessageBox.Icon.Information)
+            notice.setText("已是最新版本。")
+        else:
+            notice.setIcon(QMessageBox.Icon.Warning)
+            notice.setText("暂时无法检查更新。")
+        notice.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
+        notice.exec()
+
+    def job_metadata(self, entry):
+        meta = entry.metadata.copy()
+        meta["line_hz"] = self.prefs["line_hz"]
+        if "channels_first" not in meta and self.prefs["channels_first"] is not None:
+            meta["channels_first"] = self.prefs["channels_first"]
+        return meta
 
     def choose_files(self):
         if self.busy:
@@ -291,6 +425,7 @@ class Window(QMainWindow):
         self.busy = self.importing = False
         self.choose_button.setEnabled(True)
         self.folder_button.setEnabled(True)
+        self.prefs_button.setEnabled(True)
         self.score_button.setText("评分")
         if self.close_pending:
             self.close()
@@ -317,6 +452,7 @@ class Window(QMainWindow):
             self.busy = self.importing = True
             self.choose_button.setEnabled(False)
             self.folder_button.setEnabled(False)
+            self.prefs_button.setEnabled(False)
             self.score_button.setText("取消")
             self.score_button.setEnabled(True)
             self.status.setText("正在查找文件…")
@@ -337,21 +473,24 @@ class Window(QMainWindow):
             known.add(key)
             pending.append(str(Path(path).resolve()))
         shared = metadata
+        remaining_npy = sum(Path(p).suffix.lower() == ".npy" for p in pending)
         for path in pending:
             params = {}
+            try:
+                declared = inspect_file(path)
+            except (ValueError, OSError) as exc:
+                notice = QMessageBox(QMessageBox.Icon.Warning, "参数无效",
+                                     f"{Path(path).name.lower()}\n{str(exc).lower()}", parent=self)
+                notice.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
+                notice.exec()
+                remaining_npy -= Path(path).suffix.lower() == ".npy"
+                continue
             if Path(path).suffix.lower() == ".npy":
-                try:
-                    declared = npy_metadata(path)
-                except (ValueError, OSError) as exc:
-                    notice = QMessageBox(QMessageBox.Icon.Warning, "参数无效",
-                                         f"{Path(path).name.lower()}\n{str(exc).lower()}", parent=self)
-                    notice.addButton("确定", QMessageBox.ButtonRole.AcceptRole)
-                    notice.exec()
-                    continue
-                if {"sfreq", "unit", "channels_first"} <= declared.keys():
+                remaining_npy -= 1
+                if npy_ready(declared):
                     params = declared
                 elif shared is None:
-                    answer = self.npy_parameters(path, sum(Path(p).suffix.lower() == ".npy" for p in pending) > 1)
+                    answer = self.npy_parameters(path, remaining_npy > 0, declared)
                     if answer is None:
                         continue
                     params, reuse = answer
@@ -360,6 +499,8 @@ class Window(QMainWindow):
                 else:
                     params = shared.copy()
                     params.update(declared)
+            else:
+                params = declared
             self.entries.append(Entry(path, params.copy()))
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -400,14 +541,15 @@ class Window(QMainWindow):
 
     def update_summary(self):
         total = len(self.entries)
-        available = sum(e.report is not None and e.report.availability.value == "Available" for e in self.entries)
+        scored = [e.report.gqi for e in self.entries if e.report is not None]
         completed = sum(e.report is not None or bool(e.error) for e in self.entries)
         failed = sum(bool(e.error) for e in self.entries)
-        if total and completed:
-            self.status.setText(f"可用 {available / total:.0%} · {available}/{total}")
+        if scored:
+            mean = sum(scored) / len(scored)
+            self.status.setText(f"平均 {mean:.0f} · {len(scored)}/{total}")
         else:
             self.status.setText(f"{total} 个文件" if total else "")
-        self.status.setToolTip(f"可用文件数 ÷ 全部文件数\n已完成 {completed} · 失败 {failed} · 待完成 {total-completed}" if total else "")
+        self.status.setToolTip(f"已完成 {completed} · 失败 {failed} · 待完成 {total-completed}" if total else "")
         if self.busy and not self.importing:
             self.status.setText(self.status.text() + f"\n评分 {self.done}/{self.total}")
 
@@ -445,7 +587,7 @@ class Window(QMainWindow):
     def start_score(self):
         if self.busy:
             return
-        jobs = [(i, e.path, e.metadata.copy()) for i, e in enumerate(self.entries) if e.report is None]
+        jobs = [(i, e.path, self.job_metadata(e)) for i, e in enumerate(self.entries) if e.report is None]
         if not jobs:
             return
         self.busy = True
@@ -454,10 +596,12 @@ class Window(QMainWindow):
         self.done, self.total = 0, len(jobs)
         self.choose_button.setEnabled(False)
         self.folder_button.setEnabled(False)
+        self.prefs_button.setEnabled(False)
         self.score_button.setText("停止")
         self.score_button.setEnabled(True)
         for index, _, _ in jobs:
             self.entries[index].error = ""
+            self.table.item(index, 1).setText("—")
             self.table.item(index, 2).setText("待评分")
             self.table.item(index, 2).setToolTip("")
         self.worker = BatchWorker(jobs)
@@ -499,14 +643,15 @@ class Window(QMainWindow):
         self.active_index = None
         self.entries[index].report = report
         self.table.item(index, 1).setText(f"{report.gqi:.1f}")
-        label = {"Available": "可用", "Caution": "需留意", "Unavailable": "不可用"}[report.availability.value]
-        self.table.item(index, 2).setText(label)
-        self.table.item(index, 2).setToolTip("")
+        self.table.item(index, 2).setText("完成")
         rate = report.extras["sfreq_hz"]
         detail = f"{rate:g} 赫兹 · {report.duration_s:g} 秒"
         if not all(report.extras["frequency_coverage"].values()):
             detail += "\n采样率限制了部分频段检测"
+        if report.reasons:
+            detail += "\n" + "\n".join(report.reasons[:4])
         self.table.item(index, 1).setToolTip(detail)
+        self.table.item(index, 2).setToolTip("")
         self.done += 1
         self.update_summary()
 
@@ -527,6 +672,7 @@ class Window(QMainWindow):
         self.worker = None
         self.choose_button.setEnabled(True)
         self.folder_button.setEnabled(True)
+        self.prefs_button.setEnabled(True)
         self.score_button.setText("评分")
         self.update_controls()
         if self.close_pending:
