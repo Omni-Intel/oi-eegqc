@@ -10,7 +10,9 @@ for package in ("mne", "numpy", "scipy", "PySide6", "PySide6_Essentials", "PySid
     datas += copy_metadata(package)
 a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root / "src")],
              binaries=[], datas=datas,
-             hiddenimports=collect_submodules("mne", filter=lambda name: ".tests" not in name),
+             hiddenimports=["oi_eegqc.config", "oi_eegqc.datasets", "oi_eegqc.io",
+                            "oi_eegqc.pipeline", "oi_eegqc.protocol", "oi_eegqc.types"]
+                           + collect_submodules("mne", filter=lambda name: ".tests" not in name),
              excludes=["tkinter", "pytest", "IPython", "notebook", "PySide6.QtWebEngineCore"],
              noarchive=False)
 pyz = PYZ(a.pure)

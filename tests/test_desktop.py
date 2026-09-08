@@ -110,32 +110,66 @@ def test_batch_failure_retry_dedup_and_default(tmp_path):
 
 
 def test_stop_preserves_pending_and_resume(tmp_path, monkeypatch):
-    import threading
     import oi_eegqc.desktop as desktop
+    from oi_eegqc.desktop_process import ScoringProcess
+    from process_workers import blocked_scores
     app = QApplication.instance() or QApplication([])
     window = Window()
     paths = [tmp_path / f"{i}.npy" for i in range(3)]
     for path in paths:
         np.save(path, synth_clean(4, 250, 5))
-    entered, release = threading.Event(), threading.Event()
-    real_score = desktop.score_file
-    def slow(*args, **kwargs):
-        entered.set()
-        assert release.wait(5)
-        return real_score(*args, **kwargs)
-    monkeypatch.setattr(desktop, "score_file", slow)
+    real_worker = desktop.BatchWorker
+    monkeypatch.setattr(desktop, "BatchWorker", lambda jobs: real_worker(
+        jobs, process_factory=lambda: ScoringProcess(target=blocked_scores)))
     window.add_files(paths, {"sfreq": 250})
     window.start_score()
-    assert entered.wait(5)
+    ticks = []
+    timer = QTimer()
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start(20)
+    deadline = time.monotonic() + 10
+    while window.active_phase != "评分" and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert window.active_phase == "评分"
+    assert ticks  # Main event loop stays alive while a child is blocked.
+    timer.stop()
+    start = time.monotonic()
     window.score_or_stop()
-    release.set()
     wait_for_batch(app, window)
-    assert sum(e.report is not None for e in window.entries) == 1
-    monkeypatch.setattr(desktop, "score_file", real_score)
+    assert time.monotonic() - start < 3
+    assert not any(e.report for e in window.entries)
+    assert window.table.item(0, 2).text() == "已取消"
+    monkeypatch.setattr(desktop, "BatchWorker", real_worker)
     window.start_score()
     wait_for_batch(app, window)
     assert all(e.report for e in window.entries)
     window.close()
+
+
+def test_timeout_and_process_crash_continue_queue():
+    from oi_eegqc.desktop import BatchWorker
+    from oi_eegqc.desktop_process import ScoringProcess
+    from process_workers import fault_scores
+    import multiprocessing
+    app = QApplication.instance() or QApplication([])
+    before = {p.pid for p in multiprocessing.active_children()}
+    worker = BatchWorker([(0, "timeout", {}), (1, "crash", {}), (2, "ok", {})],
+                         timeout_s=2, process_factory=lambda: ScoringProcess(target=fault_scores))
+    errors, results = [], []
+    worker.failed.connect(lambda i, message: errors.append((i, message)))
+    worker.scored.connect(lambda i, report: results.append((i, report.gqi)))
+    worker.start()
+    deadline = time.monotonic() + 15
+    while worker.isRunning() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    worker.wait(1000)
+    app.processEvents()
+    assert not worker.isRunning()
+    assert len(errors) == 2 and "超时" in errors[0][1] and "异常退出" in errors[1][1]
+    assert results == [(2, 90)]
+    assert {p.pid for p in multiprocessing.active_children()} <= before
 
 
 def test_multiselect_dialog_and_npy_parameters(tmp_path, monkeypatch):
@@ -167,7 +201,8 @@ def test_no_uppercase_in_app_text(tmp_path):
     window.add_files([path], {"sfreq": 250})
     window.start_score()
     wait_for_batch(app, window)
-    texts = [window.windowTitle()]
+    assert window.windowTitle() == "Omni-Intelligence EEG Quality Control App"
+    texts = []
     texts += [w.text() for cls in (QLabel, QPushButton) for w in window.findChildren(cls)]
     texts += [window.table.item(0, c).text() for c in range(3)]
     assert not any(re.search("[A-Z]", text) for text in texts)
@@ -332,3 +367,66 @@ def test_sidecar_rejects_conflicting_or_invalid_rates(tmp_path):
         path.with_suffix(".json").write_text(json.dumps(metadata))
         with pytest.raises(ValueError):
             npy_metadata(path)
+
+
+def test_startup_does_not_import_scientific_stack():
+    import subprocess
+    import sys
+    subprocess.run([sys.executable, "-c",
+                    "import sys; import oi_eegqc.desktop; "
+                    "assert not any(n in sys.modules for n in ('numpy','scipy','mne','matplotlib'))"], check=True)
+
+
+def test_lazy_public_api_keeps_existing_exports():
+    import oi_eegqc
+    for name in oi_eegqc.__all__:
+        assert getattr(oi_eegqc, name) is not None
+    with pytest.raises(AttributeError):
+        getattr(oi_eegqc, "nonexistent_attribute")
+
+
+def test_import_crash_restores_controls(tmp_path, monkeypatch):
+    import oi_eegqc.desktop as desktop
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    def broken(*args):
+        raise RuntimeError("scan failure")
+    monkeypatch.setattr(desktop, "discover_files", broken)
+    window.add_files([tmp_path])
+    wait_for_batch(app, window)
+    assert window.status.text() == "导入失败，可重试"
+    assert window.choose_button.isEnabled() and window.folder_button.isEnabled()
+    assert window.worker is None
+    monkeypatch.setattr(desktop, "discover_files", lambda *args: ([], 0))
+    window.add_files([tmp_path])
+    wait_for_batch(app, window)
+    assert window.status.text() == "未找到支持的文件"
+    window.close()
+
+
+def test_oversized_sidecar_rejected(tmp_path):
+    from oi_eegqc.desktop_service import npy_metadata
+    path = tmp_path / "array.npy"
+    path.with_suffix(".json").write_text(" " * 65537)
+    with pytest.raises(ValueError, match="过大"):
+        npy_metadata(path)
+
+
+def test_shutdown_waits_for_worker(tmp_path, monkeypatch):
+    import oi_eegqc.desktop as desktop
+    import threading
+    app = QApplication.instance() or QApplication([])
+    window = Window()
+    entered = threading.Event()
+    def scanning(paths, cancelled):
+        entered.set()
+        while not cancelled():
+            time.sleep(0.005)
+        return [], 0
+    monkeypatch.setattr(desktop, "discover_files", scanning)
+    window.add_files([tmp_path])
+    assert entered.wait(5)
+    window.shutdown()
+    assert not window.worker.isRunning()
+    wait_for_batch(app, window)
+    window.close()

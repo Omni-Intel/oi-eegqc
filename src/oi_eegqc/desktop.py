@@ -3,25 +3,48 @@ from __future__ import annotations
 
 import os
 import sys
+import logging
+import time
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize, QStandardPaths
 from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView,
     QLabel, QMainWindow, QMenu, QPushButton, QStackedWidget, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget, QStyle, QStyleFactory, QMessageBox,
+    QTableWidgetItem, QVBoxLayout, QWidget, QStyle, QStyleFactory, QMessageBox, QProgressBar,
 )
-from .desktop_service import score_file, npy_metadata
+from .desktop_service import npy_metadata
 from .desktop_import import SUPPORTED, discover_files
+from .desktop_process import ScoringProcess, DEFAULT_FILE_TIMEOUT_S
+
+
+def configure_logging():
+    """Bounded local diagnostics; never record signal arrays."""
+    from logging.handlers import RotatingFileHandler
+    logger = logging.getLogger("oi_eegqc.desktop")
+    if logger.handlers:
+        return
+    try:
+        folder = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)) / "logs"
+        folder.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(folder / "desktop.log", maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.WARNING)
+    except OSError:
+        logger.addHandler(logging.NullHandler())
 
 STYLE = """
 QWidget { color: #292929; font-size: 13px; }
 QMainWindow, QDialog { background: #fafafa; }
 QLabel { background: transparent; }
 QLabel#muted { color: #888888; }
+QProgressBar { border: none; background: #eeeeee; max-height: 3px; }
+QProgressBar::chunk { background: #777777; }
 QTableWidget { background: #fafafa; border: none; outline: none;
                selection-background-color: #eeeeee; selection-color: #292929; }
 QTableWidget::item { padding: 0px 8px; border-bottom: 1px solid #eeeeee; }
@@ -40,10 +63,16 @@ class ImportWorker(QThread):
         self.paths = paths
         self.result = ([], 0)
         self.cancelled = False
+        self.error = ""
 
     def run(self):
-        self.result = discover_files(self.paths, self.isInterruptionRequested)
-        self.cancelled = self.isInterruptionRequested()
+        try:
+            self.result = discover_files(self.paths, self.isInterruptionRequested)
+        except Exception as exc:
+            self.error = str(exc).lower()
+            logging.getLogger("oi_eegqc.desktop").exception("Folder import failed")
+        finally:
+            self.cancelled = self.isInterruptionRequested()
 
 
 @dataclass
@@ -54,25 +83,61 @@ class Entry:
     error: str = ""
 
 
+class ReportView:
+    """Display plain report data without unpickling the scientific stack."""
+    def __init__(self, payload):
+        self.payload = payload
+        self.availability = SimpleNamespace(value=payload["availability"])
+
+    def __getattr__(self, name):
+        try:
+            return self.payload[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def to_dict(self):
+        return self.payload
+
+
 class BatchWorker(QThread):
     started_file = Signal(int)
     scored = Signal(int, object)
     failed = Signal(int, str)
+    phase_changed = Signal(int, str)
+    cancelled_file = Signal(int)
 
-    def __init__(self, jobs):
+    def __init__(self, jobs, timeout_s=DEFAULT_FILE_TIMEOUT_S, process_factory=ScoringProcess):
         super().__init__()
         self.jobs = jobs
+        self.timeout_s = timeout_s
+        self.process_factory = process_factory
 
     def run(self):
-        for index, path, metadata in self.jobs:
-            if self.isInterruptionRequested():
-                break
-            self.started_file.emit(index)
-            try:
-                # Always use the core's default adaptive configuration.
-                self.scored.emit(index, score_file(path, **metadata))
-            except Exception as exc:
-                self.failed.emit(index, str(exc).lower())
+        client = self.process_factory()
+        try:
+            for index, path, metadata in self.jobs:
+                if self.isInterruptionRequested():
+                    break
+                self.started_file.emit(index)
+                try:
+                    kind, payload = client.score(path, metadata, self.isInterruptionRequested,
+                                                 lambda phase: self.phase_changed.emit(index, phase), self.timeout_s)
+                    if kind == "cancelled":
+                        client.close()
+                        self.cancelled_file.emit(index)
+                        break
+                    if kind == "result":
+                        self.scored.emit(index, ReportView(payload))
+                    else:
+                        client.close()
+                        logging.getLogger("oi_eegqc.desktop").warning("Scoring %s: %s", kind, payload)
+                        self.failed.emit(index, payload)
+                except Exception as exc:
+                    client.close()
+                    logging.getLogger("oi_eegqc.desktop").exception("Scoring failed")
+                    self.failed.emit(index, str(exc).lower())
+        finally:
+            client.close()
 
 
 class Window(QMainWindow):
@@ -80,7 +145,7 @@ class Window(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("omni intelligence · 脑电质检")
+        self.setWindowTitle("Omni-Intelligence EEG Quality Control App")
         root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
         self.setWindowIcon(QIcon(str(root / "assets" / "omni-intelli logo" / "OMNI_LOGO_100x100.ico")))
         self.resize(640, 440)
@@ -92,6 +157,12 @@ class Window(QMainWindow):
         self.importing = False
         self.close_pending = False
         self.total = self.done = 0
+        self.active_index = None
+        self.active_phase = "准备"
+        self.active_started = 0
+        self.elapsed_timer = QTimer(self)
+        self.elapsed_timer.setInterval(250)
+        self.elapsed_timer.timeout.connect(self.refresh_activity)
         body = QWidget()
         self.setCentralWidget(body)
         layout = QVBoxLayout(body)
@@ -123,6 +194,12 @@ class Window(QMainWindow):
         self.table.customContextMenuRequested.connect(self.context_menu)
         self.stack.addWidget(self.table)
         layout.addWidget(self.stack, 1)
+        self.activity = QProgressBar()
+        self.activity.setRange(0, 0)
+        self.activity.setTextVisible(False)
+        self.activity.setAccessibleName("正在处理")
+        self.activity.hide()
+        layout.addWidget(self.activity)
         actions = QHBoxLayout()
         actions.setSpacing(10)
         self.choose_button = QPushButton("选择文件")
@@ -208,6 +285,7 @@ class Window(QMainWindow):
     def scan_finished(self, metadata):
         paths, errors = self.worker.result
         cancelled = self.worker.cancelled
+        error = self.worker.error
         self.worker.deleteLater()
         self.worker = None
         self.busy = self.importing = False
@@ -220,6 +298,11 @@ class Window(QMainWindow):
         if cancelled:
             self.update_controls()
             self.status.setText("已取消导入")
+            return
+        if error:
+            self.update_controls()
+            self.status.setText("导入失败，可重试")
+            self.status.setToolTip(error)
             return
         self.add_files(paths, metadata)
         if errors:
@@ -355,7 +438,7 @@ class Window(QMainWindow):
         if self.busy:
             self.worker.requestInterruption()
             self.score_button.setEnabled(False)
-            self.status.setText("正在取消…" if self.importing else "当前文件完成后停止")
+            self.status.setText("正在取消…")
         else:
             self.start_score()
 
@@ -366,6 +449,8 @@ class Window(QMainWindow):
         if not jobs:
             return
         self.busy = True
+        self.activity.show()
+        self.elapsed_timer.start()
         self.done, self.total = 0, len(jobs)
         self.choose_button.setEnabled(False)
         self.folder_button.setEnabled(False)
@@ -379,18 +464,44 @@ class Window(QMainWindow):
         self.worker.started_file.connect(self.started_file)
         self.worker.scored.connect(self.show_report)
         self.worker.failed.connect(self.show_error)
+        self.worker.phase_changed.connect(self.phase_changed)
+        self.worker.cancelled_file.connect(self.cancelled_file)
         self.worker.finished.connect(self.finished)
         self.worker.start()
 
     def started_file(self, index):
-        self.table.item(index, 2).setText("评分中")
+        self.active_index = index
+        self.active_phase = "准备"
+        self.active_started = time.monotonic()
+        self.refresh_activity()
         self.update_summary()
 
+    def phase_changed(self, index, phase):
+        if self.active_index == index:
+            self.active_phase = phase
+            self.refresh_activity()
+
+    def refresh_activity(self):
+        if self.active_index is None:
+            return
+        seconds = int(time.monotonic() - self.active_started)
+        self.table.item(self.active_index, 2).setText(self.active_phase + "…")
+        self.table.item(self.active_index, 2).setToolTip(f"已用时 {seconds} 秒 · 单文件最多 15 分钟")
+        self.update_summary()
+        self.status.setText(self.status.text() + f" · {seconds // 60:02}:{seconds % 60:02}")
+
+    def cancelled_file(self, index):
+        self.active_index = None
+        self.table.item(index, 2).setText("已取消")
+        self.table.item(index, 2).setToolTip("可重新评分")
+
     def show_report(self, index, report):
+        self.active_index = None
         self.entries[index].report = report
         self.table.item(index, 1).setText(f"{report.gqi:.1f}")
         label = {"Available": "可用", "Caution": "需留意", "Unavailable": "不可用"}[report.availability.value]
         self.table.item(index, 2).setText(label)
+        self.table.item(index, 2).setToolTip("")
         rate = report.extras["sfreq_hz"]
         detail = f"{rate:g} 赫兹 · {report.duration_s:g} 秒"
         if not all(report.extras["frequency_coverage"].values()):
@@ -400,14 +511,18 @@ class Window(QMainWindow):
         self.update_summary()
 
     def show_error(self, index, message):
+        self.active_index = None
         self.entries[index].error = message
-        self.table.item(index, 2).setText("失败")
+        self.table.item(index, 2).setText("超时" if "超时" in message else "失败")
         self.table.item(index, 2).setToolTip(message.lower())
         self.done += 1
         self.update_summary()
 
     def finished(self):
         self.busy = False
+        self.active_index = None
+        self.elapsed_timer.stop()
+        self.activity.hide()
         self.worker.deleteLater()
         self.worker = None
         self.choose_button.setEnabled(True)
@@ -437,9 +552,21 @@ class Window(QMainWindow):
         else:
             event.accept()
 
+    def shutdown(self):
+        # Also cover programmatic application quit, which can bypass closeEvent.
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.requestInterruption()
+            self.worker.wait()
+
 
 def main():
+    # Required when launched through a console/gui entry point in a frozen app.
+    from multiprocessing import freeze_support
+    freeze_support()
     app = QApplication(sys.argv[:1])
+    app.setOrganizationName("Omni-Intelligence")
+    app.setApplicationName("EEGQC")
+    configure_logging()
     styles = {name.lower(): name for name in QStyleFactory.keys()}
     if sys.platform == "win32":
         for name in ("windows11", "windowsvista", "windows"):
@@ -452,7 +579,18 @@ def main():
     app.setFont(font)
     app.setStyleSheet(STYLE)
     window = Window()
+    app.aboutToQuit.connect(window.shutdown)
     window.show()
+    if len(sys.argv) == 3 and sys.argv[1] == "--startup-check":
+        import json
+        output = Path(sys.argv[2])
+        def ready():
+            heavy = [name for name in ("numpy", "scipy", "mne", "matplotlib") if name in sys.modules]
+            output.write_text(json.dumps({"title": window.windowTitle(), "heavy_modules": heavy,
+                                          "icon_loaded": not window.windowIcon().isNull()}), encoding="utf-8")
+            window.grab().save(str(output.with_suffix(".png")))
+            app.exit(0 if not heavy else 1)
+        QTimer.singleShot(0, ready)
     # Frozen integration check: one or more sources, then output.
     if len(sys.argv) >= 4 and sys.argv[1] == "--verify":
         import json
