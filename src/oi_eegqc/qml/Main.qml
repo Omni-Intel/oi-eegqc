@@ -51,7 +51,6 @@ ApplicationWindow {
                     Layout.fillWidth: true; Layout.leftMargin: 18; Layout.rightMargin: 18; Layout.preferredHeight: 44
                     Text { text: "文件"; color: "#89929b"; Layout.fillWidth: true }
                     Text { text: "分数"; color: "#89929b"; Layout.preferredWidth: 76; horizontalAlignment: Text.AlignRight }
-                    Text { text: ""; Layout.preferredWidth: 44 }
                     Text { text: "状态"; color: "#89929b"; Layout.preferredWidth: 96; horizontalAlignment: Text.AlignRight }
                 }
                 Rectangle { visible: backend.count > 0; Layout.fillWidth: true; height: 1; color: "#eff1f3" }
@@ -72,6 +71,7 @@ ApplicationWindow {
                     }
                     delegate: Rectangle {
                         id: row
+                        objectName: "fileRow" + index
                         required property int index
                         required property string label
                         required property string score
@@ -87,36 +87,22 @@ ApplicationWindow {
                             anchors.fill: parent; anchors.leftMargin: 18; anchors.rightMargin: 18; spacing: 12
                             Text { text: row.label; textFormat: Text.PlainText; color: "#303941"; elide: Text.ElideMiddle; Layout.fillWidth: true }
                             Text { text: row.score; color: "#303941"; font.pixelSize: 15; Layout.preferredWidth: 76; horizontalAlignment: Text.AlignRight }
-                            Text {
-                                text: row.ready ? "查看" : ""
-                                color: "#6c8296"
-                                Layout.preferredWidth: 44
-                                horizontalAlignment: Text.AlignRight
-                                MouseArea {
-                                    anchors.fill: parent
-                                    enabled: row.ready
-                                    onClicked: function(event) {
-                                        list.forceActiveFocus(); list.currentIndex = row.index
-                                        backend.select(row.index, 0)
-                                        backend.openReport(row.index)
-                                        event.accepted = true
-                                    }
-                                }
-                            }
                             Text { text: row.state; color: "#88939d"; Layout.preferredWidth: 96; horizontalAlignment: Text.AlignRight }
                         }
                         Rectangle { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 18; anchors.rightMargin: 18; height: 1; color: "#f0f2f4" }
                         MouseArea {
                             id: mouse; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            cursorShape: row.ready && !backend.busy ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: function(event) {
                                 list.forceActiveFocus(); list.currentIndex = row.index;
                                 if (event.button === Qt.RightButton) {
                                     if (!row.chosen) backend.select(row.index, 0);
                                     if (!backend.busy) rowMenu.popup();
-                                } else backend.select(row.index, event.modifiers);
-                            }
-                            onDoubleClicked: function(event) {
-                                if (row.ready) backend.openReport(row.index);
+                                } else {
+                                    backend.select(row.index, event.modifiers);
+                                    if (!backend.busy && row.ready && !(event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)))
+                                        backend.openReport(row.index);
+                                }
                             }
                         }
                         ToolTip.visible: mouse.containsMouse && !backend.busy
@@ -192,6 +178,7 @@ ApplicationWindow {
                 objectName: "pickChannels"
                 text: "选择通道"
                 visible: !backend.allChannels
+                enabled: !backend.busy && backend.canScore
                 Layout.fillWidth: true
                 onClicked: backend.openChannelSheet()
             }
@@ -222,8 +209,8 @@ ApplicationWindow {
             }
         }
     }
-    ChannelSheet { backend: backend }
-    ReportSheet { backend: backend }
+    ChannelSheet { backend: window.backend }
+    ReportSheet { backend: window.backend }
     Connections {
         target: backend
         function onParametersChanged() {
@@ -233,6 +220,8 @@ ApplicationWindow {
             } else metadata.close();
         }
         function onChanged() {
+            if (backend.channelsOpen || backend.reportOpen)
+                window.settingsOpen = false
             if (allChannels.checked !== backend.allChannels)
                 allChannels.checked = backend.allChannels
         }

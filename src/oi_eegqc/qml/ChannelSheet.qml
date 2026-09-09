@@ -22,12 +22,12 @@ Popup {
         spacing: 12
         Text { text: "选择通道"; color: "#303941"; font.pixelSize: 15 }
         Text {
-            text: backend.channelCount === 0 ? "请先添加文件，再勾选通道。" : "关闭全通道后，只对勾选的导联评分。"
+            text: backend.channelCount === 0 ? "未能读取待评文件的通道。" : "选择待评文件的通道"
             color: "#7c8791"; wrapMode: Text.Wrap; Layout.fillWidth: true
         }
         Rectangle {
             visible: backend.channelCount > 0
-            Layout.fillWidth: true; Layout.preferredHeight: Math.min(320, backend.channelCount * 44 + 2)
+            Layout.fillWidth: true; Layout.preferredHeight: Math.max(44, Math.min(320, backend.channelCount * 44 + 2, Overlay.overlay.height - 220))
             radius: 8; color: "#f7f8fa"; border.color: "#e5e8eb"
             ListView {
                 id: list

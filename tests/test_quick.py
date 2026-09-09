@@ -39,10 +39,10 @@ def quick(tmp_path):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
-def recording(path, complete=True):
+def recording(path, complete=True, channels=4):
     import numpy as np
     from oi_eegqc.datasets import synth_clean
-    np.save(path, synth_clean(4, 250, 5))
+    np.save(path, synth_clean(channels, 250, 5))
     if complete:
         path.with_suffix(".json").write_text(json.dumps({"sfreq": 250, "unit": "uV"}))
 
@@ -107,8 +107,17 @@ def test_qml_channel_subset_and_cancel_restores_all(quick, tmp_path):
     recording(path)
     controller.add_paths([path])
     wait(app, lambda: not controller.busy)
-    controller.setAllChannels(False)
+    settings = window.findChild(QObject, "settingsButton")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     settings.mapToScene(settings.boundingRect().center()).toPoint())
+    wait(app, lambda: window.property("settingsOpen"))
+    checkbox = window.findChild(QObject, "allChannels")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     checkbox.mapToScene(checkbox.boundingRect().center()).toPoint())
     wait(app, lambda: controller.channelsOpen and controller.channelCount == 4)
+    sheet = window.findChild(QObject, "channelSheet")
+    wait(app, lambda: sheet.property("visible"))
+    assert not window.property("settingsOpen")
     controller.cancelChannels()
     wait(app, lambda: not controller.channelsOpen)
     assert controller.allChannels
@@ -124,6 +133,42 @@ def test_qml_channel_subset_and_cancel_restores_all(quick, tmp_path):
     report = controller.files.rows[0]["report"]
     assert report is not None
     assert report.n_channels_used == 1
+    assert not controller.canScore
+    button = window.findChild(QObject, "pickChannels")
+    assert not button.property("enabled")
+    controller.openChannelSheet()
+    assert not controller.channelsOpen
+    # Completed data must not contribute channels to a new pending batch.
+    second = tmp_path / "two.npy"
+    recording(second, channels=2)
+    controller.add_paths([second])
+    wait(app, lambda: not controller.busy and controller.channelsOpen)
+    assert controller.channelCount == 2
+    assert sheet.property("visible")
+
+
+def test_qml_channel_picker_empty_then_import(quick, tmp_path):
+    app, controller, engine, window = quick
+    settings = window.findChild(QObject, "settingsButton")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     settings.mapToScene(settings.boundingRect().center()).toPoint())
+    wait(app, lambda: window.property("settingsOpen"))
+    checkbox = window.findChild(QObject, "allChannels")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     checkbox.mapToScene(checkbox.boundingRect().center()).toPoint())
+    wait(app, lambda: not controller.allChannels)
+    assert not controller.channelsOpen
+    button = window.findChild(QObject, "pickChannels")
+    assert button.property("visible") and not button.property("enabled")
+    controller.openChannelSheet()
+    assert not controller.channelsOpen
+    path = tmp_path / "new.npy"
+    recording(path, channels=6)
+    controller.add_paths([path])
+    sheet = window.findChild(QObject, "channelSheet")
+    wait(app, lambda: not controller.busy and sheet.property("visible"))
+    assert controller.channelCount == 6
+    assert not window.property("settingsOpen")
 
 
 def test_qml_update_and_cancel_intake(quick, tmp_path, monkeypatch):
@@ -167,9 +212,26 @@ def test_qml_native_drop_and_score_button(quick, tmp_path):
     point = button.mapToScene(button.boundingRect().center()).toPoint()
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
     wait(app, lambda: controller.files.rows[0]["report"] is not None and not controller.busy)
-    controller.select(0, 0)
-    controller.openReport(0)
-    wait(app, lambda: controller.reportOpen)
+    sheet = window.findChild(QObject, "reportSheet")
+    # ListView delegates have visual rather than QObject ownership.
+    def visual_child(item, name):
+        if item.objectName() == name:
+            return item
+        for child in item.childItems():
+            found = visual_child(child, name)
+            if found is not None:
+                return found
+    wait(app, lambda: visual_child(window.contentItem(), "fileRow0") is not None)
+    row = visual_child(window.contentItem(), "fileRow0")
+    for fraction in (0.1, 0.5, 0.95):
+        point = row.mapToScene(QPointF(row.width() * fraction, row.height() / 2)).toPoint()
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+        wait(app, lambda: controller.reportOpen and sheet.property("visible"))
+        controller.closeReport()
+        wait(app, lambda: not sheet.property("visible"))
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, point)
+    app.processEvents()
+    assert not controller.reportOpen and not sheet.property("visible")
     assert controller.reportCard["score"]
     assert any(item["name"] == "接触" for item in controller.reportCard["dimensions"])
     controller.closeReport()

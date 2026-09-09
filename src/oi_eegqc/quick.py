@@ -284,7 +284,7 @@ class Controller(QObject):
             self.closeReady.emit()
         else:
             self.imported.emit()
-            if not self._all_channels and self._needs_channel_pick():
+            if not self._all_channels and self.canScore and not self._busy:
                 QTimer.singleShot(0, self.openChannelSheet)
 
     @Slot(str, int, bool, result=bool)
@@ -369,6 +369,8 @@ class Controller(QObject):
     def _channel_catalog(self):
         ordered, seen = [], set()
         for row in self.files.rows:
+            if row["report"] is not None:
+                continue
             try:
                 names = inspect_channel_names(row["path"], row["metadata"])
             except Exception:
@@ -380,11 +382,11 @@ class Controller(QObject):
         return ordered
 
     def _needs_channel_pick(self):
-        if self._all_channels:
+        if self._all_channels or not self.canScore:
             return False
         catalog = self._channel_catalog()
         if not catalog:
-            return bool(self.files.rows)
+            return self.canScore
         chosen = set(self._selected_channels)
         return not chosen or not chosen.intersection(catalog)
 
@@ -400,6 +402,8 @@ class Controller(QObject):
         ])
 
     def _open_channel_sheet(self, score_after=False):
+        if self._busy or not self.canScore:
+            return
         self._score_after_channels = score_after
         self._fill_channel_model()
         self._channels_open = True
@@ -417,11 +421,15 @@ class Controller(QObject):
             self.changed.emit()
             return
         self._all_channels = False
-        self._open_channel_sheet(False)
+        self._save_channel_prefs()
+        if self.canScore:
+            self._open_channel_sheet(False)
+        else:
+            self.changed.emit()
 
     @Slot()
     def openChannelSheet(self):
-        if not self._busy:
+        if not self._busy and self.canScore:
             self._all_channels = False
             self._open_channel_sheet(False)
 
