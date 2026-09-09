@@ -158,7 +158,14 @@ ApplicationWindow {
         background: Rectangle { color: "#ffffff"; radius: 10; border.color: "#dce2e7" }
         enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 110 } }
         exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: 80 } }
-        contentItem: ColumnLayout {
+        contentItem: ScrollView {
+            id: settingsScroll
+            implicitHeight: Math.min(settingsContent.implicitHeight, window.height - 116)
+            contentWidth: availableWidth
+            clip: true
+            ColumnLayout {
+            id: settingsContent
+            width: settingsScroll.availableWidth
             spacing: 12
             Text { text: "数组排列"; color: "#7c8791" }
             QuietCombo { objectName: "orderCombo"; Layout.fillWidth: true; model: ["默认", "通道 × 采样点", "采样点 × 通道"]; currentIndex: backend.orderIndex; onActivated: backend.saveSettings(currentIndex, backend.mains) }
@@ -184,9 +191,24 @@ ApplicationWindow {
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: "#eff1f3"; Layout.topMargin: 6; Layout.bottomMargin: 4 }
             Text { text: "当前版本 " + backend.version; color: "#99a2ab" }
-            QuietButton { objectName: "checkUpdateButton"; text: backend.checking ? "正在检查…" : "检查更新"; enabled: !backend.checking; Layout.fillWidth: true; onClicked: backend.checkUpdate() }
+            QuietButton { objectName: "checkUpdateButton"; text: backend.checking ? "正在检查…" : "检查更新"; enabled: !backend.checking && !backend.downloading; Layout.fillWidth: true; onClicked: backend.checkUpdate() }
             Text { visible: backend.updateText !== "" && !backend.checking; text: backend.updateText; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.Wrap }
-            QuietButton { text: "打开下载页"; visible: backend.updateAvailable; Layout.fillWidth: true; onClicked: backend.openUpdate() }
+            ProgressBar { Layout.fillWidth: true; visible: backend.downloading; value: backend.downloadProgress / 100 }
+            QuietButton {
+                objectName: "downloadUpdate"
+                text: backend.downloading ? "取消下载 · " + backend.downloadProgress + "%" : "下载更新"
+                visible: backend.canDownload && !backend.updateReady
+                Layout.fillWidth: true
+                onClicked: backend.downloading ? backend.cancelDownload() : backend.downloadUpdate()
+            }
+            QuietButton {
+                objectName: "installUpdate"
+                text: "安装并重启"; visible: backend.updateReady; enabled: !backend.busy
+                Layout.fillWidth: true
+                onClicked: installConfirm.open()
+            }
+            QuietButton { text: "打开下载页"; visible: backend.updateAvailable && !backend.downloading; Layout.fillWidth: true; onClicked: backend.openUpdate() }
+            }
         }
     }
     Dialog {
@@ -206,6 +228,26 @@ ApplicationWindow {
                 Layout.alignment: Qt.AlignRight; Layout.topMargin: 6
                 QuietButton { text: "跳过"; onClicked: backend.skipParameters() }
                 QuietButton { text: "确定"; primary: true; enabled: Number(rate.text) > 0 && Number(rate.text) <= 1000000; onClicked: backend.acceptParameters(rate.text, unit.currentIndex, reuse.checked) }
+            }
+        }
+    }
+    Popup {
+        id: installConfirm
+        objectName: "installConfirmation"
+        parent: Overlay.overlay; anchors.centerIn: parent
+        width: Math.min(380, window.width - 48); padding: 20
+        modal: true; focus: true
+        background: Rectangle { color: "white"; radius: 10; border.color: "#dce2e7" }
+        contentItem: ColumnLayout {
+            spacing: 16
+            Text {
+                text: backend.portable ? "将退出程序并转为安装版，原便携副本不变。当前列表不会保留。" : "将退出程序并覆盖升级，保留设置。当前列表不会保留。"
+                wrapMode: Text.Wrap; Layout.fillWidth: true; color: "#303941"
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                QuietButton { text: "取消"; onClicked: installConfirm.close() }
+                QuietButton { objectName: "confirmInstall"; text: "继续安装"; enabled: !backend.busy; onClicked: { installConfirm.close(); backend.installUpdate(); } }
             }
         }
     }

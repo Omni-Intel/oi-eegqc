@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from PySide6.QtCore import (QObject, Property, Signal, Slot, QAbstractListModel,
                            QModelIndex, Qt, QThread, QTimer, QUrl, QSettings,
-                           QCoreApplication, QEvent)
+                           QCoreApplication, QEvent, QStandardPaths)
 from PySide6.QtGui import QGuiApplication, QIcon, QFont, QDesktopServices
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
@@ -16,6 +16,37 @@ from .desktop import BatchWorker, UpdateWorker, configure_logging
 from .desktop_import import discover_files
 from .desktop_service import inspect_channel_names, inspect_file, npy_ready, time_weighted_usable
 from . import __version__
+from .desktop_update import downloadable, download_installer, DownloadCancelled, launch_installer
+
+
+class DownloadWorker(QThread):
+    progress = Signal(int)
+
+    def __init__(self, info, cache, parent=None):
+        super().__init__(parent)
+        self.info, self.cache = info, cache
+        self.path, self.error = None, ""
+
+    def run(self):
+        try:
+            self.path = download_installer(self.info, self.cache, self.progress.emit,
+                                           self.isInterruptionRequested)
+        except DownloadCancelled:
+            self.error = "已取消下载"
+        except Exception:
+            self.error = "下载或校验失败，请重试"
+
+
+class InstallWorker(QThread):
+    def __init__(self, path, info, parent=None):
+        super().__init__(parent)
+        self.path, self.info, self.error = path, info, False
+
+    def run(self):
+        try:
+            launch_installer(self.path, self.info)
+        except Exception:
+            self.error = True
 
 
 def _as_str_list(value):
@@ -149,6 +180,10 @@ class Controller(QObject):
         self.files = FileModel(self)
         self.channels = ChannelModel(self)
         self.worker = self.updater = None
+        self.downloader = None
+        self.installer_worker = None
+        self._update_info = self._installer = None
+        self._download_progress = 0
         self._busy = self._importing = self._stopping = self._closing = False
         self._notice = self._update_text = self._update_url = ""
         self._pending = []
@@ -195,6 +230,11 @@ class Controller(QObject):
     checking = Property(bool, lambda self: self.updater is not None, notify=changed)
     updateText = Property(str, lambda self: self._update_text, notify=changed)
     updateAvailable = Property(bool, lambda self: bool(self._update_url), notify=changed)
+    downloading = Property(bool, lambda self: self.downloader is not None, notify=changed)
+    downloadProgress = Property(int, lambda self: self._download_progress, notify=changed)
+    updateReady = Property(bool, lambda self: self._installer is not None, notify=changed)
+    canDownload = Property(bool, lambda self: self._update_info is not None and downloadable(self._update_info), notify=changed)
+    portable = Property(bool, lambda self: not (Path(sys.executable).parent / "unins000.exe").is_file(), constant=True)
 
     @Property(str, notify=changed)
     def summary(self):
@@ -524,6 +564,8 @@ class Controller(QObject):
 
     @Slot()
     def scoreOrStop(self):
+        if self.installer_worker:
+            return
         if self._busy:
             self._stopping = True
             if self.worker:
@@ -615,8 +657,10 @@ class Controller(QObject):
 
     @Slot()
     def checkUpdate(self):
-        if self.updater:
+        if self.updater or self.downloader or self.installer_worker:
             return
+        self._installer = None
+        self._update_info = None
         self._update_text, self._update_url = "正在检查…", ""
         self.updater = UpdateWorker(self)
         self.updater.finished.connect(self._updated)
@@ -627,6 +671,7 @@ class Controller(QObject):
     def _updated(self):
         worker = self.updater
         info = worker.result
+        self._update_info = info
         self.updater = None
         worker.deleteLater()
         self._update_text = {"current": "已是最新版本", "error": "暂时无法检查更新"}.get(
@@ -640,9 +685,78 @@ class Controller(QObject):
         if self._update_url:
             QDesktopServices.openUrl(QUrl(self._update_url))
 
+    @Slot()
+    def downloadUpdate(self):
+        if self.downloader or self.updater or self.installer_worker or not self.canDownload or self._closing:
+            return
+        self._installer = None
+        self._download_progress = 0
+        self._update_text = "正在下载…"
+        cache = Path(QStandardPaths.writableLocation(QStandardPaths.CacheLocation)) / "updates"
+        self.downloader = DownloadWorker(self._update_info, cache, self)
+        self.downloader.progress.connect(self._downloaded_progress)
+        self.downloader.finished.connect(self._download_finished)
+        self.downloader.start()
+        self.changed.emit()
+
+    @Slot(int)
+    def _downloaded_progress(self, value):
+        self._download_progress = value
+        self.changed.emit()
+
+    @Slot()
+    def cancelDownload(self):
+        if self.downloader:
+            self.downloader.requestInterruption()
+            self._update_text = "正在取消下载…"
+            self.changed.emit()
+
+    @Slot()
+    def _download_finished(self):
+        worker = self.downloader
+        self._installer = worker.path
+        self._update_text = worker.error or "已下载并校验"
+        self.downloader = None
+        worker.deleteLater()
+        self.changed.emit()
+        if self._closing and not self._busy:
+            self.closeReady.emit()
+
+    @Slot()
+    def installUpdate(self):
+        if self._busy or self.downloader or self.updater or self.installer_worker or not self._installer:
+            return
+        self._busy = True
+        self._phase = "准备更新"
+        self.installer_worker = InstallWorker(self._installer, self._update_info, self)
+        self.installer_worker.finished.connect(self._install_started)
+        self.installer_worker.start()
+        self.changed.emit()
+
+    @Slot()
+    def _install_started(self):
+        worker = self.installer_worker
+        self.installer_worker = None
+        self._busy = False
+        worker.deleteLater()
+        if worker.error:
+            self._update_text = "无法启动安装，请重新下载或打开下载页"
+            self._installer = None
+            self.changed.emit()
+            return
+        self._closing = True
+        self.closeReady.emit()
+
     @Slot(result=bool)
     def requestClose(self):
+        if self.installer_worker:
+            return False
         self._closing = True
+        if self.downloader:
+            self.cancelDownload()
+            if self._busy:
+                self.scoreOrStop()
+            return False
         if self._busy:
             self.scoreOrStop()
             return False
@@ -656,6 +770,11 @@ class Controller(QObject):
             self.worker.wait()
         if self.updater:
             self.updater.wait()
+        if self.downloader:
+            self.downloader.requestInterruption()
+            self.downloader.wait()
+        if self.installer_worker:
+            self.installer_worker.wait()
 
 
 def create_engine(controller):

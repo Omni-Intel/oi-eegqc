@@ -1,5 +1,8 @@
 import io
 import json
+import hashlib
+from dataclasses import replace
+import pytest
 from urllib.error import URLError
 from urllib.request import Request
 
@@ -73,3 +76,63 @@ def test_check_update_uses_opener_and_maps_errors():
     failed = check_update("0.3.0", opener=boom)
     assert failed.status == "error"
     assert failed.current == "0.3.0"
+
+
+def installer_info(data=b"installer"):
+    from oi_eegqc.desktop_update import UpdateInfo, GITHUB_REPO
+    return UpdateInfo("available", "0.3.4", "0.3.5",
+                      asset_url=f"https://github.com/{GITHUB_REPO}/releases/download/v0.3.5/{INSTALLER_ASSET}",
+                      asset_name=INSTALLER_ASSET, size=len(data),
+                      digest="sha256:" + hashlib.sha256(data).hexdigest())
+
+
+def test_download_verifies_size_hash_and_no_credentials(tmp_path, monkeypatch):
+    from oi_eegqc.desktop_update import download_installer
+    monkeypatch.setenv("GITHUB_TOKEN", "not-for-downloads")
+    progress = []
+    def opener(request, timeout):
+        assert request.get_header("Authorization") is None
+        return io.BytesIO(b"installer")
+    path = download_installer(installer_info(), tmp_path, progress.append, lambda: False, opener=opener)
+    assert path.read_bytes() == b"installer"
+    assert progress[-1] == 100
+
+
+@pytest.mark.parametrize("data", [b"short", b"installer-extra", b"tampered!"])
+def test_download_rejects_corrupt_or_incomplete(tmp_path, data):
+    from oi_eegqc.desktop_update import download_installer
+    with pytest.raises(ValueError):
+        download_installer(installer_info(), tmp_path, lambda n: None, lambda: False,
+                           opener=lambda *a, **k: io.BytesIO(data))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_cancel_and_untrusted_source(tmp_path):
+    from oi_eegqc.desktop_update import download_installer, DownloadCancelled, downloadable
+    info = installer_info()
+    assert not downloadable(replace(info, digest=""))
+    assert not downloadable(replace(info, asset_url=info.asset_url.replace("github.com", "evil.test")))
+    assert not downloadable(replace(info, asset_name=ZIP_ASSET))
+    with pytest.raises(DownloadCancelled):
+        download_installer(info, tmp_path, lambda n: None, lambda: True,
+                           opener=lambda *a, **k: io.BytesIO(b"installer"))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_launch_rechecks_and_never_forces_close(tmp_path, monkeypatch):
+    import sys
+    import subprocess
+    from oi_eegqc.desktop_update import launch_installer
+    path = tmp_path / INSTALLER_ASSET
+    path.write_bytes(b"installer")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: calls.append(args))
+    launch_installer(path, installer_info())
+    assert "/UPDATE=1" in calls[0] and "/NORESTART" in calls[0]
+    assert "/NOFORCECLOSEAPPLICATIONS" in calls[0]
+    path.write_bytes(b"tampered!")
+    with pytest.raises(ValueError):
+        launch_installer(path, installer_info())
+    assert len(calls) == 1

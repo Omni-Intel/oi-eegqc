@@ -1,6 +1,6 @@
 """Check GitHub Releases for a newer Windows build.
 
-The app only GETs release metadata. It does not upload recordings.
+The app fetches release metadata and verified installers. It never uploads recordings.
 """
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ class UpdateInfo:
     release_url: str = ""
     asset_url: str = ""
     asset_name: str = ""
+    digest: str = ""
+    size: int = 0
 
 
 def version_tuple(text: str) -> tuple[int, int, int]:
@@ -84,6 +86,8 @@ def interpret_release(payload: dict[str, Any], current_version: str) -> UpdateIn
         release_url=release_url,
         asset_url=str((asset or {}).get("browser_download_url") or ""),
         asset_name=str((asset or {}).get("name") or ""),
+        digest=str((asset or {}).get("digest") or ""),
+        size=int((asset or {}).get("size") or 0),
     )
     return info
 
@@ -126,3 +130,97 @@ def check_update(
         return interpret_release(payload, current_version)
     except (HTTPError, URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError):
         return UpdateInfo(status="error", current=current_version)
+
+
+def downloadable(info):
+    import re
+    from urllib.parse import urlsplit
+    url = urlsplit(info.asset_url)
+    return (info.status == "available" and info.asset_name == INSTALLER_ASSET
+            and url.scheme == "https" and url.netloc == "github.com"
+            and url.path == f"/{GITHUB_REPO}/releases/download/v{info.latest}/{INSTALLER_ASSET}"
+            and not url.query and not url.fragment
+            and re.fullmatch(r"sha256:[a-fA-F0-9]{64}", info.digest) is not None
+            and 0 < info.size <= 1_000_000_000)
+
+
+def installer_opener():
+    from urllib.parse import urlsplit
+    from urllib.request import HTTPRedirectHandler, build_opener
+
+    class SafeRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            url = urlsplit(newurl)
+            if url.scheme != "https" or url.netloc not in {
+                "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"
+            }:
+                raise ValueError("更新下载跳转不受信任")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return build_opener(SafeRedirect()).open
+
+
+class DownloadCancelled(Exception):
+    pass
+
+
+def download_installer(info, cache, progress, cancelled, *, opener=None):
+    """Download only the fixed repository installer; never forward API credentials."""
+    import hashlib
+    import tempfile
+    import time
+    from pathlib import Path
+    if not downloadable(info):
+        raise ValueError("无法验证更新来源")
+    cache = Path(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    folder = Path(tempfile.mkdtemp(prefix="update-", dir=cache))
+    partial = folder / "download.part"
+    target = folder / INSTALLER_ASSET
+    started = time.monotonic()
+    try:
+        digest, total = hashlib.sha256(), 0
+        request = Request(info.asset_url, headers={"User-Agent": "oi-eegqc-updater"})
+        with (opener or installer_opener())(request, timeout=8) as response, partial.open("xb") as output:
+            while True:
+                if cancelled():
+                    raise DownloadCancelled()
+                if time.monotonic() - started > 1800:
+                    raise TimeoutError()
+                block = response.read(256 * 1024)
+                if not block:
+                    break
+                total += len(block)
+                if total > info.size:
+                    raise ValueError("更新文件大小不符")
+                output.write(block)
+                digest.update(block)
+                progress(int(total * 100 / info.size))
+        if total != info.size or digest.hexdigest() != info.digest[7:].lower():
+            raise ValueError("更新文件校验失败")
+        if cancelled():
+            raise DownloadCancelled()
+        partial.rename(target)
+        return target
+    except Exception:
+        partial.unlink(missing_ok=True)
+        folder.rmdir()
+        raise
+
+
+def launch_installer(path, info):
+    """Recheck the downloaded file immediately before handing off to Windows."""
+    import hashlib
+    import subprocess
+    import sys
+    from pathlib import Path
+    path = Path(path)
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        raise OSError("请使用桌面安装包更新")
+    if not downloadable(info) or path.stat().st_size != info.size:
+        raise ValueError("更新文件校验失败")
+    with path.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != info.digest[7:].lower():
+            raise ValueError("更新文件校验失败")
+    return subprocess.Popen([str(path), "/UPDATE=1", "/NORESTART", "/NOFORCECLOSEAPPLICATIONS"],
+                            close_fds=True)

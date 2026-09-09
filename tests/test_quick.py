@@ -260,3 +260,93 @@ def test_qml_cancel_scoring_and_resume(quick, tmp_path, monkeypatch):
     controller.scoreOrStop()
     wait(app, lambda: not controller.busy)
     assert controller.files.rows[0]["report"] is not None
+
+
+def test_qml_download_and_confirm_install(quick, tmp_path, monkeypatch):
+    import oi_eegqc.quick as module
+    from test_desktop_update import installer_info
+    app, controller, engine, window = quick
+    path = tmp_path / "setup.exe"
+    path.write_bytes(b"installer")
+    def download(info, cache, progress, cancelled):
+        progress(50)
+        progress(100)
+        return path
+    monkeypatch.setattr(module, "download_installer", download)
+    calls = []
+    monkeypatch.setattr(module, "launch_installer", lambda *args: calls.append(args))
+    controller._update_info = installer_info()
+    controller._update_url = controller._update_info.asset_url
+    controller.changed.emit()
+    controller.downloadUpdate()
+    wait(app, lambda: controller.updateReady and not controller.downloading)
+    assert controller.downloadProgress == 100
+    assert not calls
+    controller._busy = True
+    controller.installUpdate()
+    assert not calls and controller.installer_worker is None
+    controller._busy = False
+    controller.changed.emit()
+    window.resize(760, 760)
+    window.setProperty("settingsOpen", True)
+    app.processEvents()
+    button = window.findChild(QObject, "installUpdate")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     button.mapToScene(button.boundingRect().center()).toPoint())
+    popup = window.findChild(QObject, "installConfirmation")
+    wait(app, lambda: popup.property("visible"))
+    assert not calls
+    confirm = window.findChild(QObject, "confirmInstall")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     confirm.mapToScene(confirm.boundingRect().center()).toPoint())
+    wait(app, lambda: bool(calls))
+    wait(app, lambda: controller.installer_worker is None)
+    assert len(calls) == 1
+
+
+def test_qml_download_failure_is_retryable(quick, monkeypatch):
+    import oi_eegqc.quick as module
+    from test_desktop_update import installer_info
+    app, controller, engine, window = quick
+    def fail(*args):
+        raise OSError("offline")
+    monkeypatch.setattr(module, "download_installer", fail)
+    controller._update_info = installer_info()
+    for _ in range(2):
+        controller.downloadUpdate()
+        wait(app, lambda: not controller.downloading)
+        assert not controller.updateReady and controller.canDownload
+        assert "重试" in controller.updateText
+
+
+def test_qml_cancel_download_does_not_block_ui(quick, monkeypatch):
+    import oi_eegqc.quick as module
+    from test_desktop_update import installer_info
+    app, controller, engine, window = quick
+    def download(info, cache, progress, cancelled):
+        while not cancelled():
+            time.sleep(0.01)
+        raise module.DownloadCancelled()
+    monkeypatch.setattr(module, "download_installer", download)
+    controller._update_info = installer_info()
+    controller.downloadUpdate()
+    assert controller.downloading and not controller.busy
+    controller.cancelDownload()
+    wait(app, lambda: not controller.downloading)
+    assert not controller.updateReady and controller.updateText == "已取消下载"
+
+
+def test_qml_install_failure_keeps_window(quick, tmp_path, monkeypatch):
+    import oi_eegqc.quick as module
+    from test_desktop_update import installer_info
+    app, controller, engine, window = quick
+    def fail(*args):
+        raise OSError("launch denied")
+    monkeypatch.setattr(module, "launch_installer", fail)
+    controller._update_info = installer_info()
+    controller._installer = tmp_path / "setup.exe"
+    controller.installUpdate()
+    wait(app, lambda: controller.installer_worker is None)
+    assert not controller.busy and not controller.updateReady
+    assert window.isVisible()
+    assert "无法启动" in controller.updateText
