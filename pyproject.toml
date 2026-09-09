@@ -33,7 +33,7 @@ oi-eegqc-desktop = "oi_eegqc.desktop:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-oi_eegqc = ["py.typed", "qml/*.qml"]
+oi_eegqc = ["py.typed", "qml/*.qml", "layouts/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

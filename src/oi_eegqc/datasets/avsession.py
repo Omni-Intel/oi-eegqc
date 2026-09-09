@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
+from ..layouts import resolve_channel_names
 from ..types import RecordingInput
 from .base import AdapterError, DatasetAdapter, DatasetSpec
 
@@ -136,7 +137,17 @@ class AvSessionAdapter(DatasetAdapter):
         sfreq = float(meta.get("sfreq") or meta.get("expected_sampling_rate_hz") or 0.0)
         if sfreq <= 0:
             raise AdapterError(self.spec.name, f"{stamp} metadata is missing sfreq")
-        ch_names = [f"EEG{i:02d}" for i in range(int(data.shape[0]))]
+        declared_names = meta.get("channel_names") or meta.get("bdf_channel_labels")
+        if declared_names is not None:
+            declared_names = [str(x) for x in declared_names]
+            if not declared_names:
+                declared_names = None
+        ch_names, layout_id = resolve_channel_names(
+            int(data.shape[0]),
+            names=declared_names,
+            layout_id=meta.get("channel_layout"),
+            device_type=meta.get("device_type"),
+        )
         problems = _integrity_problems(meta, events, termination)
         extra = {
             "dataset": self.spec.name,
@@ -149,6 +160,8 @@ class AvSessionAdapter(DatasetAdapter):
             "task_mode": meta.get("task_mode"),
             "unit": self.unit,
         }
+        if layout_id:
+            extra["channel_layout"] = layout_id
         subject = str(meta.get("subject_id", stamp.parent.name))
         if "video" in self.kinds:
             for i, (a, b, _, __) in enumerate(pair_events(events, "video_on", "video_off"), start=1):

@@ -10,14 +10,12 @@ from .config import BenchConfig, load_config
 from .io.array import load_npy
 from .qa.windows import assess_windows
 from .scoring.grades import (
-    apply_bad_channel_ceiling,
-    availability_from_report,
     collect_hard_fails,
     compute_dimension_scores,
     gqi_from_scores,
-    letter_from_odq,
 )
-from .types import LetterGrade, QualityReport, RecordingInput
+from .scoring.explain import build_operator
+from .types import QualityReport, RecordingInput
 
 
 def evaluate_recording(
@@ -46,7 +44,7 @@ def evaluate_recording(
     dur_prof = cfg.select_duration(duration_s)
     mon_prof = cfg.select_montage(eeg.shape[0])
 
-    window_qa = assess_windows(
+    window_qa, channel_issues = assess_windows(
         eeg,
         names,
         recording.sfreq,
@@ -75,18 +73,13 @@ def evaluate_recording(
     gqi, penalties, effective_weights = gqi_from_scores(scores, cfg)
 
     if hard_fails:
-        letter = LetterGrade.D
         gqi = 0.0
         reasons = hard_fails + reasons
-    else:
-        letter = letter_from_odq(window_qa.odq, cfg.letter, dur_prof)
-        letter = apply_bad_channel_ceiling(letter, window_qa.bad_channel_pct, mon_prof)
 
-    availability = availability_from_report(letter, gqi, bool(hard_fails))
-
-    return QualityReport(
-        letter_grade=letter,
-        availability=availability,
+    report = QualityReport(
+        # Intake no longer settles on letter / availability tracks.
+        letter_grade=None,
+        availability=None,
         gqi=gqi,
         odq=window_qa.odq,
         usable_ratio=window_qa.usable_window_ratio,
@@ -111,6 +104,7 @@ def evaluate_recording(
             "input_unit": recording.unit,
             "stimulus_duration_s": recording.stimulus_duration_s,
             "sync_error_ms": recording.sync_error_ms,
+            "decision_tracks": {"letter": False, "availability": False},
             # Which dimensions actually had inputs, and the weights after
             # redistributing the unassessed ones.
             "assessed_dimensions": sorted(n for n, s in scores.items() if s.assessed),
@@ -118,8 +112,13 @@ def evaluate_recording(
             "dimension_quality": {
                 k: round(v.quality, 4) for k, v in scores.items() if v.assessed
             },
+            "channel_issues": channel_issues,
         },
     )
+    if recording.meta.get("channel_layout"):
+        report.extras["channel_layout"] = recording.meta["channel_layout"]
+    report.extras["operator"] = build_operator(report)
+    return report
 
 
 def evaluate_batch(

@@ -12,7 +12,7 @@ from oi_eegqc.io.array import load_npy, orient_channels_first
 from oi_eegqc.io.edf import infer_unit
 from oi_eegqc.io.segment import centered_clips, concat_epochs, epoch_duration_plan
 from oi_eegqc.pipeline import evaluate_recording
-from oi_eegqc.types import LetterGrade, RecordingInput
+from oi_eegqc.types import RecordingInput
 
 
 def test_orient_channels_first_uses_name_count():
@@ -118,6 +118,7 @@ def test_avsession_adapter_cuts_video_events(tmp_path: Path):
     assert recs[0].meta["kind"] == "video"
     assert recs[0].unit == "uV"
     assert recs[0].data.shape == (8, int(2.5 * sfreq))
+    assert recs[0].ch_names == [f"EEG{i:02d}" for i in range(8)]
     rows, summary = score_adapter(open_dataset("avsession", tmp_path))
     assert summary["n_total"] == 2
     assert rows[0]["extras"]["dataset"] == "avsession"
@@ -129,8 +130,11 @@ def test_synthetic_adapter_scores():
     assert summary["n_total"] == 4
     assert summary["cancelled"] is False
     by_id = {r["clip_id"]: r for r in rows}
-    assert by_id["synthetic_clean"]["letter_grade"] == "A"
-    assert by_id["synthetic_saturated"]["letter_grade"] == "D"
+    assert by_id["synthetic_clean"]["letter_grade"] is None
+    assert by_id["synthetic_saturated"]["letter_grade"] is None
+    assert by_id["synthetic_clean"]["gqi"] > by_id["synthetic_saturated"]["gqi"]
+    assert by_id["synthetic_saturated"]["gqi"] == 0.0
+    assert rows[0]["schema_version"] == "oi-eegqc-report-v2"
     assert "schema_version" in rows[0]
     assert rows[0]["extras"]["dataset"] == "synthetic"
     assert "device" not in rows[0]
@@ -152,4 +156,6 @@ def test_evaluate_recording_still_the_only_scoring_entry():
         expected_n_channels=8,
     )
     report = evaluate_recording(rec)
-    assert report.letter_grade == LetterGrade.A
+    assert report.letter_grade is None
+    assert report.gqi > 0
+    assert report.extras["decision_tracks"]["letter"] is False

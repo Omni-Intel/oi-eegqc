@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..layouts import resolve_channel_names
 from ..types import RecordingInput
 
 _CHANNEL_DIM_CAP = 512
@@ -80,6 +81,8 @@ def load_npy(
     *,
     ch_names: list[str] | None = None,
     ch_names_path: str | Path | None = None,
+    channel_layout: str | None = None,
+    device_type: str | None = None,
     channels_first: bool | None = None,
     unit: str = "uV",
     **kwargs,
@@ -89,8 +92,18 @@ def load_npy(
     arr = np.asarray(np.load(path), dtype=float)
     n_hint = len(ch_names) if ch_names is not None else None
     arr = orient_channels_first(arr, n_hint, channels_first=channels_first)
-    if ch_names is None:
+    layout_id = None
+    if ch_names is None and ch_names_path is not None:
         ch_names = load_channel_names(ch_names_path, arr.shape[0])
+    if ch_names is None:
+        if channel_layout or device_type:
+            ch_names, layout_id = resolve_channel_names(
+                arr.shape[0],
+                layout_id=channel_layout,
+                device_type=device_type,
+            )
+        else:
+            ch_names = load_channel_names(None, arr.shape[0])
     if len(ch_names) != arr.shape[0]:
         raise ValueError(
             f"ch_names length {len(ch_names)} does not match {arr.shape[0]} channels"
@@ -98,6 +111,8 @@ def load_npy(
     fields, extras = split_recording_kwargs(kwargs)
     fields.setdefault("clip_id", path.stem)
     extras.setdefault("source_path", str(path))
+    if layout_id:
+        extras.setdefault("channel_layout", layout_id)
     return RecordingInput(
         data=arr,
         sfreq=float(sfreq),

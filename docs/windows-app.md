@@ -32,6 +32,11 @@ Windows 进程不读波形；评分在本地 Python 里完成，不接云。
 一个窗口、一张表：文件、GQI（0–100）、状态。
 字母分和可用性仍写在报告 JSON 里，界面不当入库判定；入库线不写进软件。
 
-NPY 缺采样率或单位时弹窗；EDF/BDF 读文件头。设置里可改数组排列、50/60 Hz 电网，并检查更新。
+NPY 缺采样率或单位时弹窗；EDF/BDF 读文件头。已知 SDK 的行序见
+[channel-layouts.md](channel-layouts.md)，可在 sidecar 里写 `channel_layout`。
+设置里可改数组排列、50/60 Hz 电网、是否全通道（关掉后勾选导联），并检查更新。
+评分后点「查看」或双击该行，看子项分数和哪一路出了问题。
+强脑 session 文件夹（`continuous_eeg.npy` + `metadata.json`）会自动对上通道名。
+批量摘要是平均 GQI，外加按时长加权的可用时间比例。
 
 详细操作见 [desktop.md](desktop.md)。

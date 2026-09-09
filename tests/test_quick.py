@@ -1,12 +1,19 @@
+import os
 import json
 import re
 import time
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QSettings, Qt, QUrl
-from PySide6.QtWidgets import QApplication
-from PySide6.QtTest import QTest
-from oi_eegqc.quick import Controller, create_engine
+
+try:
+    from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QSettings, Qt, QUrl
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtTest import QTest
+    from oi_eegqc.quick import Controller, create_engine
+except ImportError as exc:
+    pytest.skip(f"Qt unavailable: {exc}", allow_module_level=True)
 
 
 def wait(app, predicate, timeout=15):
@@ -91,6 +98,32 @@ def test_qml_nested_import_parameters_dedup_and_score(quick, tmp_path):
     wait(app, lambda: not controller.busy)
     assert all(r["report"] and r["state"] == "完成" for r in controller.files.rows)
     assert "平均" in controller.summary
+    assert "可用" in controller.summary
+
+
+def test_qml_channel_subset_and_cancel_restores_all(quick, tmp_path):
+    app, controller, engine, window = quick
+    path = tmp_path / "clip.npy"
+    recording(path)
+    controller.add_paths([path])
+    wait(app, lambda: not controller.busy)
+    controller.setAllChannels(False)
+    wait(app, lambda: controller.channelsOpen and controller.channelCount == 4)
+    controller.cancelChannels()
+    wait(app, lambda: not controller.channelsOpen)
+    assert controller.allChannels
+    controller.setAllChannels(False)
+    wait(app, lambda: controller.channelsOpen)
+    controller.clearChannels()
+    controller.toggleChannel(0)
+    controller.acceptChannels()
+    wait(app, lambda: not controller.channelsOpen)
+    assert not controller.allChannels
+    controller.scoreOrStop()
+    wait(app, lambda: not controller.busy)
+    report = controller.files.rows[0]["report"]
+    assert report is not None
+    assert report.n_channels_used == 1
 
 
 def test_qml_update_and_cancel_intake(quick, tmp_path, monkeypatch):
@@ -134,6 +167,13 @@ def test_qml_native_drop_and_score_button(quick, tmp_path):
     point = button.mapToScene(button.boundingRect().center()).toPoint()
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
     wait(app, lambda: controller.files.rows[0]["report"] is not None and not controller.busy)
+    controller.select(0, 0)
+    controller.openReport(0)
+    wait(app, lambda: controller.reportOpen)
+    assert controller.reportCard["score"]
+    assert any(item["name"] == "接触" for item in controller.reportCard["dimensions"])
+    controller.closeReport()
+    wait(app, lambda: not controller.reportOpen)
 
 
 def test_qml_cancel_scoring_and_resume(quick, tmp_path, monkeypatch):

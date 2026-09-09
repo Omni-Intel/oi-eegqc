@@ -1,0 +1,47 @@
+layout_schema: oi-eegqc-layout-v1
+id: bcigo_sdk_1.0.2
+sdk: bcigo-sdk
+sdk_version: "1.0.2"
+n_channels: 32
+device_aliases:
+  - brainco
+  - bcigo
+source: >
+  Native EDF label table in bcigo-sdk 1.0.2 (_bcigo_sdk.abi3.so).
+  The PyPI "Channel Layout" section is anatomical grouping, not ndarray row order.
+notes: >
+  Row 0 is P8. Row 28 is IO (EDF label "EOG IO"). IO is a recorded channel and
+  is not dropped as aux. Do not number the PyPI list as array indices.
+channels:
+  - {index: 0, name: P8, edf_label: "EEG P8", kind: eeg}
+  - {index: 1, name: P7, edf_label: "EEG P7", kind: eeg}
+  - {index: 2, name: T8, edf_label: "EEG T8", kind: eeg}
+  - {index: 3, name: T7, edf_label: "EEG T7", kind: eeg}
+  - {index: 4, name: F8, edf_label: "EEG F8", kind: eeg}
+  - {index: 5, name: F7, edf_label: "EEG F7", kind: eeg}
+  - {index: 6, name: O2, edf_label: "EEG O2", kind: eeg}
+  - {index: 7, name: O1, edf_label: "EEG O1", kind: eeg}
+  - {index: 8, name: P4, edf_label: "EEG P4", kind: eeg}
+  - {index: 9, name: P3, edf_label: "EEG P3", kind: eeg}
+  - {index: 10, name: C4, edf_label: "EEG C4", kind: eeg}
+  - {index: 11, name: C3, edf_label: "EEG C3", kind: eeg}
+  - {index: 12, name: F4, edf_label: "EEG F4", kind: eeg}
+  - {index: 13, name: F3, edf_label: "EEG F3", kind: eeg}
+  - {index: 14, name: Fp2, edf_label: "EEG Fp2", kind: eeg}
+  - {index: 15, name: Fp1, edf_label: "EEG Fp1", kind: eeg}
+  - {index: 16, name: TP10, edf_label: "EEG TP10", kind: eeg}
+  - {index: 17, name: TP9, edf_label: "EEG TP9", kind: eeg}
+  - {index: 18, name: FT10, edf_label: "EEG FT10", kind: eeg}
+  - {index: 19, name: FT9, edf_label: "EEG FT9", kind: eeg}
+  - {index: 20, name: CP6, edf_label: "EEG CP6", kind: eeg}
+  - {index: 21, name: CP5, edf_label: "EEG CP5", kind: eeg}
+  - {index: 22, name: FC6, edf_label: "EEG FC6", kind: eeg}
+  - {index: 23, name: FC5, edf_label: "EEG FC5", kind: eeg}
+  - {index: 24, name: CP2, edf_label: "EEG CP2", kind: eeg}
+  - {index: 25, name: CP1, edf_label: "EEG CP1", kind: eeg}
+  - {index: 26, name: FC2, edf_label: "EEG FC2", kind: eeg}
+  - {index: 27, name: FC1, edf_label: "EEG FC1", kind: eeg}
+  - {index: 28, name: IO, edf_label: "EOG IO", kind: eog}
+  - {index: 29, name: Pz, edf_label: "EEG Pz", kind: eeg}
+  - {index: 30, name: Cz, edf_label: "EEG Cz", kind: eeg}
+  - {index: 31, name: Fz, edf_label: "EEG Fz", kind: eeg}

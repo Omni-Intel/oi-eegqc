@@ -14,9 +14,9 @@ from oi_eegqc.io import write_bench_json
 def _log(rec, report) -> None:
     clip = rec.meta.get("clip", "")
     print(
-        f"{rec.session_id} {clip:>6s}: grade={report.letter_grade.value} "
+        f"{rec.session_id} {clip:>6s}: "
         f"GQI={report.gqi:5.1f} ODQ={report.odq:5.1f} "
-        f"clean={report.clean_ratio:.2f} {report.availability.value}"
+        f"clean={report.clean_ratio:.2f}"
     )
     for problem in rec.meta.get("integrity_problems") or []:
         print(f"   integrity: {problem}")

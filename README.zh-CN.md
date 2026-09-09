@@ -26,7 +26,8 @@
   <a href="#机器协议">机器协议</a> ·
   <a href="docs/windows-app.zh-CN.md">Windows 壳层</a> ·
   <a href="#阈值标定">标定</a> ·
-  <a href="#配置">配置</a>
+  <a href="#配置">配置</a> ·
+  <a href="docs/channel-layouts.zh-CN.md">通道布局</a>
 </p>
 
 <p align="center">
@@ -142,10 +143,10 @@ oi-eegqc serve --stdio
 | 相对离群检测 | 通道自身时间维 + 跨通道空间维 robust-z |
 | 频谱 QA | 宽带高频噪信比与工频干扰，并保留连续量 |
 | 空间耦合 | Top-3 邻道相关；导联过于稀疏时自动关闭 |
-| 字母评级 | WeBrain 式 **A / B / C / D**，作用于可用录制时长（先只写进 JSON） |
+| 字母评级 | **已关闭**（报告里 `letter_grade: null`） |
 | 可分解 GQI | **0–100**，维度：接触 · 洁净 · 可用时长 · 完整性 · 刺激同步 —— **对外分数** |
-| 硬性否决门 | 事件损坏、放大器打满、导联大面积缺失 → 直接拒收 |
-| 可用性旗标 | HBN 式 **Available / Caution / Unavailable**，由字母派生（先只写进 JSON） |
+| 硬性否决门 | 事件损坏、放大器打满、导联大面积缺失 → GQI = 0 |
+| 可用性旗标 | **已关闭**（报告里 `availability: null`） |
 | 阈值版本化 | 每条分数携带 `threshold_version`，可审计 |
 
 ### 两个不能混为一谈的质量数
@@ -153,7 +154,7 @@ oi-eegqc serve --stdio
 `clean_ratio` 与 `usable_ratio` 回答的是不同问题，分开上报：
 
 - **`clean_ratio`** 是**通道×窗格子**上的污染**密度**：录到的面有多少被污染。
-- **`usable_ratio`**（×100 = **ODQ**）是**时间**指标：坏道占比不超过 `max_bad_ch_frac_per_window` 的窗所占比例，即有多少秒还能用。这与 WeBrain 定义 A/B/C/D 档位线时所用的量一致。
+- **`usable_ratio`**（×100 = **ODQ**）是**时间**指标：坏道占比不超过窗预算的窗所占比例，即有多少秒还能用。
 
 每个窗都有 10% 坏道 → `clean_ratio` 0.90 而 ODQ 100；10% 的窗整段报废 → `clean_ratio` 0.90 而 ODQ 90。把两者合成一个数，会让它在 GQI 的两个权重里被重复计算。
 
@@ -163,7 +164,7 @@ oi-eegqc serve --stdio
 - **假设数据纯粹。** 事件、montage、单位、片段边界属于协议，而不是事后考古。
 - **按时长适配，不写死一个窗。** 6 秒与 60 秒不能共用同一套统计。
 - **按通道密度适配，不写死一个阈值。** 低密度阵列不能照搬高密度相关门槛。
-- **先 QA 后 QC。** 连续指标在前；对外分数是 GQI。字母 / 可用性仍写在报告里，入库线以后再定。
+- **先 QA 后 QC。** 连续指标在前；对外分数是 GQI 与可用时间。字母 / 可用性轨已关闭。
 - **一份权威报告体。** `report.to_dict()` 是机器契约；可视化是派生视图。
 - **绝不给认知打分。** 频带比、「专注」「投入」、难度相关 ERP 不进验收主分。
 - **绝不洗白分母。** 死导、平坦导留在导联里并扣分。悄悄剔掉它们，会让四分之一电极脱落的记录报出满分。
@@ -173,19 +174,15 @@ oi-eegqc serve --stdio
 ## 质量分数
 
 CLI 和桌面显示的数是 **GQI（0–100）**。
-字母分和可用性仍写入报告 JSON，方便以后划入库线；界面上不再给第二套判定。
+字母分和可用性字段在报告 JSON 里仍保留键名，但值固定为 `null`（`oi-eegqc-report-v2`）。界面和入库只认 GQI 与可用时间。
 
 | 字段 | 刻度 | 给人看 |
 | --- | --- | --- |
 | **GQI** | 0–100 + 维度分解 | **是。** 现在用来排序，以后用来划线 |
-| 字母 | A / B / C / D | 目前只在 JSON 里 |
-| 可用性 | Available / Caution / Unavailable | 目前只在 JSON 里 |
+| 可用时间 | 0–100% | **是。** 批量时按时长加权 |
+| 字母 / 可用性 | `null` | 否，轨已关闭 |
 
-GQI 只在实际评估过的维度上加权（接触、洁净、可用时长、完整性、刺激同步）。没测的维度不白送分。
-
-字母仍由 ODQ 加坏道上限阶梯得出。在按 GQI 定出入库线之前，不用它当产品判定。
-
-字母按设计是阶梯跳变。GQI 才是连续轨道：某种退化一次性把所有窗都推过坏道预算时，字母会陡降，而 GQI 因为混合了标记密度与连续频谱量，仍然平滑下降。
+GQI 只在实际评估过的维度上加权（接触、洁净、可用时长、完整性、刺激同步）。没测的维度不白送分。GQI 是连续轨道；可用时间单独看。
 
 ## 机器协议
 
@@ -198,7 +195,7 @@ stdin/stdout 上走 NDJSON。Windows 交付是 Qt zip，不是 Electron。
 | 字段 | 示例 | 何时改 |
 | --- | --- | --- |
 | 信封上的 `schema_version` | `oi-eegqc-protocol-v1` | 信封键（`ok` / `event` / `kind`） |
-| 报告体上的 `schema_version` | `oi-eegqc-report-v1` | `QualityReport.to_dict()` 的字段 |
+| 报告体上的 `schema_version` | `oi-eegqc-report-v2` | `QualityReport.to_dict()` 的字段 |
 | `threshold_version` | `oi-eegqc-v0.2.0` | 评分阈值（与线协议正交） |
 
 机器模式下 stdout **只有 JSON**。警告和人读进度走 stderr。
@@ -229,10 +226,9 @@ Windows 入库界面是原生 Qt 安装器或 zip（`OI-EEGQC.exe`），不签�
 4. 零相位 Butterworth 高通（>1 Hz）
 5. 选择**时长 profile** + **montage profile**
 6. 窗级 QA → `clean_ratio`（格子密度）与 `usable_ratio`/ODQ（存活时长）
-7. 硬性否决门：事件损坏、放大器打满、导联缺失
-8. 由 ODQ 定字母，再由坏道占比上限封顶
-9. GQI 只在已评估维度上做归一化加权
-10. 可用性旗标由字母派生
+7. 硬性否决门：事件损坏、放大器打满、导联缺失 → GQI = 0
+8. GQI 只在已评估维度上做归一化加权
+9. 字母 / 可用性轨关闭（报告字段为 `null`）
 
 ## 阈值标定
 
@@ -267,12 +263,15 @@ oi-eegqc init-config -o my_qc.yaml
 
 也可直接改 [`configs/default.yaml`](configs/default.yaml)。阈值变更时务必上调 `threshold_version`，保证历史分数可比。
 
+厂商通道表（当前 BrainCo `bcigo-sdk` 1.0.2，以及以后的 SDK）是可选覆层 —— 见 [通道布局](docs/channel-layouts.zh-CN.md)。评分不会从数组长度反推 montage。
+
 ## 目录结构
 
 ```text
 .
 ├── assets/                 # hero 与字标
 ├── configs/default.yaml    # 时长与 montage 配置
+├── docs/channel-layouts.zh-CN.md  # 具名 SDK 行序（可选覆层）
 ├── docs/windows-app.zh-CN.md  # Windows 原生 QC 薄壳
 ├── examples/
 │   ├── sidecar_session.py            # stdio sidecar 客户端（Windows 应对齐这份）
@@ -283,12 +282,13 @@ oi-eegqc init-config -o my_qc.yaml
 ├── src/oi_eegqc/
 │   ├── io/                 # npy / EDF / BDF / 切段 / 报告
 │   ├── datasets/           # npy、hw、avsession、nod、things、synthetic 适配器
+│   ├── layouts/            # 具名 SDK 通道表（YAML）
 │   ├── protocol.py         # 信封与结构化错误
 │   ├── serve.py            # NDJSON stdio sidecar
 │   ├── adapters.py         # 通道选择、削波、高通、分窗
 │   ├── config.py           # 自适应 profile 与阈值
 │   ├── qa/windows.py       # 窗级检测器 → clean_ratio + ODQ
-│   ├── scoring/grades.py   # 字母 / GQI / 可用性 / 硬性否决
+│   ├── scoring/grades.py   # GQI / 硬性否决（字母函数留给标定脚本）
 │   ├── pipeline.py         # evaluate_recording
 │   └── cli.py              # oi-eegqc 入口
 └── tests/
@@ -321,7 +321,7 @@ oi-eegqc init-config -o my_qc.yaml
 - 零方差通道在评分前被丢弃，32 导中 8 导死亡仍报 A 且原因列表为空。现在它们留在分母里并被扣分。
 - 幅度离群用的是跨通道 MAD，在 50% 污染时崩溃，半个导联被衰减仍得满分 ODQ。现在改为通道自身时间维检测，跨通道检验仅保留高侧且要求至少 8 导。
 - 不可用数据的 GQI 卡在 26/100，因为未测维度白送了权重。现在权重在已评估维度间重分配，GQI 可达 0。
-- 所有 D 级片段都报 `Caution`。现在可用性由字母派生，D 一律 `Unavailable`。
+- 字母档 / 可用性曾当第二套判定。`oi-eegqc-report-v2` 起这两轨关闭，字段保留为 `null`。
 - 信号带 `(1, 50)` 与噪声带 `(50, 100)` 都包含工频，同一份功率被当作信号又当作噪声。现在改为 `(1, 45)` 与 `(55, 95)`，并配独立的工频检测器。
 - 时长与同步完整性从未被真正考核：bench 把每个片段自身的长度当作刺激时长传回，并硬编码一个合格的同步误差。现在华为 bench 改用采样数与墙钟时间互校，未标定的同步则记为未评估。
 
@@ -330,7 +330,7 @@ oi-eegqc init-config -o my_qc.yaml
 包版本 `0.3.0`。评分与 `threshold_version` 不变（仍为 `oi-eegqc-v0.2.0`）。
 本版是机器协议与桌面交付层：
 
-- 协议信封（`oi-eegqc-protocol-v1`）与报告体（`oi-eegqc-report-v1`）分开。
+- 协议信封（`oi-eegqc-protocol-v1`）与报告体（`oi-eegqc-report-v2`）分开。
 - `--json` / `--ndjson` / `--quiet`；机器模式下人读文字走 stderr。
 - `oi-eegqc serve --stdio`，批次可取消。
 - `oi-eegqc score` 评单文件或文件夹；NPY sidecar 可补采样率 / 单位。

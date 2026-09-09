@@ -18,7 +18,8 @@ ApplicationWindow {
     Connections { target: backend; function onCloseReady() { window.close() } }
     Shortcut { sequences: [StandardKey.Open]; enabled: !backend.busy && !metadata.opened; onActivated: files.open() }
     Shortcut { sequences: [StandardKey.SelectAll]; enabled: !backend.busy && !settings.opened; onActivated: backend.selectAll() }
-    Shortcut { sequence: "Delete"; enabled: !backend.busy && !settings.opened; onActivated: backend.remove(false) }
+    Shortcut { sequence: "Return"; enabled: !backend.busy && !metadata.opened && !backend.channelsOpen; onActivated: backend.openSelectedReport() }
+    Shortcut { sequence: "Enter"; enabled: !backend.busy && !metadata.opened && !backend.channelsOpen; onActivated: backend.openSelectedReport() }
 
     FileDialog {
         id: files
@@ -50,6 +51,7 @@ ApplicationWindow {
                     Layout.fillWidth: true; Layout.leftMargin: 18; Layout.rightMargin: 18; Layout.preferredHeight: 44
                     Text { text: "文件"; color: "#89929b"; Layout.fillWidth: true }
                     Text { text: "分数"; color: "#89929b"; Layout.preferredWidth: 76; horizontalAlignment: Text.AlignRight }
+                    Text { text: ""; Layout.preferredWidth: 44 }
                     Text { text: "状态"; color: "#89929b"; Layout.preferredWidth: 96; horizontalAlignment: Text.AlignRight }
                 }
                 Rectangle { visible: backend.count > 0; Layout.fillWidth: true; height: 1; color: "#eff1f3" }
@@ -76,6 +78,7 @@ ApplicationWindow {
                         required property string state
                         required property string detail
                         required property bool chosen
+                        required property bool ready
                         width: ListView.view.width; height: 54
                         color: chosen ? "#eaf0f5" : mouse.containsMouse ? "#f6f8fa" : "transparent"
                         Behavior on color { ColorAnimation { duration: 90 } }
@@ -84,6 +87,22 @@ ApplicationWindow {
                             anchors.fill: parent; anchors.leftMargin: 18; anchors.rightMargin: 18; spacing: 12
                             Text { text: row.label; textFormat: Text.PlainText; color: "#303941"; elide: Text.ElideMiddle; Layout.fillWidth: true }
                             Text { text: row.score; color: "#303941"; font.pixelSize: 15; Layout.preferredWidth: 76; horizontalAlignment: Text.AlignRight }
+                            Text {
+                                text: row.ready ? "查看" : ""
+                                color: "#6c8296"
+                                Layout.preferredWidth: 44
+                                horizontalAlignment: Text.AlignRight
+                                MouseArea {
+                                    anchors.fill: parent
+                                    enabled: row.ready
+                                    onClicked: function(event) {
+                                        list.forceActiveFocus(); list.currentIndex = row.index
+                                        backend.select(row.index, 0)
+                                        backend.openReport(row.index)
+                                        event.accepted = true
+                                    }
+                                }
+                            }
                             Text { text: row.state; color: "#88939d"; Layout.preferredWidth: 96; horizontalAlignment: Text.AlignRight }
                         }
                         Rectangle { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 18; anchors.rightMargin: 18; height: 1; color: "#f0f2f4" }
@@ -95,6 +114,9 @@ ApplicationWindow {
                                     if (!row.chosen) backend.select(row.index, 0);
                                     if (!backend.busy) rowMenu.popup();
                                 } else backend.select(row.index, event.modifiers);
+                            }
+                            onDoubleClicked: function(event) {
+                                if (row.ready) backend.openReport(row.index);
                             }
                         }
                         ToolTip.visible: mouse.containsMouse && !backend.busy
@@ -156,6 +178,23 @@ ApplicationWindow {
             QuietCombo { objectName: "orderCombo"; Layout.fillWidth: true; model: ["默认", "通道 × 采样点", "采样点 × 通道"]; currentIndex: backend.orderIndex; onActivated: backend.saveSettings(currentIndex, backend.mains) }
             Text { text: "电网频率"; color: "#7c8791"; Layout.topMargin: 4 }
             QuietCombo { Layout.fillWidth: true; model: ["50 赫兹", "60 赫兹"]; currentIndex: backend.mains === 60 ? 1 : 0; onActivated: backend.saveSettings(backend.orderIndex, currentIndex === 1 ? 60 : 50) }
+            CheckBox {
+                id: allChannels
+                objectName: "allChannels"
+                Layout.fillWidth: true
+                Layout.topMargin: 4
+                text: "全通道"
+                checked: backend.allChannels
+                palette.windowText: "#303941"
+                onClicked: backend.setAllChannels(checked)
+            }
+            QuietButton {
+                objectName: "pickChannels"
+                text: "选择通道"
+                visible: !backend.allChannels
+                Layout.fillWidth: true
+                onClicked: backend.openChannelSheet()
+            }
             Rectangle { Layout.fillWidth: true; height: 1; color: "#eff1f3"; Layout.topMargin: 6; Layout.bottomMargin: 4 }
             Text { text: "当前版本 " + backend.version; color: "#99a2ab" }
             QuietButton { objectName: "checkUpdateButton"; text: backend.checking ? "正在检查…" : "检查更新"; enabled: !backend.checking; Layout.fillWidth: true; onClicked: backend.checkUpdate() }
@@ -183,6 +222,8 @@ ApplicationWindow {
             }
         }
     }
+    ChannelSheet { backend: backend }
+    ReportSheet { backend: backend }
     Connections {
         target: backend
         function onParametersChanged() {
@@ -190,6 +231,10 @@ ApplicationWindow {
                 rate.text = String(backend.parameters.sfreq); unit.currentIndex = backend.parameters.unit; reuse.checked = false;
                 metadata.open(); rate.forceActiveFocus();
             } else metadata.close();
+        }
+        function onChanged() {
+            if (allChannels.checked !== backend.allChannels)
+                allChannels.checked = backend.allChannels
         }
     }
 }

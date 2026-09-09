@@ -23,7 +23,7 @@ _NOD_CHANNELS = (
 def _log(rec, report) -> None:
     print(
         f"[{rec.meta.get('dataset')}] {rec.subject_id} {rec.meta.get('plan')}: "
-        f"grade={report.letter_grade.value} GQI={report.gqi:5.1f} "
+        f"GQI={report.gqi:5.1f} "
         f"ODQ={report.odq:5.1f} clean={report.clean_ratio:.2f} "
         f"badch={report.window_qa.bad_channel_pct:4.1f}%"
     )

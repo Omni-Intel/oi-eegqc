@@ -26,7 +26,8 @@ Native desktop app: select or drop multiple files and score locally with default
   <a href="#machine-protocol">Machine protocol</a> ·
   <a href="docs/windows-app.md">Windows app</a> ·
   <a href="#threshold-calibration">Calibration</a> ·
-  <a href="#configuration">Config</a>
+  <a href="#configuration">Config</a> ·
+  <a href="docs/channel-layouts.md">Channel layouts</a>
 </p>
 
 <p align="center">
@@ -148,10 +149,10 @@ scale, and the absolute gates cannot be applied to it at all.
 | Relative outlier detection | Per-channel temporal and cross-channel spatial robust-z |
 | Spectral QA | Broadband HF noise-to-signal and mains-band interference, kept as continuous measures |
 | Spatial coupling | Top-3 neighbour correlation, auto-disabled on montages too sparse to be diagnostic |
-| Letter grading | WeBrain-style **A / B / C / D** on usable recording time (JSON only until a cutoff is chosen) |
+| Letter grading | **Closed** (`letter_grade: null` in the report) |
 | Decomposable GQI | **0–100** over contact · cleanliness · usable time · integrity · stimulus sync — **the operator score** |
-| Hard-fail gates | Broken markers, railed amplifier or missing montage reject outright |
-| Availability flag | HBN-style **Available / Caution / Unavailable**, derived from the letter (JSON only) |
+| Hard-fail gates | Broken markers, railed amplifier or missing montage → GQI = 0 |
+| Availability flag | **Closed** (`availability: null` in the report) |
 | Versioned thresholds | Every score carries `threshold_version` for auditability |
 
 ### Two quality numbers that are not the same thing
@@ -176,7 +177,7 @@ Collapsing them into one number would double-count it across two GQI weights.
 - **Assume pure intake.** Events, montage, units, and clip boundaries are part of the protocol — not recovered archaeology.
 - **Adapt, don’t hard-code one window.** A 6s clip and a 60s clip need different statistics.
 - **Adapt, don’t hard-code one montage.** Low-density arrays must not inherit high-density correlation thresholds.
-- **QA then QC.** Continuous metrics first; GQI is the operator score. Letter / availability stay in the report for a later cutoff.
+- **QA then QC.** Continuous metrics first; the operator score is GQI plus usable time. Letter / availability tracks are closed.
 - **One canonical report body.** `report.to_dict()` is the machine-readable contract; HTML dashboards are derived views.
 - **Never score cognition.** Band ratios, “focus”, “engagement”, or difficulty-dependent ERPs are out of scope for acceptance.
 - **Never launder the denominator.** Dead and flat channels stay in the montage and are penalised. Silently dropping them lets a recording with a quarter of its electrodes detached report a perfect score.
@@ -186,19 +187,15 @@ Collapsing them into one number would double-count it across two GQI weights.
 ## Quality score
 
 The number shown in the CLI and desktop app is **GQI (0–100)**.
-Letter grades and availability flags are still written into the report JSON so an intake cutoff can be chosen later; they are not a second on-screen verdict.
+Letter and availability keys remain in the report JSON but are always `null` (`oi-eegqc-report-v2`). Intake and the UI only use GQI and usable time.
 
 | Field | Scale | Operator-facing |
 | --- | --- | --- |
 | **GQI** | 0–100 + dimension breakdown | **Yes.** Ranking now; cutoff later |
-| Letter | A / B / C / D | JSON only for now |
-| Availability | Available / Caution / Unavailable | JSON only for now |
+| Usable time | 0–100% | **Yes.** Duration-weighted in batches |
+| Letter / availability | `null` | No — tracks closed |
 
-GQI is a weighted average over the dimensions that were actually assessed (contact, cleanliness, usable time, integrity, stimulus sync). Untested dimensions do not get free credit.
-
-Letters remain a stepped function of ODQ plus bad-channel caps. They will not be used as the product decision until a cutoff is set against GQI.
-
-Letter grades move in steps by design. GQI is the continuous track: a degradation that pushes every window past the bad-channel budget at once will drop the letter sharply while GQI declines smoothly, since it blends flag density with continuous spectral measures.
+GQI is a weighted average over the dimensions that were actually assessed (contact, cleanliness, usable time, integrity, stimulus sync). Untested dimensions do not get free credit. GQI is the continuous track; usable time is reported separately.
 
 ## Machine protocol
 
@@ -211,7 +208,7 @@ Two version strings stay distinct:
 | Field | Example | When it changes |
 | --- | --- | --- |
 | `schema_version` on the envelope | `oi-eegqc-protocol-v1` | Envelope keys (`ok`, `event`, `kind`) |
-| `schema_version` on a report | `oi-eegqc-report-v1` | Fields inside `QualityReport.to_dict()` |
+| `schema_version` on a report | `oi-eegqc-report-v2` | Fields inside `QualityReport.to_dict()` |
 | `threshold_version` | `oi-eegqc-v0.2.0` | Scoring cutoffs (orthogonal to the wire format) |
 
 Stdout in machine mode is JSON only. Warnings and human progress go to stderr.
@@ -224,7 +221,7 @@ oi-eegqc --ndjson bench synthetic --channels 32 --duration 12
 ```
 
 ```text
-{"ok":true,"schema_version":"oi-eegqc-protocol-v1","kind":"batch","event":"progress","done":1,"total":4,"clip_id":"synthetic_clean","letter_grade":"A","gqi":98.2}
+{"ok":true,"schema_version":"oi-eegqc-protocol-v1","kind":"batch","event":"progress","done":1,"total":4,"clip_id":"synthetic_clean","letter_grade":null,"gqi":98.2}
 {"ok":true,"schema_version":"oi-eegqc-protocol-v1","kind":"batch","event":"done","reports":[...],"summary":{...},"cancelled":false}
 ```
 
@@ -258,10 +255,9 @@ see [docs/windows-app.md](docs/windows-app.md). Updates are GitHub Releases; Set
 4. Zero-phase Butterworth high-pass (>1 Hz)
 5. Select **duration profile** + **montage profile**
 6. Window QA → `clean_ratio` (cell density) and `usable_ratio`/ODQ (surviving time)
-7. Hard-fail gates: broken markers, railed amplifier, missing montage
-8. Letter from ODQ, then capped by the bad-channel ceiling
-9. GQI as a weighted average over assessed dimensions only
-10. Availability flag derived from the letter
+7. Hard-fail gates: broken markers, railed amplifier, missing montage → GQI = 0
+8. GQI as a weighted average over assessed dimensions only
+9. Letter / availability tracks closed (`null` in the report)
 
 ## Threshold Calibration
 
@@ -311,12 +307,15 @@ oi-eegqc init-config -o my_qc.yaml
 
 Or edit [`configs/default.yaml`](configs/default.yaml). Bump `threshold_version` whenever cutoffs change so historical grades stay comparable.
 
+Named vendor maps (BrainCo `bcigo-sdk` 1.0.2, and later SDKs) are optional overlays — see [channel layouts](docs/channel-layouts.md). Scoring does not infer a montage from array length.
+
 ## How It Is Organized
 
 ```text
 .
 ├── assets/                 # hero + wordmark
 ├── configs/default.yaml    # duration + montage profiles
+├── docs/channel-layouts.md # named SDK row maps (optional overlays)
 ├── docs/windows-app.md     # minimal native Windows QC shell
 ├── examples/
 │   ├── sidecar_session.py            # stdio sidecar client (Windows should mirror this)
@@ -327,12 +326,13 @@ Or edit [`configs/default.yaml`](configs/default.yaml). Bump `threshold_version`
 ├── src/oi_eegqc/
 │   ├── io/                 # npy / EDF / BDF / clips / reports
 │   ├── datasets/           # npy, hw, avsession, nod, things, synthetic adapters
+│   ├── layouts/            # named SDK channel maps (YAML)
 │   ├── protocol.py         # envelope + structured errors
 │   ├── serve.py            # NDJSON stdio sidecar
 │   ├── adapters.py         # channel pick, clipping, high-pass, windows
 │   ├── config.py           # adaptive profiles + thresholds
 │   ├── qa/windows.py       # window detectors → clean_ratio + ODQ
-│   ├── scoring/grades.py   # letter / GQI / availability / hard fails
+│   ├── scoring/grades.py   # GQI / hard fails (letter helpers kept for calibration)
 │   ├── pipeline.py         # evaluate_recording
 │   └── cli.py              # oi-eegqc entrypoint
 └── tests/
@@ -378,8 +378,8 @@ comparable. Fixed in this release:
 - GQI bottomed out at 26/100 for unusable data because untested dimensions
   granted their weight for free. Weights are now redistributed across assessed
   dimensions and GQI reaches 0.
-- Every D-grade clip reported `Caution`. Availability is now derived from the
-  letter, so D is always `Unavailable`.
+- Letter / availability used to be a second decision track. From
+  `oi-eegqc-report-v2` those fields stay in the JSON as `null`.
 - The signal band `(1, 50)` and noise band `(50, 100)` both included the mains
   frequency, counting it as signal and noise at once. They are now `(1, 45)`
   and `(55, 95)` with a dedicated mains detector.
@@ -394,7 +394,7 @@ Package version `0.3.0`. Scoring and `threshold_version` are unchanged
 (`oi-eegqc-v0.2.0`). This release is the machine-protocol and desktop seam:
 
 - Protocol envelope (`oi-eegqc-protocol-v1`) separate from the report body
-  (`oi-eegqc-report-v1`).
+  (`oi-eegqc-report-v2`).
 - `--json` / `--ndjson` / `--quiet`; human text on stderr in machine mode.
 - `oi-eegqc serve --stdio` with cancellable `score_dataset`.
 - `oi-eegqc score` for a file or folder; NPY sidecar can supply `sfreq` / `unit`.

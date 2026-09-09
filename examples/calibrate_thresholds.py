@@ -208,7 +208,14 @@ def run_scenario(scenario: dict, cfg, n_seeds: int) -> dict:
             report = evaluate_recording(rec, cfg)
             gqis.append(report.gqi)
             odqs.append(report.odq)
-            letters.append(report.letter_grade.value)
+            # Letter track is closed in evaluate_recording; keep research cutoffs local.
+            from oi_eegqc.scoring.grades import apply_bad_channel_ceiling, letter_from_odq
+
+            letter = letter_from_odq(report.odq, cfg.letter, cfg.select_duration(DURATION_S))
+            letter = apply_bad_channel_ceiling(
+                letter, report.window_qa.bad_channel_pct, cfg.select_montage(N_CHANNELS)
+            )
+            letters.append(letter.value)
         rows.append(
             {
                 "severity": level,

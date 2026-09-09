@@ -37,8 +37,13 @@ def _print_one(report, stream=None) -> None:
         f"{report.clip_id or '-':24s} GQI={report.gqi:5.1f}",
         file=out,
     )
-    for reason in report.reasons[:3]:
-        print(f"    - {reason}", file=out)
+    notes = (report.extras or {}).get("operator", {}).get("notes") or []
+    lines = [note.get("text") if isinstance(note, dict) else note for note in notes[:6]]
+    lines = [line for line in lines if line and line != "没看出需要处理的导联。"]
+    if not lines:
+        lines = list(report.reasons[:3])
+    for line in lines:
+        print(f"    - {line}", file=out)
 
 
 def _write_json_file(path: str | Path, payload: dict) -> None:
@@ -123,7 +128,7 @@ def _batch_progress(args: argparse.Namespace, *, adapter_name: str):
                     done=done,
                     total=total,
                     clip_id=rec.clip_id,
-                    letter_grade=report.letter_grade.value,
+                    letter_grade=None if report.letter_grade is None else report.letter_grade.value,
                     gqi=round(report.gqi, 2),
                 )
             )
@@ -137,6 +142,11 @@ def _batch_progress(args: argparse.Namespace, *, adapter_name: str):
             f"GQI={report.gqi:5.1f}",
             file=stream,
         )
+        notes = (report.extras or {}).get("operator", {}).get("notes") or []
+        for note in notes[:3]:
+            text = note.get("text") if isinstance(note, dict) else note
+            if text and text != "没看出需要处理的导联。":
+                print(f"   {text}", file=stream)
         if rec.meta.get("integrity_problems"):
             for problem in rec.meta["integrity_problems"]:
                 print(f"   integrity: {problem}", file=stream)

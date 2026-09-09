@@ -78,9 +78,20 @@ def test_line_hz_shifts_noise_band(tmp_path):
     path.with_suffix(".json").write_text(json.dumps({"sfreq": 256, "unit": "uV"}))
     sidecar = score_file(path)
     assert sidecar.extras["sfreq_hz"] == 256.0
-
     yaml_path = tmp_path / "cfg.yaml"
     yaml_path.write_text("line_hz: 60\n")
     loaded = load_config(yaml_path)
     assert loaded.line_hz == 60.0
     assert loaded.noise_band_hz == (65.0, 95.0)
+
+
+def test_time_weighted_usable_weights_by_duration():
+    from types import SimpleNamespace
+    import pytest
+    from oi_eegqc.desktop_service import time_weighted_usable
+
+    short = SimpleNamespace(duration_s=10, usable_ratio=1.0)
+    long = SimpleNamespace(duration_s=90, usable_ratio=0.0)
+    assert time_weighted_usable([short, long]) == pytest.approx(0.1)
+    assert time_weighted_usable([]) is None
+    assert time_weighted_usable([SimpleNamespace(duration_s=0, usable_ratio=1.0)]) is None

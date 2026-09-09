@@ -19,7 +19,8 @@ class AvailabilityFlag(str, Enum):
 
 
 #: Frozen into every ``QualityReport.to_dict()``. Bump when report fields change.
-REPORT_SCHEMA_VERSION = "oi-eegqc-report-v1"
+#: v2: letter / availability tracks are closed for intake; fields serialize as null.
+REPORT_SCHEMA_VERSION = "oi-eegqc-report-v2"
 
 
 #: Multipliers converting a declared input unit into microvolts.
@@ -153,8 +154,10 @@ class PenaltyBreakdown:
 
 @dataclass
 class QualityReport:
-    letter_grade: LetterGrade
-    availability: AvailabilityFlag
+    # Letter / availability stay on the dataclass for older callers, but the
+    # intake product path leaves them None. Operator decisions use GQI + usable.
+    letter_grade: LetterGrade | None
+    availability: AvailabilityFlag | None
     gqi: float
     odq: float
     usable_ratio: float
@@ -183,8 +186,8 @@ class QualityReport:
             "subject_id": self.subject_id,
             "session_id": self.session_id,
             "clip_id": self.clip_id,
-            "letter_grade": self.letter_grade.value,
-            "availability": self.availability.value,
+            "letter_grade": self.letter_grade.value if self.letter_grade is not None else None,
+            "availability": self.availability.value if self.availability is not None else None,
             "gqi": round(self.gqi, 2),
             "odq": round(self.odq, 2),
             "usable_ratio": round(self.usable_ratio, 4),

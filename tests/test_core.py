@@ -7,7 +7,7 @@ from oi_eegqc.adapters import detect_clipped_channels, pick_eeg_channels, slidin
 from oi_eegqc.config import default_config
 from oi_eegqc.pipeline import evaluate_recording
 from oi_eegqc.scoring.grades import letter_from_odq
-from oi_eegqc.types import AvailabilityFlag, LetterGrade, RecordingInput
+from oi_eegqc.types import LetterGrade, RecordingInput
 
 SFREQ = 250.0
 
@@ -102,8 +102,8 @@ def test_dead_channels_are_penalised_not_hidden():
     report = evaluate_recording(make_rec(data, expected_n_channels=32))
     assert report.n_channels_used == 32, "dead channels must stay in the denominator"
     assert len(report.window_qa.dead_channels) == 8
-    assert report.letter_grade in {LetterGrade.C, LetterGrade.D}
-    assert report.availability is not AvailabilityFlag.AVAILABLE
+    assert report.letter_grade is None
+    assert report.availability is None
     assert report.gqi < 85
 
 
@@ -127,7 +127,7 @@ def test_missing_channels_hard_fail():
     data = synth(10, 20.0, seed=3)
     report = evaluate_recording(make_rec(data, expected_n_channels=64))
     assert report.hard_failed
-    assert report.letter_grade == LetterGrade.D
+    assert report.letter_grade is None
     assert report.gqi == 0.0
 
 
@@ -138,8 +138,8 @@ def test_unit_conversion_makes_volts_and_microvolts_agree():
     data_uv = synth(32, 20.0, seed=4)
     a = evaluate_recording(make_rec(data_uv, unit="uV"))
     b = evaluate_recording(make_rec(data_uv * 1e-6, unit="V"))
-    assert a.letter_grade == b.letter_grade
     assert a.gqi == pytest.approx(b.gqi, abs=1e-6)
+    assert a.odq == pytest.approx(b.odq, abs=1e-6)
 
 
 def test_absolute_scale_is_no_longer_invisible():
@@ -147,9 +147,9 @@ def test_absolute_scale_is_no_longer_invisible():
     data = synth(32, 20.0, seed=5)
     clean = evaluate_recording(make_rec(data, unit="uV"))
     saturated = evaluate_recording(make_rec(np.clip(data * 40.0, -400.0, 400.0), unit="uV"))
-    assert clean.letter_grade == LetterGrade.A
-    assert saturated.letter_grade == LetterGrade.D
-    assert saturated.availability is AvailabilityFlag.UNAVAILABLE
+    assert clean.gqi >= 95
+    assert saturated.hard_failed or saturated.gqi < 40
+    assert saturated.gqi < clean.gqi
 
 
 def test_unknown_unit_rejected():
@@ -187,7 +187,7 @@ def test_gqi_reaches_zero_for_unusable_data():
     rng = np.random.default_rng(7)
     data = rng.standard_normal((32, 5000)) * 20.0
     report = evaluate_recording(make_rec(data))
-    assert report.letter_grade == LetterGrade.D
+    assert report.letter_grade is None
     assert report.gqi < 5.0
 
 
@@ -224,8 +224,10 @@ def test_clean_short_clip_gets_high_grade():
     report = evaluate_recording(make_rec(synth(32, 12.0, seed=10)))
     assert report.duration_profile == "short"
     assert report.montage_profile == "mid_density"
-    assert report.letter_grade == LetterGrade.A
+    assert report.letter_grade is None
+    assert report.availability is None
     assert report.gqi >= 95
+    assert report.extras["decision_tracks"] == {"letter": False, "availability": False}
 
 
 def test_noisy_clip_is_demoted():
@@ -234,7 +236,7 @@ def test_noisy_clip_is_demoted():
     )
     report = evaluate_recording(make_rec(data))
     assert report.odq < 95
-    assert report.letter_grade in {LetterGrade.C, LetterGrade.D}
+    assert report.gqi < 90
 
 
 def test_drift_is_absorbed_by_highpass():
@@ -242,26 +244,74 @@ def test_drift_is_absorbed_by_highpass():
     t = np.arange(n_times) / SFREQ
     data = synth(32, 20.0, seed=12) + 150.0 * np.sin(2 * np.pi * 0.05 * t)[None, :]
     report = evaluate_recording(make_rec(data))
-    assert report.letter_grade == LetterGrade.A
+    assert report.gqi >= 95
 
 
 def test_event_failure_hard_fails():
     report = evaluate_recording(make_rec(synth(8, 6.0, seed=13), event_ok=False))
     assert report.hard_failed
-    assert report.letter_grade == LetterGrade.D
+    assert report.letter_grade is None
     assert report.gqi == 0.0
-    assert report.availability is AvailabilityFlag.UNAVAILABLE
+    assert report.availability is None
     assert report.duration_profile == "ultra_short"
     assert report.montage_profile == "low_density"
+    assert "硬问题" in report.extras["operator"]["headline"]
 
 
-def test_letter_d_never_reports_available():
-    """Regression: every D-grade clip used to come back as Caution."""
+def test_hard_fail_operator_notes_not_letter_track():
+    """Intake no longer emits letter / availability; operator text still explains."""
     rng = np.random.default_rng(14)
     data = rng.standard_normal((32, 5000)) * 30.0
     report = evaluate_recording(make_rec(data))
-    assert report.letter_grade == LetterGrade.D
-    assert report.availability is AvailabilityFlag.UNAVAILABLE
+    assert report.letter_grade is None
+    assert report.availability is None
+    assert report.to_dict()["letter_grade"] is None
+    assert report.gqi < 30
+
+
+def test_operator_handles_multi_kind_channel_and_context():
+    from oi_eegqc.scoring.explain import build_operator
+
+    class _Fake:
+        gqi = 55.0
+        hard_failed = False
+        hard_fail_reasons = []
+        reasons = ["HF noise elevated"]
+        usable_ratio = 0.55
+        duration_profile = "short"
+        montage_profile = "mid_density"
+        n_channels_used = 32
+        extras = {
+            "channel_issues": [
+                {"name": "P8", "row": 0, "kinds": ["zero", "uncoupled"]},
+            ],
+            "frequency_coverage": {
+                "signal_band_complete": True,
+                "noise_band_complete": False,
+                "line_measurable": True,
+            },
+            "assessed_dimensions": ["contact", "cleanliness", "usable_time"],
+            "dimension_quality": {
+                "contact": 0.4,
+                "cleanliness": 0.5,
+                "usable_time": 0.55,
+            },
+            "channel_layout": "bcigo_sdk_1.0.2",
+            "session_stamp": "20260101_000000",
+            "task_mode": "video",
+        }
+
+    card = build_operator(_Fake())
+    texts = " ".join(item["text"] for item in card["notes"])
+    assert "P8 全程为 0" in texts
+    assert "另外" in texts and "浮空" in texts
+    assert "高频噪声" in texts
+    assert "可用时间只有约 55%" in texts
+    assert "短片段" in texts and "中密度" in texts
+    assert "会话目录" in texts
+    assert "同步分未计入" in texts
+    assert any(item["text"].startswith("建议：") for item in card["notes"])
+    assert "已对上强脑" in card["layout"]
 
 
 def test_long_duration_profile_selected():

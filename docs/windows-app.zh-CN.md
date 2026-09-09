@@ -14,6 +14,11 @@ GitHub Releases 上有安装器 `OI-EEGQC-Setup-Windows-x64.exe` 和便携包 `O
 表：文件 · 分数（GQI 0–100）· 状态。
 字母和可用性留在报告里，不当入库线。悬停分数可看采样率、时长和主要原因。
 
-拖入 EDF / BDF / NPY；数组缺采样率或单位再问。设置：排列、电网 50/60 Hz、检查更新。
+拖入 EDF / BDF / NPY；数组缺采样率或单位再问。已知 SDK 的行序见
+[channel-layouts.zh-CN.md](channel-layouts.zh-CN.md)。
+强脑 session 文件夹（`continuous_eeg.npy` + `metadata.json`）会自动对上通道名。
+设置：排列、电网 50/60 Hz、是否全通道（关掉后勾选导联）、检查更新。
+评分后点「查看」看子项分数和哪一路出了问题。
+批量摘要是平均 GQI，外加按时长加权的可用时间比例。
 
 操作细节见 [desktop.md](desktop.md)。协议示例：[`examples/sidecar_session.py`](../examples/sidecar_session.py)。

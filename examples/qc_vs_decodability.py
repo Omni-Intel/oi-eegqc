@@ -125,7 +125,18 @@ def main() -> None:
             row = report.to_dict()
         gqis.append(float(row["gqi"]))
         odqs.append(float(row["odq"]))
-        letters.append(str(row["letter_grade"]))
+        letter = row.get("letter_grade")
+        if letter is None:
+            from oi_eegqc.config import default_config
+            from oi_eegqc.scoring.grades import apply_bad_channel_ceiling, letter_from_odq
+
+            cfg = default_config()
+            dur = cfg.select_duration(float(rec.resolved_duration_s()))
+            mon = cfg.select_montage(int(row.get("n_channels_used") or rec.data.shape[0]))
+            grade = letter_from_odq(float(row["odq"]), cfg.letter, dur)
+            bad_pct = float((row.get("window_qa") or {}).get("bad_channel_pct") or 0.0)
+            letter = apply_bad_channel_ceiling(grade, bad_pct, mon).value
+        letters.append(str(letter))
         clip_ids.append(rec.clip_id)
         durs.append(float(rec.resolved_duration_s()))
 

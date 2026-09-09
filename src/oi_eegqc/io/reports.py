@@ -37,8 +37,12 @@ def summarize_reports(rows: Iterable[dict[str, Any]], group_key: str = "dataset"
             "mean_clean_ratio": float(np.mean([r.get("clean_ratio", 0.0) for r in items]))
             if items
             else 0.0,
-            "letter_counts": dict(Counter(r["letter_grade"] for r in items)),
-            "availability_counts": dict(Counter(r["availability"] for r in items)),
+            "letter_counts": dict(
+                Counter(r["letter_grade"] for r in items if r.get("letter_grade") is not None)
+            ),
+            "availability_counts": dict(
+                Counter(r["availability"] for r in items if r.get("availability") is not None)
+            ),
             "hard_failed": sum(1 for r in items if r.get("hard_fail_reasons")),
         }
 

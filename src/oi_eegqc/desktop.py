@@ -105,7 +105,8 @@ class ReportView:
     """Display plain report data without unpickling the scientific stack."""
     def __init__(self, payload):
         self.payload = payload
-        self.availability = SimpleNamespace(value=payload["availability"])
+        value = payload.get("availability")
+        self.availability = SimpleNamespace(value=value) if value is not None else None
 
     def __getattr__(self, name):
         try:

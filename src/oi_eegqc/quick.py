@@ -14,12 +14,50 @@ from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
 from .desktop import BatchWorker, UpdateWorker, configure_logging
 from .desktop_import import discover_files
-from .desktop_service import inspect_file, npy_ready
+from .desktop_service import inspect_channel_names, inspect_file, npy_ready, time_weighted_usable
 from . import __version__
 
 
+def _as_str_list(value):
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [value]
+    return [str(item) for item in value]
+
+
+class ChannelModel(QAbstractListModel):
+    fields = ("name", "row", "chosen")
+    roles = {Qt.ItemDataRole.UserRole + i + 1: name.encode() for i, name in enumerate(fields)}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = []
+
+    def roleNames(self):
+        return self.roles
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.rows)
+
+    def data(self, index, role):
+        if not index.isValid() or not 0 <= index.row() < len(self.rows):
+            return None
+        key = self.roles.get(role)
+        return self.rows[index.row()].get(key.decode()) if key else None
+
+    def replace(self, rows):
+        self.beginResetModel()
+        self.rows = rows
+        self.endResetModel()
+
+    def patch(self, index, **values):
+        self.rows[index].update(values)
+        self.dataChanged.emit(self.index(index), self.index(index), [])
+
+
 class FileModel(QAbstractListModel):
-    fields = ("label", "score", "state", "detail", "chosen")
+    fields = ("label", "score", "state", "detail", "chosen", "ready")
     roles = {Qt.ItemDataRole.UserRole + i + 1: name.encode() for i, name in enumerate(fields)}
 
     def __init__(self, parent=None):
@@ -43,7 +81,7 @@ class FileModel(QAbstractListModel):
         self.beginInsertRows(QModelIndex(), n, n)
         self.rows.append(dict(path=path, metadata=metadata, label=Path(path).name.lower(),
                               score="—", state="待评分", detail=path.lower(), chosen=False,
-                              report=None, error=""))
+                              ready=False, report=None, error=""))
         self.endInsertRows()
 
     def patch(self, index, **values):
@@ -109,6 +147,7 @@ class Controller(QObject):
     def __init__(self, parent=None, settings=None):
         super().__init__(parent)
         self.files = FileModel(self)
+        self.channels = ChannelModel(self)
         self.worker = self.updater = None
         self._busy = self._importing = self._stopping = self._closing = False
         self._notice = self._update_text = self._update_url = ""
@@ -122,15 +161,22 @@ class Controller(QObject):
         self._started = 0
         self._phase = ""
         self._errors = 0
+        self._channels_open = False
+        self._score_after_channels = False
+        self._report_open = False
+        self._report = {}
         self.store = settings if settings is not None else QSettings("Omni-Intelligence", "EEGQC")
         order = str(self.store.value("channels_first", "")).lower()
         self._order = 1 if order in ("true", "1") else 2 if order in ("false", "0") else 0
         self._mains = 60 if str(self.store.value("line_hz", 50)) in ("60", "60.0") else 50
+        self._all_channels = str(self.store.value("all_channels", "true")).lower() not in ("false", "0")
+        self._selected_channels = _as_str_list(self.store.value("selected_channels", []))
         self.timer = QTimer(self)
         self.timer.setInterval(250)
         self.timer.timeout.connect(self.changed)
 
     model = Property(QObject, lambda self: self.files, constant=True)
+    channelModel = Property(QObject, lambda self: self.channels, constant=True)
     version = Property(str, lambda self: __version__, constant=True)
     busy = Property(bool, lambda self: self._busy, notify=changed)
     stopping = Property(bool, lambda self: self._stopping, notify=changed)
@@ -139,6 +185,12 @@ class Controller(QObject):
     canScore = Property(bool, lambda self: any(r["report"] is None for r in self.files.rows), notify=changed)
     orderIndex = Property(int, lambda self: self._order, notify=changed)
     mains = Property(int, lambda self: self._mains, notify=changed)
+    allChannels = Property(bool, lambda self: self._all_channels, notify=changed)
+    channelsOpen = Property(bool, lambda self: self._channels_open, notify=changed)
+    reportOpen = Property(bool, lambda self: self._report_open, notify=changed)
+    reportCard = Property("QVariantMap", lambda self: self._report, notify=changed)
+    channelCount = Property(int, lambda self: len(self.channels.rows), notify=changed)
+    selectedChannelCount = Property(int, lambda self: sum(r["chosen"] for r in self.channels.rows), notify=changed)
     parameters = Property("QVariantMap", lambda self: self._parameters, notify=parametersChanged)
     checking = Property(bool, lambda self: self.updater is not None, notify=changed)
     updateText = Property(str, lambda self: self._update_text, notify=changed)
@@ -157,7 +209,11 @@ class Controller(QObject):
             return self._notice
         scores = [r["report"].gqi for r in self.files.rows if r["report"] is not None]
         if scores:
-            return f"平均 {sum(scores)/len(scores):.0f} · {len(scores)}/{len(self.files.rows)}"
+            text = f"平均 {sum(scores)/len(scores):.0f}"
+            share = time_weighted_usable(r["report"] for r in self.files.rows if r["report"] is not None)
+            if share is not None:
+                text += f" · 可用 {share:.0%}"
+            return f"{text} · {len(scores)}/{len(self.files.rows)}"
         return f"{len(self.files.rows)} 个文件" if self.files.rows else ""
 
     @Slot("QVariantList")
@@ -228,6 +284,8 @@ class Controller(QObject):
             self.closeReady.emit()
         else:
             self.imported.emit()
+            if not self._all_channels and self._needs_channel_pick():
+                QTimer.singleShot(0, self.openChannelSheet)
 
     @Slot(str, int, bool, result=bool)
     def acceptParameters(self, rate, unit, reuse):
@@ -304,6 +362,158 @@ class Controller(QObject):
         self.store.setValue("line_hz", mains)
         self.changed.emit()
 
+    def _save_channel_prefs(self):
+        self.store.setValue("all_channels", "true" if self._all_channels else "false")
+        self.store.setValue("selected_channels", self._selected_channels)
+
+    def _channel_catalog(self):
+        ordered, seen = [], set()
+        for row in self.files.rows:
+            try:
+                names = inspect_channel_names(row["path"], row["metadata"])
+            except Exception:
+                continue
+            for name in names:
+                if name not in seen:
+                    seen.add(name)
+                    ordered.append(name)
+        return ordered
+
+    def _needs_channel_pick(self):
+        if self._all_channels:
+            return False
+        catalog = self._channel_catalog()
+        if not catalog:
+            return bool(self.files.rows)
+        chosen = set(self._selected_channels)
+        return not chosen or not chosen.intersection(catalog)
+
+    def _fill_channel_model(self):
+        catalog = self._channel_catalog()
+        previous = set(self._selected_channels)
+        if previous and any(name in previous for name in catalog):
+            marks = [name in previous for name in catalog]
+        else:
+            marks = [True] * len(catalog)
+        self.channels.replace([
+            dict(name=name, row=index, chosen=mark) for index, (name, mark) in enumerate(zip(catalog, marks))
+        ])
+
+    def _open_channel_sheet(self, score_after=False):
+        self._score_after_channels = score_after
+        self._fill_channel_model()
+        self._channels_open = True
+        self.changed.emit()
+
+    @Slot(bool)
+    def setAllChannels(self, enabled):
+        if self._busy:
+            return
+        if enabled:
+            self._all_channels = True
+            self._channels_open = False
+            self._score_after_channels = False
+            self._save_channel_prefs()
+            self.changed.emit()
+            return
+        self._all_channels = False
+        self._open_channel_sheet(False)
+
+    @Slot()
+    def openChannelSheet(self):
+        if not self._busy:
+            self._all_channels = False
+            self._open_channel_sheet(False)
+
+    @Slot(int)
+    def toggleChannel(self, index):
+        if 0 <= index < len(self.channels.rows):
+            self.channels.patch(index, chosen=not self.channels.rows[index]["chosen"])
+            self.changed.emit()
+
+    @Slot()
+    def selectAllChannels(self):
+        for i in range(len(self.channels.rows)):
+            self.channels.patch(i, chosen=True)
+        self.changed.emit()
+
+    @Slot()
+    def clearChannels(self):
+        for i in range(len(self.channels.rows)):
+            self.channels.patch(i, chosen=False)
+        self.changed.emit()
+
+    @Slot()
+    def acceptChannels(self):
+        names = [row["name"] for row in self.channels.rows if row["chosen"]]
+        if not names:
+            return
+        self._selected_channels = names
+        self._all_channels = False
+        self._channels_open = False
+        self._save_channel_prefs()
+        self.changed.emit()
+        if self._score_after_channels:
+            self._score_after_channels = False
+            QTimer.singleShot(0, self.scoreOrStop)
+
+    @Slot()
+    def cancelChannels(self):
+        if not self._channels_open:
+            return
+        self._channels_open = False
+        self._score_after_channels = False
+        if not self._selected_channels:
+            self._all_channels = True
+        self._save_channel_prefs()
+        self.changed.emit()
+
+    def _report_card(self, row):
+        label = row.get("label") or ""
+        report = row.get("report")
+        if report is None:
+            return {
+                "name": label,
+                "score": "",
+                "headline": row.get("error") or "还没评分",
+                "layout": "",
+                "dimensions": [],
+                "notes": [{"text": row.get("detail") or "还没评分"}],
+            }
+        extras = getattr(report, "extras", None) or {}
+        card = dict(extras.get("operator") or {})
+        card["name"] = label
+        card["score"] = f"{float(report.gqi):.0f}"
+        card.setdefault("headline", "")
+        card.setdefault("layout", "")
+        card.setdefault("dimensions", [])
+        card.setdefault("notes", [])
+        return card
+
+    @Slot(int)
+    def openReport(self, index):
+        if not 0 <= index < len(self.files.rows):
+            return
+        row = self.files.rows[index]
+        if not row.get("ready"):
+            return
+        self._report = self._report_card(row)
+        self._report_open = True
+        self.changed.emit()
+
+    @Slot()
+    def openSelectedReport(self):
+        chosen = [i for i, row in enumerate(self.files.rows) if row["chosen"] and row.get("ready")]
+        if len(chosen) == 1:
+            self.openReport(chosen[0])
+
+    @Slot()
+    def closeReport(self):
+        if not self._report_open:
+            return
+        self._report_open = False
+        self.changed.emit()
+
     @Slot()
     def scoreOrStop(self):
         if self._busy:
@@ -316,13 +526,19 @@ class Controller(QObject):
                 QTimer.singleShot(0, self._consume)
             self.changed.emit()
             return
+        if not self._all_channels and self._needs_channel_pick():
+            self._open_channel_sheet(True)
+            return
         jobs = []
+        keep = None if self._all_channels else list(self._selected_channels)
         for i, row in enumerate(self.files.rows):
             if row["report"] is not None:
                 continue
             meta = dict(row["metadata"], line_hz=self._mains)
             if "channels_first" not in meta and self._order:
                 meta["channels_first"] = self._order == 1
+            if keep:
+                meta["keep_channels"] = keep
             jobs.append((i, row["path"], meta))
             self.files.patch(i, error="", state="待评分", detail=row["path"].lower())
         if not jobs:
@@ -354,18 +570,23 @@ class Controller(QObject):
 
     @Slot(int, object)
     def _scored(self, index, report):
-        detail = f"{report.extras['sfreq_hz']:g} 赫兹 · {report.duration_s:g} 秒"
-        if not all(report.extras["frequency_coverage"].values()):
+        extras = getattr(report, "extras", None) or {}
+        detail = f"{extras['sfreq_hz']:g} 赫兹 · {report.duration_s:g} 秒"
+        coverage = extras.get("frequency_coverage") or {}
+        if coverage and not all(coverage.values()):
             detail += "\n采样率限制了部分频段检测"
-        if report.reasons:
-            detail += "\n" + "\n".join(report.reasons[:4]).lower()
-        self.files.patch(index, report=report, score=f"{report.gqi:.1f}", state="完成", detail=detail)
+        headline = (extras.get("operator") or {}).get("headline")
+        if headline:
+            detail += "\n" + headline
+        self.files.patch(index, report=report, score=f"{report.gqi:.1f}", state="完成",
+                         detail=detail, ready=True)
         self._done += 1
         self.changed.emit()
 
     @Slot(int, str)
     def _failed(self, index, message):
-        self.files.patch(index, error=message, state="超时" if "超时" in message else "失败", detail=message.lower())
+        self.files.patch(index, error=message, state="超时" if "超时" in message else "失败",
+                         detail=message.lower(), ready=True)
         self._done += 1
         self.changed.emit()
 

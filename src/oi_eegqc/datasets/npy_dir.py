@@ -58,7 +58,9 @@ class NpyDirAdapter(DatasetAdapter):
             rec = load_npy(
                 path,
                 declared.get("sfreq", self.sfreq),
+                ch_names=declared.get("channel_names"),
                 ch_names_path=self.ch_names_path,
+                channel_layout=declared.get("channel_layout"),
                 channels_first=declared.get("channels_first", self.channels_first),
                 unit=declared.get("unit", self.unit),
                 adc_to_uv=self.adc_to_uv,

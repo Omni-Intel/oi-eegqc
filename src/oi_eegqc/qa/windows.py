@@ -228,12 +228,24 @@ def assess_windows(
         for i in range(n_ch)
         if (constant[i] | flat[i]).mean() >= montage_profile.bad_channel_broken_frac
     ]
+    channel_issues = _channel_issues(
+        data_uv,
+        ch_names,
+        constant,
+        flat,
+        extreme_amp,
+        low_corr,
+        line_noise,
+        high_nsr,
+        clipped_idx,
+        montage_profile.bad_channel_broken_frac,
+    )
 
     def _nanmedian(arr: np.ndarray) -> float:
         finite = arr[np.isfinite(arr)]
         return float(np.median(finite)) if finite.size else 0.0
 
-    return WindowQASummary(
+    summary = WindowQASummary(
         n_windows=n_win,
         n_channels=n_ch,
         clean_ratio=1.0 - bad_cell_ratio,
@@ -262,3 +274,49 @@ def assess_windows(
         line_noise_ratio=_nanmedian(line_vals),
         muscle_band_ratio=_nanmedian(muscle_vals),
     )
+    return summary, channel_issues
+
+
+def _channel_issues(
+    data_uv,
+    ch_names,
+    constant,
+    flat,
+    extreme_amp,
+    low_corr,
+    line_noise,
+    high_nsr,
+    clipped_idx,
+    broken_frac,
+):
+    """Name the persistent per-channel failures a operator can act on."""
+    clipped = {int(index) for index in (clipped_idx or [])}
+    issues = []
+    n_ch = len(ch_names)
+    for index, name in enumerate(ch_names):
+        if index >= data_uv.shape[0]:
+            break
+        absmax = float(np.nanmax(np.abs(data_uv[index]))) if data_uv.shape[1] else 0.0
+        if not np.isfinite(absmax):
+            absmax = 0.0
+        kinds = []
+        const_frac = float(constant[index].mean()) if constant.size else 0.0
+        if const_frac >= broken_frac and absmax <= 1e-9:
+            kinds.append("zero")
+        elif const_frac >= broken_frac:
+            kinds.append("constant")
+        elif float(flat[index].mean()) >= broken_frac:
+            kinds.append("flat")
+        if index in clipped:
+            kinds.append("clipped")
+        if float(extreme_amp[index].mean()) >= broken_frac:
+            kinds.append("extreme")
+        if float(low_corr[index].mean()) >= broken_frac:
+            kinds.append("uncoupled")
+        if float(line_noise[index].mean()) >= broken_frac:
+            kinds.append("line")
+        if float(high_nsr[index].mean()) >= broken_frac:
+            kinds.append("noisy")
+        if kinds:
+            issues.append({"name": str(name), "row": int(index), "kinds": kinds})
+    return issues if n_ch else []

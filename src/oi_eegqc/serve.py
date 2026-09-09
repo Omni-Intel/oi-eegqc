@@ -244,7 +244,7 @@ class StdioServer:
                     done=done,
                     total=tot if tot is not None else total,
                     clip_id=rec.clip_id,
-                    letter_grade=report.letter_grade.value,
+                    letter_grade=None if report.letter_grade is None else report.letter_grade.value,
                     gqi=round(report.gqi, 2),
                 )
             )

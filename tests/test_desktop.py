@@ -5,11 +5,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QTimer
+
+try:
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QTimer
+    from oi_eegqc.desktop import STYLE, Window
+except ImportError as exc:
+    pytest.skip(f"Qt unavailable: {exc}", allow_module_level=True)
 
 from oi_eegqc.datasets.synthetic import synth_clean
-from oi_eegqc.desktop import STYLE, Window
 from oi_eegqc.desktop_service import score_file
 
 
