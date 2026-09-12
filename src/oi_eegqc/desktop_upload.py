@@ -1,0 +1,191 @@
+"""Folder upload batches. No scoring, bucket administration, or remote deletion."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import secrets
+import stat
+from pathlib import Path
+
+BUCKET = "xiekp"
+PREFIX = "eeg/inbox/"
+ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
+MAX_FILE = 5 * 1024 ** 3
+EEG_SUFFIXES = {".edf", ".edf+", ".bdf", ".npy"}
+
+
+class UploadError(Exception):
+    """Only sanitized, user-facing messages belong in this exception."""
+
+
+class UploadCancelled(Exception):
+    pass
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=2)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def plain_path(path):
+    """Reject reparse points, including junctions, along the entire source path."""
+    path = Path(path).absolute()
+    for part in (path, *path.parents):
+        info = part.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise UploadError("文件夹包含链接，请改选真实目录")
+    return path
+
+
+def fingerprint(path, cancelled=lambda: False):
+    path = plain_path(path)
+    before = path.stat()
+    if before.st_size > MAX_FILE:
+        raise UploadError("单个文件超过 5 吉字节，暂不支持，请联系管理员启用分片上传")
+    if not stat.S_ISREG(before.st_mode):
+        raise UploadError("存在不支持的特殊文件")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while True:
+            if cancelled():
+                raise UploadCancelled()
+            block = stream.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise UploadError("文件正在变化，请等待采集写入结束")
+    return dict(size=after.st_size, mtime=after.st_mtime_ns, sha256=digest.hexdigest())
+
+
+def normalize_roots(roots):
+    result = []
+    for value in sorted({str(Path(p).absolute()) for p in roots}, key=lambda p: (len(Path(p).parts), p)):
+        path = plain_path(value)
+        if not path.is_dir():
+            raise UploadError("源文件夹不存在")
+        if not any(path == parent or parent in path.parents for parent in result):
+            result.append(path)
+    return result
+
+
+def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None):
+    entries, used = [], set()
+    for root in normalize_roots(roots):
+        label = root.name
+        if not label:
+            raise UploadError("请选择采集文件夹，不要选择磁盘根目录")
+        if label.casefold() in used:
+            label += "-" + hashlib.sha256(str(root).encode()).hexdigest()[:8]
+        while label.casefold() in used:
+            label += "-2"
+        used.add(label.casefold())
+
+        def walk(folder):
+            if cancelled():
+                raise UploadCancelled()
+            plain_path(folder)
+            children = sorted(folder.iterdir(), key=lambda p: p.name)
+            if not children:
+                relative = folder.relative_to(root).as_posix()
+                suffix = label + ("/" + relative if relative != "." else "")
+                entries.append(dict(source=str(folder), relative=suffix.rstrip("/") + "/",
+                                    directory=True, size=0, mtime=0, sha256=hashlib.sha256(b"").hexdigest(), done=False))
+            for child in children:
+                plain_path(child)
+                if child.is_dir():
+                    walk(child)
+                else:
+                    progress(str(child))
+                    entries.append(dict(source=str(child), relative=label + "/" + child.relative_to(root).as_posix(),
+                                        directory=False, done=False, **fingerprint(child, cancelled)))
+        walk(root)
+    return entries
+
+
+class BatchStore:
+    def __init__(self, directory):
+        self.directory = Path(directory)
+
+    def save(self, batch):
+        batch_id = batch["local_id"]
+        if not re.fullmatch(ID_PATTERN, batch_id):
+            raise UploadError("上传状态中的批次编号无效")
+        atomic_json(self.directory / batch_id / "state.json", batch)
+        atomic_json(self.directory / "current.json", {"local_id": batch_id})
+
+    def load(self):
+        pointer = self.directory / "current.json"
+        if not pointer.exists():
+            return None
+        try:
+            link = json.loads(pointer.read_text(encoding="utf-8"))
+            batch_id = link.get("local_id") or link["upload_id"]
+            if not re.fullmatch(ID_PATTERN, batch_id):
+                raise ValueError()
+            batch = json.loads((self.directory / batch_id / "state.json").read_text(encoding="utf-8"))
+            if batch["version"] == 1:
+                if any(e["done"] for e in batch["entries"]):
+                    raise UploadError("旧认证批次已传过文件，请联系管理员迁移；旧状态已保留")
+                batch.update(version=2, local_id=batch_id, upload_id=None, allocation_pending=False, error="")
+                for entry in batch["entries"]:
+                    entry.pop("crc64", None)
+            if batch["version"] != 2 or batch["local_id"] != batch_id:
+                raise ValueError()
+            if batch["status"] == "uploading":
+                batch["status"] = "paused"
+            return batch
+        except (OSError, ValueError, KeyError, TypeError):
+            raise UploadError("上传状态无法读取，请保留应用数据目录并联系维护人员") from None
+
+    def prepare(self, roots, scored, cancelled=lambda: False, progress=lambda name: None):
+        roots = normalize_roots(roots)
+        for root in roots:
+            if root == self.directory or root in self.directory.absolute().parents:
+                raise UploadError("采集目录不能包含应用上传状态目录")
+        entries = scan_sources(roots, cancelled, progress)
+        if any(e["size"] > MAX_FILE for e in entries):
+            raise UploadError("单个文件超过 5 吉字节，暂不支持，请联系管理员启用分片上传")
+        signals = [e for e in entries if not e["directory"] and Path(e["source"]).suffix.lower() in EEG_SUFFIXES]
+        if not signals or any(e["source"] not in scored for e in signals):
+            raise UploadError("文件夹中仍有未完成评分的数据，请重新添加并评分")
+        for entry in signals:
+            if list(scored[entry["source"]]) != [entry["size"], entry["mtime"]]:
+                raise UploadError("评分后数据已变化，请重新评分")
+        batch = dict(version=2, local_id=secrets.token_hex(16), upload_id=None, allocation_pending=False, roots=[str(p) for p in roots],
+                     status="ready", entries=entries, error="")
+        self.save(batch)
+        return batch
+
+
+def friendly_error(error):
+    if isinstance(error, UploadError):
+        return str(error)
+    if isinstance(error, PermissionError):
+        return "无法读取本地文件或写入上传状态，请检查权限"
+    if isinstance(error, FileNotFoundError):
+        return "源文件已移动或删除，请恢复原路径后重试"
+    if isinstance(error, TimeoutError):
+        return "上传连接超时，请检查网络后重试"
+    if isinstance(error, OSError) and getattr(error, "errno", None) == 28:
+        return "本地磁盘空间不足，无法保存续传状态"
+    code = getattr(error, "status_code", None)
+    if code in (401, 403):
+        return "上传请求被服务拒绝，请联系管理员检查接口权限"
+    if code == 404:
+        return "上传接口或目标不存在，请联系管理员"
+    if code == 429 or (isinstance(code, int) and code >= 500):
+        return "存储服务暂时不可用，请稍后重试"
+    return "网络连接、文件读取或上传校验失败，请检查网络和本地文件后重试"
+
+
+from .upload_session import UploadSession

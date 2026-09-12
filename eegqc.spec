@@ -14,7 +14,7 @@ a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root / "src")],
              binaries=[], datas=datas,
              hiddenimports=["oi_eegqc.config", "oi_eegqc.datasets", "oi_eegqc.io",
                             "oi_eegqc.intake", "oi_eegqc.desktop_service", "oi_eegqc.desktop_update",
-                            "oi_eegqc.layouts", "oi_eegqc.quick",
+                            "oi_eegqc.layouts", "oi_eegqc.quick", "oi_eegqc.desktop_upload", "oi_eegqc.upload_ui",
                             "oi_eegqc.pipeline", "oi_eegqc.protocol", "oi_eegqc.types"]
                            + collect_submodules("mne", filter=lambda name: ".tests" not in name),
              excludes=["tkinter", "pytest", "IPython", "notebook", "PySide6.QtWebEngineCore"],

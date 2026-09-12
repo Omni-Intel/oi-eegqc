@@ -17,6 +17,7 @@ from .desktop_import import discover_files
 from .desktop_service import inspect_channel_names, inspect_file, npy_ready, time_weighted_usable
 from . import __version__
 from .desktop_update import downloadable, download_installer, DownloadCancelled, launch_installer
+from .upload_ui import UploadController
 
 
 class DownloadWorker(QThread):
@@ -201,6 +202,12 @@ class Controller(QObject):
         self._report_open = False
         self._report = {}
         self.store = settings if settings is not None else QSettings("Omni-Intelligence", "EEGQC")
+        data_directory = (Path(settings.fileName()).parent / "appdata" if settings is not None else
+                          Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)))
+        self._upload = UploadController(data_directory, self)
+        self._upload.idle.connect(self._upload_idle)
+        self._folder_roots = []
+        self._import_roots = []
         order = str(self.store.value("channels_first", "")).lower()
         self._order = 1 if order in ("true", "1") else 2 if order in ("false", "0") else 0
         self._mains = 60 if str(self.store.value("line_hz", 50)) in ("60", "60.0") else 50
@@ -211,6 +218,9 @@ class Controller(QObject):
         self.timer.timeout.connect(self.changed)
 
     model = Property(QObject, lambda self: self.files, constant=True)
+    upload = Property(QObject, lambda self: self._upload, constant=True)
+    canUpload = Property(bool, lambda self: bool(self._folder_roots) and not self._busy and bool(self.files.rows)
+                         and all(r["report"] is not None and r.get("scored_stat") for r in self.files.rows), notify=changed)
     channelModel = Property(QObject, lambda self: self.channels, constant=True)
     version = Property(str, lambda self: __version__, constant=True)
     busy = Property(bool, lambda self: self._busy, notify=changed)
@@ -271,6 +281,7 @@ class Controller(QObject):
         self._busy = self._importing = True
         self._notice = ""
         self._shared = None
+        self._import_roots = [str(Path(p).absolute()) for p in paths if Path(p).is_dir()]
         known = {os.path.normcase(r["path"]) for r in self.files.rows}
         self.worker = IntakeWorker(paths, known)
         self.worker.finished.connect(self._scanned)
@@ -284,6 +295,8 @@ class Controller(QObject):
         self._pending, self._errors = worker.items, worker.errors
         self._cursor = 0
         cancelled = worker.isInterruptionRequested()
+        if not cancelled and not worker.errors:
+            self._folder_roots = list(dict.fromkeys(self._folder_roots + self._import_roots))
         worker.deleteLater()
         if cancelled:
             self._pending = []
@@ -391,7 +404,22 @@ class Controller(QObject):
         self._anchor = 0
         self._notice = ""
         self.files.names()
+        self._folder_roots = [root for root in self._folder_roots
+                              if any(Path(root) in Path(r["path"]).parents for r in self.files.rows)]
         self.changed.emit()
+
+    @Slot()
+    def prepareUpload(self):
+        if not self.canUpload:
+            return
+        scored = {r["path"]: r["scored_stat"] for r in self.files.rows
+                  if r["report"] is not None and r.get("scored_stat")}
+        self._upload.prepare(self._folder_roots, scored)
+
+    @Slot()
+    def _upload_idle(self):
+        if self._closing:
+            self.closeReady.emit()
 
     @Slot(int, int)
     def saveSettings(self, order, mains):
@@ -590,6 +618,11 @@ class Controller(QObject):
             if keep:
                 meta["keep_channels"] = keep
             jobs.append((i, row["path"], meta))
+            try:
+                source_stat = Path(row["path"]).stat()
+                row["score_input_stat"] = (source_stat.st_size, source_stat.st_mtime_ns)
+            except OSError:
+                row["score_input_stat"] = None
             self.files.patch(i, error="", state="待评分", detail=row["path"].lower())
         if not jobs:
             return
@@ -620,6 +653,12 @@ class Controller(QObject):
 
     @Slot(int, object)
     def _scored(self, index, report):
+        try:
+            current_stat = Path(self.files.rows[index]["path"]).stat()
+            after = (current_stat.st_size, current_stat.st_mtime_ns)
+            self.files.rows[index]["scored_stat"] = after if self.files.rows[index].get("score_input_stat") == after else None
+        except OSError:
+            self.files.rows[index]["scored_stat"] = None
         extras = getattr(report, "extras", None) or {}
         detail = f"{extras['sfreq_hz']:g} 赫兹 · {report.duration_s:g} 秒"
         coverage = extras.get("frequency_coverage") or {}
@@ -724,7 +763,7 @@ class Controller(QObject):
 
     @Slot()
     def installUpdate(self):
-        if self._busy or self.downloader or self.updater or self.installer_worker or not self._installer:
+        if self._busy or self._upload.active or self.downloader or self.updater or self.installer_worker or not self._installer:
             return
         self._busy = True
         self._phase = "准备更新"
@@ -752,6 +791,11 @@ class Controller(QObject):
         if self.installer_worker:
             return False
         self._closing = True
+        if self._upload.active:
+            self._upload.cancel()
+            if self._busy:
+                self.scoreOrStop()
+            return False
         if self.downloader:
             self.cancelDownload()
             if self._busy:
@@ -765,6 +809,7 @@ class Controller(QObject):
     def shutdown(self):
         self._closing = True
         self.timer.stop()
+        self._upload.shutdown()
         if self.worker:
             self.worker.requestInterruption()
             self.worker.wait()

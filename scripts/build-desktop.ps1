@@ -13,6 +13,7 @@ if (-not $SkipDependencies) {
 & ./.venv/Scripts/python.exe -m PyInstaller --noconfirm eegqc.spec
 if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
 Copy-Item docs/desktop.md dist/OI-EEGQC/README.md -Force
+Copy-Item docs/folder-upload.md dist/OI-EEGQC/folder-upload.md -Force
 if (Test-Path dist/OI-EEGQC-Windows-x64.zip) {
     Remove-Item dist/OI-EEGQC-Windows-x64.zip -Force
 }

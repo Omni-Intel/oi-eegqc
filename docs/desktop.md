@@ -4,6 +4,8 @@ Qt Quick / QML 桌面界面，复用现有 Python 独立进程评分核心，完
 
 ## Windows 使用
 
+新增「上传文件夹」：已扫描并评分的采集目录可在程序内后台上传、暂停与续传。部署凭据及详细行为见 [上传说明](folder-upload.md)。
+
 解压 `OI-EEGQC-Windows-x64.zip` 或运行 `OI-EEGQC-Setup-Windows-x64.exe`。
 安装器写入 `%LOCALAPPDATA%\Omni-Intelligence\EEGQC`，不要求管理员。
 不做代码签名。远程分发走 GitHub Releases；设置里的「检查更新」读取最新 release 元数据。

@@ -2,6 +2,7 @@ import os
 import json
 import re
 import time
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -350,3 +351,144 @@ def test_qml_install_failure_keeps_window(quick, tmp_path, monkeypatch):
     assert not controller.busy and not controller.updateReady
     assert window.isVisible()
     assert "无法启动" in controller.updateText
+
+
+def test_qml_folder_upload_gate_preview_and_resume(quick, tmp_path, monkeypatch):
+    import oi_eegqc.desktop_upload as service
+    from test_desktop_upload import FakeClient
+    from oi_eegqc.upload_ui import UploadController
+    app, controller, engine, window = quick
+    button = window.findChild(QObject, "uploadFolder")
+    assert not button.property("enabled")
+    score = window.findChild(QObject, "scoreButton")
+    upload_point = button.mapToScene(button.boundingRect().center())
+    score_point = score.mapToScene(score.boundingRect().center())
+    assert abs(upload_point.y() - score_point.y()) < 2
+    assert upload_point.x() < score_point.x() and upload_point.y() > window.height() / 2
+    folder = tmp_path / "collection"
+    folder.mkdir()
+    recording(folder / "data.npy")
+    (folder / "notes.txt").write_text("keep me")
+    controller.add_paths([folder])
+    wait(app, lambda: not controller.busy)
+    assert not controller.canUpload and not button.property("enabled")
+    controller.scoreOrStop()
+    wait(app, lambda: not controller.busy)
+    assert controller.canUpload and button.property("enabled")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     button.mapToScene(button.boundingRect().center()).toPoint())
+    upload = controller._upload
+    wait(app, lambda: not upload.active and upload.hasBatch)
+    assert window.findChild(QObject, "uploadSheet").property("visible")
+    assert upload.info["count"] == 3
+    assert upload.batch["status"] == "ready"
+    batch_id = upload.batch["local_id"]
+    # A fresh controller restores the exact pending batch without EEG rows.
+    restored = UploadController(upload.data_directory)
+    assert restored.hasBatch and restored.batch["local_id"] == batch_id
+    client = FakeClient()
+    original = service.UploadSession.__init__
+    def init(self, *args, **kwargs):
+        kwargs["client_factory"] = lambda data: client
+        original(self, *args, **kwargs)
+    monkeypatch.setattr(service.UploadSession, "__init__", init)
+    start = window.findChild(QObject, "startUpload")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     start.mapToScene(start.boundingRect().center()).toPoint())
+    wait(app, lambda: not upload.active and upload.batch["status"] == "completed")
+    assert len(client.objects) == 4
+    assert upload.batch["local_id"] == batch_id
+    restored.shutdown()
+
+
+def test_upload_lock_prevents_parallel_batch_writes(quick, tmp_path):
+    from oi_eegqc.upload_ui import UploadController
+    app, controller, engine, window = quick
+    first = controller._upload
+    second = UploadController(first.data_directory)
+    assert first._acquire()
+    try:
+        assert not second._acquire()
+        assert "另一个窗口" in second.info["error"]
+    finally:
+        first.lock.unlock()
+        first.lock = None
+        second.shutdown()
+
+
+def test_upload_has_no_token_import(quick):
+    from PySide6.QtCore import QObject
+    app, controller, engine, window = quick
+    assert not hasattr(controller._upload, "importDeviceToken")
+    assert window.findChild(QObject, "importDeviceToken") is None
+    assert window.findChild(QObject, "deviceTokenInput") is None
+
+
+def test_upload_preview_does_not_replay_previous_error(quick, tmp_path, monkeypatch):
+    from oi_eegqc.desktop_upload import UploadSession
+    app, controller, engine, window = quick
+    upload = controller._upload
+    root = tmp_path / "collection"
+    root.mkdir()
+    path = root / "data.npy"
+    recording(path)
+    stat = path.stat()
+    scored = {str(path): (stat.st_size, stat.st_mtime_ns)}
+    batch = upload.store.prepare([root], scored)
+    batch.update(status="failed", error="签名文件清单不完整", upload_id="existing-batch")
+    upload.store.save(batch)
+    upload.batch = batch
+    upload.prepare([root], scored)
+    assert upload.info["error"] == ""
+    wait(app, lambda: not upload.active)
+    assert upload.info["error"] == ""
+    assert upload.info["status"] == "待继续上传"
+    assert upload.store.load()["error"] == "签名文件清单不完整"
+    assert upload.batch["upload_id"] == "existing-batch"
+
+    def fail(session):
+        session.batch.update(status="failed", error="本次上传网络失败")
+        session.store.save(session.batch)
+        return session.batch
+    monkeypatch.setattr(UploadSession, "run", fail)
+    upload.start()
+    assert upload.info["error"] == ""
+    wait(app, lambda: not upload.active)
+    assert upload.info["error"] == "本次上传网络失败"
+    upload.close()
+    upload.prepare([root], scored)
+    wait(app, lambda: not upload.active)
+    assert upload.info["error"] == ""
+    assert upload.store.load()["upload_id"] == "existing-batch"
+
+
+def test_pending_upload_cannot_bypass_scoring_gate(quick, tmp_path, monkeypatch):
+    app, controller, engine, window = quick
+    button = window.findChild(QObject, "uploadFolder")
+    controller._upload.batch = {"status": "ready"}
+    controller._upload._error = "历史上传错误"
+    controller._upload.changed.emit()
+    app.processEvents()
+    calls = []
+    monkeypatch.setattr(controller._upload, "prepare", lambda *args: calls.append(args))
+    assert not button.property("enabled")
+    controller.prepareUpload()
+    assert not calls
+    folder = tmp_path / "collection"
+    folder.mkdir()
+    recording(folder / "data.npy")
+    controller.add_paths([folder])
+    wait(app, lambda: not controller.busy)
+    assert not button.property("enabled")
+    controller.prepareUpload()
+    assert not calls
+    controller.scoreOrStop()
+    assert not button.property("enabled")
+    wait(app, lambda: not controller.busy)
+    assert button.property("enabled")
+    controller.prepareUpload()
+    assert len(calls) == 1
+    controller.files.rows[0]["scored_stat"] = None
+    controller.changed.emit()
+    app.processEvents()
+    assert not button.property("enabled")

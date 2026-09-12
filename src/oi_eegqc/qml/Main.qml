@@ -131,6 +131,7 @@ ApplicationWindow {
             Layout.fillWidth: true; spacing: 10
             Text { text: backend.summary; color: "#7c8791"; Layout.fillWidth: true; elide: Text.ElideRight }
             QuietButton { text: "移除 " + backend.selectedCount; visible: backend.selectedCount > 0 && !backend.busy; onClicked: backend.remove(false) }
+            QuietButton { objectName: "uploadFolder"; text: backend.upload.active ? "上传中…" : "上传文件夹"; enabled: backend.canUpload; onClicked: backend.prepareUpload() }
             QuietButton { objectName: "scoreButton"; text: backend.busy ? "取消" : "评分"; primary: !backend.busy; implicitWidth: 94; enabled: backend.busy ? !backend.stopping : backend.canScore; onClicked: backend.scoreOrStop() }
         }
     }
@@ -203,7 +204,7 @@ ApplicationWindow {
             }
             QuietButton {
                 objectName: "installUpdate"
-                text: "安装并重启"; visible: backend.updateReady; enabled: !backend.busy
+                text: "安装并重启"; visible: backend.updateReady; enabled: !backend.busy && !backend.upload.active
                 Layout.fillWidth: true
                 onClicked: installConfirm.open()
             }
@@ -247,11 +248,12 @@ ApplicationWindow {
             RowLayout {
                 Layout.alignment: Qt.AlignRight
                 QuietButton { text: "取消"; onClicked: installConfirm.close() }
-                QuietButton { objectName: "confirmInstall"; text: "继续安装"; enabled: !backend.busy; onClicked: { installConfirm.close(); backend.installUpdate(); } }
+                QuietButton { objectName: "confirmInstall"; text: "继续安装"; enabled: !backend.busy && !backend.upload.active; onClicked: { installConfirm.close(); backend.installUpdate(); } }
             }
         }
     }
     ChannelSheet { backend: window.backend }
+    UploadSheet { backend: window.backend }
     ReportSheet { backend: window.backend }
     Connections {
         target: backend
