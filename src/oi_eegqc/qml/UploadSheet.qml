@@ -88,20 +88,60 @@ QuietPopup {
             textFormat: Text.PlainText; wrapMode: Text.Wrap
             Layout.fillWidth: true; color: "#a04f3e"; font.pixelSize: 12
         }
+        Flow {
+            Layout.fillWidth: true; spacing: 8
+            visible: !sheet.backend.upload.active && (!sheet.info.failed || sheet.info.uncertain)
+            QuietButton { objectName: "newAcquisition"; text: "作为新采集上传"; visible: sheet.info.started || sheet.info.uncertain; enabled: sheet.backend.canUpload; onClicked: newConfirm.open() }
+            QuietButton { objectName: "restoreUploadId"; text: "恢复编号"; visible: sheet.info.uncertain; onClicked: restoreDialog.open() }
+            QuietButton { objectName: "resetUploadRecord"; text: "重置上传记录"; visible: sheet.info.folderCount > 0; onClicked: resetFirst.open() }
+        }
         RowLayout {
             Layout.fillWidth: true; spacing: 8
             QuietButton { text: sheet.backend.upload.active ? "收起" : "关闭"; onClicked: sheet.backend.upload.close() }
             Item { Layout.fillWidth: true }
-            QuietButton { objectName: "newAcquisition"; text: "作为新采集上传"; visible: !sheet.backend.upload.active && (sheet.info.started || sheet.info.uncertain); enabled: sheet.backend.canUpload; onClicked: newConfirm.open() }
-            QuietButton { text: "恢复编号"; visible: sheet.info.uncertain; enabled: !sheet.backend.upload.active; onClicked: restoreDialog.open() }
             QuietButton { objectName: "cancelUpload"; text: "取消上传"; visible: sheet.backend.upload.active; enabled: sheet.backend.upload.canCancel; onClicked: sheet.backend.upload.cancel() }
             QuietButton {
                 objectName: "startUpload"
                 text: sheet.info.failed ? "重试" : sheet.info.started ? "继续上传" : "上传"
-                visible: !sheet.backend.upload.active && !sheet.info.completed
+                visible: !sheet.backend.upload.active && !sheet.info.completed && !sheet.info.uncertain
                 enabled: sheet.backend.upload.canStart && sheet.backend.canUpload
                 primary: true
                 onClicked: sheet.backend.upload.start()
+            }
+        }
+    }
+    QuietPopup {
+        id: resetFirst
+        objectName: "resetUploadFirst"
+        parent: Overlay.overlay; anchors.centerIn: parent
+        width: Math.min(440, sheet.width); modal: true
+        contentItem: ColumnLayout {
+            spacing: 16
+            Text { text: "重置上传记录"; color: "#303941"; font.pixelSize: 16 }
+            ComboBox { id: resetFolder; objectName: "resetFolderChoice"; Layout.fillWidth: true; model: sheet.info.folders; textRole: "path" }
+            Text { text: "只清除当前选中文件夹的本地采集编号、续传状态和历史映射。不删除本地文件或云端数据。重置后下次上传会申请新编号。"; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                QuietButton { text: "取消"; onClicked: resetFirst.close() }
+                QuietButton { objectName: "resetFirstConfirm"; text: "确认重置"; onClicked: { resetSecond.targetRoot = sheet.info.folders[resetFolder.currentIndex].path; resetFirst.close(); resetSecond.open(); } }
+            }
+        }
+    }
+    QuietPopup {
+        id: resetSecond
+        objectName: "resetUploadSecond"
+        property string targetRoot: ""
+        parent: Overlay.overlay; anchors.centerIn: parent
+        width: Math.min(440, sheet.width); modal: true
+        contentItem: ColumnLayout {
+            spacing: 16
+            Text { text: "再次确认"; color: "#303941"; font.pixelSize: 16 }
+            Text { text: resetSecond.targetRoot; textFormat: Text.PlainText; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
+            Text { text: "将清除该文件夹的本地编号、续传状态和历史映射，不能撤销。不会删除本地文件或云端数据；下次上传申请新编号，可能重复保存云端数据。"; color: "#a04f3e"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                QuietButton { text: "取消"; onClicked: resetSecond.close() }
+                QuietButton { objectName: "resetSecondConfirm"; text: "确认清除记录"; onClicked: { resetSecond.close(); sheet.backend.upload.resetUploadRecord(resetSecond.targetRoot); } }
             }
         }
     }

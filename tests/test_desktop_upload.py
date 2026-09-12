@@ -17,6 +17,9 @@ class FakeClient:
         self.unknown = False
         self.allocations = 0
 
+    def health(self):
+        pass
+
     def sign(self, paths, upload_id=None):
         self.signs.append((list(paths), upload_id))
         if self.unknown:
@@ -72,6 +75,73 @@ def batch(tmp_path):
 
 def run(store, state, client):
     return UploadSession(store, state, store.directory.parent, lambda v: None, lambda p: client).run()
+
+
+@pytest.mark.parametrize("stage", ["health", "sign"])
+def test_offline_first_upload_can_retry_without_recovery(batch, stage):
+    from oi_eegqc.upload_http import NetworkUnavailable
+    store, state, root = batch
+    client = FakeClient()
+    original = getattr(client, stage)
+    def offline(*args):
+        raise NetworkUnavailable()
+    setattr(client, stage, offline)
+    assert run(store, state, client)["error"] == "网络不可用，请联网后重试"
+    saved = store.load()
+    assert not saved["allocation_pending"] and saved["upload_id"] is None
+    setattr(client, stage, original)
+    assert run(store, saved, client)["status"] == "completed"
+    assert client.allocations == 1
+
+
+def test_connect_failure_is_known_but_response_loss_is_uncertain(monkeypatch):
+    import oi_eegqc.upload_http as module
+    sent = []
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+        def connect(self):
+            raise OSError("offline")
+        def request(self, *args, **kwargs):
+            sent.append(True)
+        def getresponse(self):
+            raise TimeoutError()
+        def close(self):
+            pass
+    monkeypatch.setattr(module.http.client, "HTTPSConnection", Connection)
+    client = module.SignClient()
+    with pytest.raises(module.NetworkUnavailable):
+        client.sign(["a"])
+    assert not sent
+    monkeypatch.setattr(Connection, "connect", lambda self: None)
+    with pytest.raises(TimeoutError):
+        client.sign(["a"])
+    assert sent
+
+
+def test_reset_removes_history_only_for_selected_folder(batch, tmp_path):
+    store, state, root = batch
+    client = FakeClient()
+    run(store, state, client)
+    first_id = state["local_id"]
+    newer = store.prepare([root], scored_files(root), new_acquisition=True)
+    run(store, newer, client)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "b.npy").write_bytes(b"other")
+    group = store.prepare([root, other], {**scored_files(root), **scored_files(other)})
+    run(store, group, client)
+    other_id = next(p["upload_id"] for p in group["children"] if str(other) in p["roots"])
+    objects = dict(client.objects)
+    store.reset_folder(root)
+    assert not (store.directory / first_id / "state.json").exists()
+    restarted = BatchStore(store.directory)
+    assert restarted.prepare([root], scored_files(root))["upload_id"] is None
+    assert restarted.prepare([other], scored_files(other))["upload_id"] == other_id
+    assert client.objects == objects and (root / "a.npy").read_bytes() == b"signal"
+    assert all(str(root) not in json.loads(p.read_text(encoding="utf-8")).get("roots", [])
+               for p in store.directory.glob("*/state.json") if p.parent.name not in
+               [restarted._folder_record(root)[1]["local_id"]])
 
 
 def test_id_from_service_persisted_and_marker_last(batch):
@@ -273,6 +343,8 @@ def test_anonymous_signing_and_put_is_streamed(tmp_path, monkeypatch):
             self.host, self.headers, self.blocks = host, {}, []
             assert kwargs["context"].check_hostname
             connections.append(self)
+        def connect(self):
+            pass
         def request(self, method, route, body, headers):
             self.headers = headers
             assert self.host == "eeg-upload.kunpeng.blog"

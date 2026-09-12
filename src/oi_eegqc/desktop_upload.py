@@ -228,8 +228,44 @@ class BatchStore:
         self.save(batch)
         return batch
 
+    def reset_folder(self, root):
+        """Remove only this folder's local associations, including legacy history."""
+        root = str(plain_path(root).resolve())
+        matches = lambda value: os.path.normcase(value) == os.path.normcase(root)
+
+        def scrub(record):
+            if record.get("children"):
+                record["children"] = [p for p in record["children"] if scrub(p)]
+            removed = [r for r in record.get("roots", []) if matches(r)]
+            record["roots"] = [r for r in record.get("roots", []) if not matches(r)]
+            for value in removed:
+                record.get("labels", {}).pop(value, None)
+            record["entries"] = [e for e in record.get("entries", [])
+                                 if not any(matches(str(p)) for p in (Path(e["source"]), *Path(e["source"]).parents))]
+            return bool(record["roots"])
+
+        # Read all records before changing anything; malformed history must not be ignored.
+        records = [(p, json.loads(p.read_text(encoding="utf-8"))) for p in self.directory.glob("*/state.json")]
+        for path, record in records:
+            if not any(matches(r) for r in record.get("roots", [])):
+                continue
+            if scrub(record):
+                atomic_json(path, record)
+            else:
+                path.unlink()
+        key = hashlib.sha256(os.path.normcase(root).encode("utf-8")).hexdigest()
+        (self.directory / "folders" / (key + ".json")).unlink(missing_ok=True)
+        pointer = self.directory / "current.json"
+        if pointer.exists():
+            local_id = json.loads(pointer.read_text(encoding="utf-8")).get("local_id", "")
+            if re.fullmatch(ID_PATTERN, local_id) and not (self.directory / local_id / "state.json").exists():
+                pointer.unlink()
+
 
 def friendly_error(error):
+    from .upload_http import NetworkUnavailable
+    if isinstance(error, NetworkUnavailable):
+        return "网络不可用，请联网后重试"
     if isinstance(error, UploadError):
         return str(error)
     if isinstance(error, PermissionError):

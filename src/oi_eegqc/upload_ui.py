@@ -144,6 +144,23 @@ class UploadController(QObject):
         if not self.active and self._selection:
             self.prepare(*self._selection, new_acquisition=True)
 
+    @Slot(str)
+    def resetUploadRecord(self, root):
+        if self.active or not self.batch or not self._selection or root not in self.batch.get("roots", []):
+            return
+        if not self._acquire():
+            return
+        try:
+            self.store.reset_folder(root)
+        except Exception as error:
+            self._error = friendly_error(error)
+            self.changed.emit()
+            return
+        finally:
+            self.lock.unlock()
+            self.lock = None
+        self.prepare(*self._selection)
+
     def _launch(self):
         self._progress = {}
         self.worker.progress.connect(self._on_progress)

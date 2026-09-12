@@ -14,6 +14,10 @@ class ServiceError(Exception):
         self.status_code = status
 
 
+class NetworkUnavailable(Exception):
+    """No allocating request was sent."""
+
+
 def validate_put_url(url, object_key):
     parsed = urlsplit(url)
     hosts = {"xiekp.tos-cn-beijing.volces.com", "tos-cn-beijing.volces.com"}
@@ -27,10 +31,26 @@ class SignClient:
     def __init__(self, data_directory=None):
         pass
 
+    def health(self):
+        connection = http.client.HTTPSConnection("eeg-upload.kunpeng.blog", timeout=8, context=ssl.create_default_context())
+        try:
+            connection.request("GET", "/health")
+            if connection.getresponse().status != 200:
+                raise NetworkUnavailable()
+        except (OSError, http.client.HTTPException):
+            raise NetworkUnavailable() from None
+        finally:
+            connection.close()
+
     def _request(self, route, payload=None):
         body = b"" if payload is None else json.dumps(payload).encode("utf-8")
         connection = http.client.HTTPSConnection("eeg-upload.kunpeng.blog", timeout=30, context=ssl.create_default_context())
         try:
+            # Connect and verify TLS before any allocating HTTP request is sent.
+            try:
+                connection.connect()
+            except (OSError, http.client.HTTPException):
+                raise NetworkUnavailable() from None
             connection.request("POST", route, body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
             response = connection.getresponse()
             if response.status != 200:

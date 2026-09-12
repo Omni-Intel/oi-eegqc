@@ -510,6 +510,47 @@ def test_upload_has_no_token_import(quick):
     assert window.findChild(QObject, "deviceTokenInput") is None
 
 
+def test_reset_requires_two_confirmations_and_offline_only_retries(quick, tmp_path):
+    app, controller, engine, window = quick
+    root = tmp_path / "collection"
+    root.mkdir()
+    recording(root / "data.npy")
+    controller.add_paths([root])
+    wait(app, lambda: not controller.busy)
+    controller.scoreOrStop()
+    wait(app, lambda: not controller.busy)
+    controller.prepareUpload()
+    upload = controller._upload
+    wait(app, lambda: not upload.active)
+    upload.batch.update(status="failed", allocation_pending=False, error="网络不可用，请联网后重试")
+    upload._show_batch_error = True
+    upload.changed.emit()
+    app.processEvents()
+    assert window.findChild(QObject, "startUpload").property("text") == "重试"
+    assert not window.findChild(QObject, "restoreUploadId").property("visible")
+    assert not window.findChild(QObject, "resetUploadRecord").property("visible")
+    upload.batch["allocation_pending"] = True
+    upload.store.save(upload.batch)
+    upload.changed.emit()
+    app.processEvents()
+    assert not window.findChild(QObject, "startUpload").property("visible")
+    for name in ("restoreUploadId", "newAcquisition", "resetUploadRecord"):
+        assert window.findChild(QObject, name).property("visible")
+    def click(name):
+        button = window.findChild(QObject, name)
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                         button.mapToScene(button.boundingRect().center()).toPoint())
+    click("resetUploadRecord")
+    wait(app, lambda: window.findChild(QObject, "resetUploadFirst").property("visible"))
+    click("resetFirstConfirm")
+    wait(app, lambda: window.findChild(QObject, "resetUploadSecond").property("visible"))
+    assert upload.store.load()["allocation_pending"]
+    click("resetSecondConfirm")
+    wait(app, lambda: not upload.active and not upload.info["uncertain"])
+    assert upload.batch["upload_id"] is None
+    assert (root / "data.npy").exists()
+
+
 def test_upload_preview_does_not_replay_previous_error(quick, tmp_path, monkeypatch):
     from oi_eegqc.desktop_upload import UploadSession
     app, controller, engine, window = quick

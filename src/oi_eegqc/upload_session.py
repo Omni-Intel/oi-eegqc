@@ -1,7 +1,7 @@
 import re
 import threading
 import time
-from .upload_http import SignClient, ServiceError, MAX_FILE, PREFIX, validate_put_url
+from .upload_http import SignClient, ServiceError, NetworkUnavailable, MAX_FILE, PREFIX, validate_put_url
 
 
 class UploadSession:
@@ -39,6 +39,11 @@ class UploadSession:
             self.store.save(batch)
         try:
             response = client.sign([e["relative"] for e in entries], batch["upload_id"])
+        except NetworkUnavailable:
+            if first:
+                batch["allocation_pending"] = False
+                self.store.save(batch)
+            raise
         except ServiceError as error:
             if first and 400 <= error.status_code < 500:
                 batch["allocation_pending"] = False
@@ -92,6 +97,8 @@ class UploadSession:
                     raise UploadError("文件相对路径无效")
             self.check_cancel()
             client = self.client_factory(self.data_directory)
+            client.health()
+            self.check_cancel()
             pending = [e for e in batch["entries"] if not e["done"]]
             total = sum(e["size"] for e in current)
             done = sum(e["size"] for e in batch["entries"] if e["done"])
