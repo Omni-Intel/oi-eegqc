@@ -32,14 +32,13 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
             throw 'Release tag must match application version'
           }
-      - name: Build zip and installer
+      - name: Build installer
         run: powershell -ExecutionPolicy Bypass -File scripts/build-desktop.ps1
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
           path: |
-            dist/OI-EEGQC-Windows-x64.zip
             dist/OI-EEGQC-Setup-Windows-x64.exe
           if-no-files-found: error
       - name: Publish GitHub Release
@@ -49,7 +48,6 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $files = @(
-            "dist/OI-EEGQC-Windows-x64.zip",
             "dist/OI-EEGQC-Setup-Windows-x64.exe"
           )
           gh release view $tag *> $null

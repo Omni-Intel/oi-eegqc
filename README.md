@@ -1,5 +1,7 @@
 <h1 align="center">oi-eegqc</h1>
 
+[Download for Windows](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)
+
 Native desktop app: select or drop multiple files and score locally with default adaptive thresholds. [Desktop setup and Windows packaging](docs/desktop.md).
 
 <p align="center">
@@ -201,7 +203,7 @@ GQI is a weighted average over the dimensions that were actually assessed (conta
 
 Human CLI output is for terminals. Do not scrape it.
 Use `--json` / `--ndjson`, or spawn `oi-eegqc serve --stdio` as a sidecar and
-speak NDJSON on stdin/stdout. The shipped Windows app is a Qt zip, not Electron.
+speak NDJSON on stdin/stdout. The shipped Windows app is a Qt installer, not Electron.
 
 Two version strings stay distinct:
 
@@ -244,7 +246,7 @@ bench fields are not flattened onto the report body.
 sidecar uses. Prefer calling those Python functions from the sidecar over
 parsing human CLI text.
 
-The Windows intake app is a native Qt installer or zip (`OI-EEGQC.exe`), not Electron —
+The Windows intake app is a native Qt installer (`OI-EEGQC.exe`), not Electron —
 see [docs/windows-app.md](docs/windows-app.md). Updates are GitHub Releases; Settings can check.
 
 ## Pipeline (v0.2)
@@ -399,7 +401,7 @@ Package version `0.3.0`. Scoring and `threshold_version` are unchanged
 - `oi-eegqc serve --stdio` with cancellable `score_dataset`.
 - `oi-eegqc score` for a file or folder; NPY sidecar can supply `sfreq` / `unit`.
 - Dataset fields stay in `extras`; they are no longer flattened onto reports.
-- Windows delivery is an unsigned Inno Setup installer plus a zip, published to GitHub Releases.
+- Windows delivery is an unsigned Inno Setup installer, published to GitHub Releases.
 
 ## License
 

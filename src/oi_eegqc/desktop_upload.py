@@ -46,25 +46,16 @@ def plain_path(path):
 
 
 def fingerprint(path, cancelled=lambda: False):
+    """Read lightweight file metadata; never scan the file contents."""
+    if cancelled():
+        raise UploadCancelled()
     path = plain_path(path)
     before = path.stat()
     if before.st_size > MAX_FILE:
         raise UploadError("单个文件超过 5 吉字节，暂不支持，请联系管理员启用分片上传")
     if not stat.S_ISREG(before.st_mode):
         raise UploadError("存在不支持的特殊文件")
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while True:
-            if cancelled():
-                raise UploadCancelled()
-            block = stream.read(1024 * 1024)
-            if not block:
-                break
-            digest.update(block)
-    after = path.stat()
-    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-        raise UploadError("文件正在变化，请等待采集写入结束")
-    return dict(size=after.st_size, mtime=after.st_mtime_ns, sha256=digest.hexdigest())
+    return dict(size=before.st_size, mtime=before.st_mtime_ns)
 
 
 def normalize_roots(roots):
@@ -99,7 +90,7 @@ def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None):
                 relative = folder.relative_to(root).as_posix()
                 suffix = label + ("/" + relative if relative != "." else "")
                 entries.append(dict(source=str(folder), relative=suffix.rstrip("/") + "/",
-                                    directory=True, size=0, mtime=0, sha256=hashlib.sha256(b"").hexdigest(), done=False))
+                                    directory=True, size=0, mtime=0, done=False))
             for child in children:
                 plain_path(child)
                 if child.is_dir():

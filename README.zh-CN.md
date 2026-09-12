@@ -1,5 +1,7 @@
 <h1 align="center">oi-eegqc</h1>
 
+[下载 Windows 安装版](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)
+
 桌面版：极简原生界面，支持 Windows，选择文件后即可评分。[使用与打包说明](docs/desktop.md)。
 
 <p align="center">

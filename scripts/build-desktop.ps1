@@ -1,4 +1,4 @@
-# Unsigned zip and Inno Setup installer. Do not Authenticode-sign.
+# Unsigned Inno Setup installer. Do not Authenticode-sign.
 param([string]$IsccPath = '', [switch]$SkipDependencies)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
@@ -14,11 +14,6 @@ if (-not $SkipDependencies) {
 if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
 Copy-Item docs/desktop.md dist/OI-EEGQC/README.md -Force
 Copy-Item docs/folder-upload.md dist/OI-EEGQC/folder-upload.md -Force
-if (Test-Path dist/OI-EEGQC-Windows-x64.zip) {
-    Remove-Item dist/OI-EEGQC-Windows-x64.zip -Force
-}
-Compress-Archive -Path dist/OI-EEGQC -DestinationPath dist/OI-EEGQC-Windows-x64.zip -Force
-Write-Host 'Ready: dist/OI-EEGQC-Windows-x64.zip'
 
 $iscc = @(
     $IsccPath,

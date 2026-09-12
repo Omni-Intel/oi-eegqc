@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-Popup {
+QuietPopup {
     id: sheet
     objectName: "reportSheet"
     required property var backend
@@ -10,15 +10,11 @@ Popup {
     anchors.centerIn: parent
     width: Math.min(480, Overlay.overlay.width - 48)
     height: Math.min(560, Overlay.overlay.height - 48)
-    padding: 20
     modal: true
     focus: true
     visible: backend.reportOpen
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
     onAboutToHide: if (backend.reportOpen) backend.closeReport()
-    background: Rectangle { color: "#ffffff"; radius: 10; border.color: "#dce2e7" }
-    enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 110 } }
-    exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: 80 } }
     contentItem: ColumnLayout {
         spacing: 12
         Text {

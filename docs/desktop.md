@@ -6,7 +6,7 @@ Qt Quick / QML 桌面界面，复用现有 Python 独立进程评分核心，完
 
 新增「上传文件夹」：已扫描并评分的采集目录可在程序内后台上传、暂停与续传。部署凭据及详细行为见 [上传说明](folder-upload.md)。
 
-解压 `OI-EEGQC-Windows-x64.zip` 或运行 `OI-EEGQC-Setup-Windows-x64.exe`。
+下载并运行 [Windows 安装器](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)。
 安装器写入 `%LOCALAPPDATA%\Omni-Intelligence\EEGQC`，不要求管理员。
 不做代码签名。远程分发走 GitHub Releases；设置里的「检查更新」读取最新 release 元数据。
 
@@ -75,11 +75,11 @@ python -m venv .venv
 powershell -ExecutionPolicy Bypass -File scripts/build-desktop.ps1
 ```
 
-构建脚本要求 Inno Setup 6（验证版本 6.7.3），同时生成 zip 与中文安装器，缺少编译器时会明确失败。
+构建脚本要求 Inno Setup 6（验证版本 6.7.3），仅生成中文安装器，缺少编译器时会明确失败。
 非标准路径可传 `-IsccPath`；已安装依赖时可传 `-SkipDependencies`。
 使用 Inno Setup 6.7.3 进行商业分发前应确认其商业许可要求；应用本身不做代码签名。
 打与应用版本一致的 tag `v*` 会发布 GitHub Release；手动运行 `.github/workflows/windows-release.yml` 只上传构建产物，不发布 release。
-资源文件名必须是 `OI-EEGQC-Setup-Windows-x64.exe` 和 `OI-EEGQC-Windows-x64.zip`，桌面「检查更新」按这个名字认。
+资源文件名必须是 `OI-EEGQC-Setup-Windows-x64.exe`，桌面「检查更新」按这个名字认。
 
 安装器使用固定应用标识，覆盖升级沿用安装目录，卸载只移除安装器管理的文件，不删除自行放入的数据或用户设置。
 开发验证脚本 `scripts/verify-windows.ps1` 在隔离目录测试旧版安装、新版覆盖、启动、设置检查更新和卸载；检测到已有安装时拒绝运行，避免影响用户副本。

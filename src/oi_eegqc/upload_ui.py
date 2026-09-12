@@ -85,7 +85,9 @@ class UploadController(QObject):
         status = batch.get("status", "")
         if status == "completed":
             done = total
-        return dict(roots="\n".join(batch.get("roots", [])), uploadId=batch.get("upload_id") or "开始上传后由服务分配", uncertain=bool(batch.get("allocation_pending")),
+        return dict(roots="\n".join(batch.get("roots", [])), uploadId=batch.get("upload_id") or "", uncertain=bool(batch.get("allocation_pending")),
+                    preparing=bool(self.active and self.worker.roots is not None), completed=status == "completed",
+                    started=bool(batch.get("upload_id")), failed=self._show_batch_error and status == "failed",
                     count=sum(not e["directory"] for e in entries), size=f"{total / 1024 / 1024:.1f} 兆字节",
                     progress=min(1., done / total) if total else (1. if status == "completed" else 0.),
                     speed=f"{self._progress.get('speed', 0) / 1024 / 1024:.1f} 兆字节/秒",

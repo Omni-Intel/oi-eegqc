@@ -2,22 +2,18 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-Popup {
+QuietPopup {
     id: sheet
     objectName: "channelSheet"
     required property var backend
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: Math.min(440, Overlay.overlay.width - 48)
-    padding: 20
     modal: true
     focus: true
     visible: backend.channelsOpen
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
     onAboutToHide: if (backend.channelsOpen) backend.cancelChannels()
-    background: Rectangle { color: "#ffffff"; radius: 10; border.color: "#dce2e7" }
-    enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 110 } }
-    exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: 80 } }
     contentItem: ColumnLayout {
         spacing: 12
         Text { text: "选择通道"; color: "#303941"; font.pixelSize: 15 }

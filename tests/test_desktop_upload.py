@@ -188,6 +188,27 @@ def test_source_changes_block_completion(batch):
     assert not client.signs and not client.calls
 
 
+def test_preparation_reads_metadata_not_file_contents(batch, monkeypatch):
+    from oi_eegqc.desktop_upload import fingerprint
+    store, state, root = batch
+    def no_read(*args, **kwargs):
+        raise AssertionError("preparation must not read file contents")
+    monkeypatch.setattr(Path, "open", no_read)
+    assert set(fingerprint(root / "a.npy")) == {"size", "mtime"}
+    assert all("sha256" not in entry for entry in scan_sources([root]))
+
+
+def test_old_hash_batches_resume_without_new_id(batch):
+    store, state, root = batch
+    state["upload_id"] = SERVER_ID
+    for entry in state["entries"]:
+        entry["sha256"] = "old-hash-is-not-required"
+    store.save(state)
+    client = FakeClient()
+    assert run(store, store.load(), client)["status"] == "completed"
+    assert client.signs[0][1] == SERVER_ID
+
+
 def test_limit_before_signing(batch, monkeypatch):
     import oi_eegqc.desktop_upload as module
     store, state, root = batch

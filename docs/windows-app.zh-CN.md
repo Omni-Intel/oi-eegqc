@@ -5,7 +5,7 @@
 
 ## 交付
 
-GitHub Releases 上有安装器 `OI-EEGQC-Setup-Windows-x64.exe` 和便携包 `OI-EEGQC-Windows-x64.zip`。
+GitHub Releases 仅提供安装器 [Windows 下载](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)。
 安装器装到用户目录，不要求管理员，不签名。
 设置里的「检查更新」只读最新 release，有新版本就打开下载页。
 

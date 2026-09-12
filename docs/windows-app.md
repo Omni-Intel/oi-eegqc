@@ -7,14 +7,13 @@ Windows 进程不读波形；评分在本地 Python 里完成，不接云。
 
 ## 交付形态
 
-两条包，都走 GitHub Releases：
+仅提供 GitHub Releases 安装版：
 
 - `OI-EEGQC-Setup-Windows-x64.exe`：Inno Setup 安装器，写入 `%LOCALAPPDATA%\Omni-Intelligence\EEGQC`，不要求管理员。
-- `OI-EEGQC-Windows-x64.zip`：便携目录，解压后保留 `_internal`。
 
 不做代码签名。设置 → 检查更新会请求
 `https://api.github.com/repos/Omni-Intel/oi-eegqc/releases/latest`，
-优先打开安装器资源，没有安装器再打开 zip 或 release 页面。检查不上传脑电。
+使用安装器资源，没有安装器则打开 release 页面。检查不上传脑电。
 
 本地：`scripts/build-desktop.ps1`。远程：打 `v*` tag 或手动跑
 `.github/workflows/windows-release.yml`。

@@ -148,7 +148,7 @@ ApplicationWindow {
         MenuItem { text: "清空"; onTriggered: backend.remove(true) }
     }
 
-    Popup {
+    QuietPopup {
         id: settings
         objectName: "settingsPanel"
         x: window.width - width - 24; y: 68; width: 300; padding: 20
@@ -156,9 +156,6 @@ ApplicationWindow {
         modal: false; focus: true
         onClosed: window.settingsOpen = false
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Rectangle { color: "#ffffff"; radius: 10; border.color: "#dce2e7" }
-        enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 110 } }
-        exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: 80 } }
         contentItem: ScrollView {
             id: settingsScroll
             implicitHeight: Math.min(settingsContent.implicitHeight, window.height - 116)
@@ -194,7 +191,7 @@ ApplicationWindow {
             Text { text: "当前版本 " + backend.version; color: "#99a2ab" }
             QuietButton { objectName: "checkUpdateButton"; text: backend.checking ? "正在检查…" : "检查更新"; enabled: !backend.checking && !backend.downloading; Layout.fillWidth: true; onClicked: backend.checkUpdate() }
             Text { visible: backend.updateText !== "" && !backend.checking; text: backend.updateText; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.Wrap }
-            ProgressBar { Layout.fillWidth: true; visible: backend.downloading; value: backend.downloadProgress / 100 }
+            QuietProgress { Layout.fillWidth: true; visible: backend.downloading; value: backend.downloadProgress / 100 }
             QuietButton {
                 objectName: "downloadUpdate"
                 text: backend.downloading ? "取消下载 · " + backend.downloadProgress + "%" : "下载更新"

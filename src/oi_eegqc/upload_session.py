@@ -77,7 +77,7 @@ class UploadSession:
             batch["status"], batch["error"] = "uploading", ""
             self.store.save(batch)
             current = scan_sources(batch["roots"], self.stopped.is_set)
-            identity = lambda e: (e["source"], e["relative"], e["size"], e["mtime"], e["sha256"], e["directory"])
+            identity = lambda e: (e["source"], e["relative"], e["size"], e["mtime"], e["directory"])
             if [identity(e) for e in current] != [identity(e) for e in batch["entries"]]:
                 raise UploadError("源文件夹已变化，请恢复原文件后继续此批次")
             if any(e["size"] > MAX_FILE for e in current):
@@ -98,7 +98,7 @@ class UploadSession:
                     self.check_cancel()
                     batch["current"] = entry["relative"]
                     self.store.save(batch)
-                    if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set) != {k: entry[k] for k in ("size", "mtime", "sha256")}:
+                    if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set) != {k: entry[k] for k in ("size", "mtime")}:
                         raise UploadError("源文件已变化，已停止上传")
                     key = PREFIX + batch["upload_id"] + "/" + entry["relative"]
                     last = 0
@@ -119,7 +119,7 @@ class UploadSession:
                             urls.update(self.signed(client, [e for e in group if not e["done"]]))
                             last = 0
                     self.check_cancel()
-                    if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set)["sha256"] != entry["sha256"]:
+                    if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set) != {k: entry[k] for k in ("size", "mtime")}:
                         raise UploadError("上传期间文件发生变化，不会创建完成标记")
                     entry["done"] = True
                     done += entry["size"]

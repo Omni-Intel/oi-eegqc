@@ -462,6 +462,50 @@ def test_upload_preview_does_not_replay_previous_error(quick, tmp_path, monkeypa
     assert upload.store.load()["upload_id"] == "existing-batch"
 
 
+@pytest.mark.parametrize("width,height", [(600, 380), (760, 520)])
+@pytest.mark.parametrize("phase", ["ready", "uploading", "failed", "completed"])
+def test_upload_sheet_layout(quick, tmp_path, width, height, phase):
+    from types import SimpleNamespace
+    from PySide6.QtGui import QFontDatabase
+    font_path = Path("C:/Windows/Fonts/msyh.ttc")
+    if font_path.exists():
+        QFontDatabase.addApplicationFont(str(font_path))
+    app, controller, engine, window = quick
+    upload = controller._upload
+    upload.batch = dict(status=phase, roots=["c:/采集数据/第一批/" + "较长文件夹名称/" * 8],
+                        upload_id="" if phase == "ready" else "20260912T010000Z-a1b2c3d4",
+                        entries=[dict(directory=False, size=100, done=phase == "completed")],
+                        error="网络连接失败，请稍后重试" if phase == "failed" else "")
+    upload._show_batch_error = True
+    upload._progress = dict(done=45, speed=1024 * 1024, current="采集数据/raw/eeg.npy")
+    upload._opened = True
+    if phase == "uploading":
+        upload.worker = SimpleNamespace(roots=None, session=None)
+    try:
+        window.setWidth(width)
+        window.setHeight(height)
+        upload.changed.emit()
+        QTest.qWait(180)
+        app.processEvents()
+        sheet = window.findChild(QObject, "uploadSheet")
+        assert sheet.property("visible")
+        assert 0 < sheet.property("height") <= height - 40
+        error = window.findChild(QObject, "uploadError")
+        if phase == "failed":
+            top = error.mapToScene(error.boundingRect().topLeft())
+            bottom = error.mapToScene(error.boundingRect().bottomRight())
+            assert 0 <= top.y() < bottom.y() < height
+        start = window.findChild(QObject, "startUpload")
+        cancel = window.findChild(QObject, "cancelUpload")
+        for button in (start, cancel):
+            if button.isVisible():
+                point = button.mapToScene(button.boundingRect().center())
+                assert 0 < point.x() < width and 0 < point.y() < height
+        assert window.grabWindow().save(str(tmp_path / "upload.png"))
+    finally:
+        upload.worker = None
+
+
 def test_pending_upload_cannot_bypass_scoring_gate(quick, tmp_path, monkeypatch):
     app, controller, engine, window = quick
     button = window.findChild(QObject, "uploadFolder")
