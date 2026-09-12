@@ -89,7 +89,7 @@ class ChannelModel(QAbstractListModel):
 
 
 class FileModel(QAbstractListModel):
-    fields = ("label", "score", "state", "detail", "chosen", "ready")
+    fields = ("label", "score", "state", "detail", "chosen", "ready", "folder")
     roles = {Qt.ItemDataRole.UserRole + i + 1: name.encode() for i, name in enumerate(fields)}
 
     def __init__(self, parent=None):
@@ -113,14 +113,14 @@ class FileModel(QAbstractListModel):
         self.beginInsertRows(QModelIndex(), n, n)
         self.rows.append(dict(path=path, metadata=metadata, label=Path(path).name.lower(),
                               score="—", state="待评分", detail=path.lower(), chosen=False,
-                              ready=False, report=None, error=""))
+                              ready=False, report=None, error="", folder=""))
         self.endInsertRows()
 
     def patch(self, index, **values):
         self.rows[index].update(values)
         self.dataChanged.emit(self.index(index), self.index(index), [])
 
-    def names(self):
+    def names(self, folders=()):
         from collections import defaultdict
         groups = defaultdict(list)
         for row in self.rows:
@@ -134,14 +134,16 @@ class FileModel(QAbstractListModel):
                     roots[name] = ""
         for i, row in enumerate(self.rows):
             path = Path(row["path"])
+            folder = next((Path(root) for root in folders if Path(root) in path.parents), None)
             label = path.name.lower()
             if label in roots:
                 try:
                     label = str(path.relative_to(roots[label])).lower()
                 except ValueError:
                     label = str(path).lower()
-            if row["label"] != label:
-                self.patch(i, label=label)
+            if folder is not None:
+                label = path.relative_to(folder).as_posix().lower()
+            self.patch(i, label=label, folder=str(folder).lower() if folder else "单独文件 · 仅评分")
 
 
 class IntakeWorker(QThread):
@@ -219,6 +221,7 @@ class Controller(QObject):
 
     model = Property(QObject, lambda self: self.files, constant=True)
     upload = Property(QObject, lambda self: self._upload, constant=True)
+    folderCount = Property(int, lambda self: len(self._folder_roots), notify=changed)
     canUpload = Property(bool, lambda self: bool(self._folder_roots) and not self._busy and bool(self.files.rows)
                          and all(r["report"] is not None and r.get("scored_stat") for r in self.files.rows), notify=changed)
     channelModel = Property(QObject, lambda self: self.channels, constant=True)
@@ -297,6 +300,9 @@ class Controller(QObject):
         cancelled = worker.isInterruptionRequested()
         if not cancelled and not worker.errors:
             self._folder_roots = list(dict.fromkeys(self._folder_roots + self._import_roots))
+            roots = sorted(self._folder_roots, key=lambda p: len(Path(p).parts))
+            self._folder_roots = [root for i, root in enumerate(roots)
+                                  if not any(Path(parent) in Path(root).parents for parent in roots[:i])]
         worker.deleteLater()
         if cancelled:
             self._pending = []
@@ -322,7 +328,7 @@ class Controller(QObject):
                 self.changed.emit()
                 QTimer.singleShot(0, self._consume)
                 return
-        self.files.names()
+        self.files.names(self._folder_roots)
         self._pending = []
         self._busy = self._importing = False
         if self._stopping:
@@ -403,9 +409,9 @@ class Controller(QObject):
                 self.files.endRemoveRows()
         self._anchor = 0
         self._notice = ""
-        self.files.names()
         self._folder_roots = [root for root in self._folder_roots
                               if any(Path(root) in Path(r["path"]).parents for r in self.files.rows)]
+        self.files.names(self._folder_roots)
         self.changed.emit()
 
     @Slot()

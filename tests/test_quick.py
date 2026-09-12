@@ -29,6 +29,11 @@ def wait(app, predicate, timeout=15):
 @pytest.fixture
 def quick(tmp_path):
     app = QApplication.instance() or QApplication([])
+    from PySide6.QtGui import QFontDatabase
+    font_path = Path("C:/Windows/Fonts/msyh.ttc")
+    if font_path.exists() and not app.property("testFontLoaded"):
+        QFontDatabase.addApplicationFont(str(font_path))
+        app.setProperty("testFontLoaded", True)
     controller = Controller(settings=QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat))
     engine = create_engine(controller)
     assert engine.rootObjects()
@@ -401,6 +406,58 @@ def test_qml_folder_upload_gate_preview_and_resume(quick, tmp_path, monkeypatch)
     restored.shutdown()
 
 
+def test_multiple_folders_are_grouped_and_all_files_listed(quick, tmp_path):
+    app, controller, engine, window = quick
+    roots = [tmp_path / "first" / "session", tmp_path / "second" / "session"]
+    for root in roots:
+        root.mkdir(parents=True)
+        recording(root / "data.npy")
+        (root / "impedance.png").write_bytes(b"image")
+        (root / "position.mp4").write_bytes(b"video")
+        (root / "notes").mkdir()
+        (root / "notes" / "readme.txt").write_text("notes")
+    controller.add_paths(roots)
+    wait(app, lambda: not controller.busy)
+    assert controller.folderCount == 2
+    assert {r["folder"] for r in controller.files.rows} == {str(p).lower() for p in roots}
+    assert [r["label"] for r in controller.files.rows] == ["data.npy", "data.npy"]
+    controller.scoreOrStop()
+    wait(app, lambda: not controller.busy)
+    QTest.qWait(150)
+    assert window.grabWindow().save(str(tmp_path / "folders-main.png"))
+    controller.prepareUpload()
+    upload = controller._upload
+    wait(app, lambda: not upload.active)
+    assert upload.info["folderCount"] == 2 and upload.info["count"] == 10
+    assert {f["path"] for f in upload.info["folders"]} == {str(p) for p in roots}
+    assert all(f["count"] == 5 for f in upload.info["folders"])
+    assert window.findChild(QObject, "uploadFolderList").property("count") == 2
+    QTest.qWait(150)
+    assert window.grabWindow().save(str(tmp_path / "folders-upload.png"))
+
+
+def test_pending_other_folder_is_not_silently_selected(quick, tmp_path):
+    app, controller, engine, window = quick
+    upload = controller._upload
+    original = tmp_path / "original"
+    original.mkdir()
+    recording(original / "data.npy")
+    stat = (original / "data.npy").stat()
+    old = upload.store.prepare([original], {str(original / "data.npy"): (stat.st_size, stat.st_mtime_ns)})
+    other = tmp_path / "other"
+    other.mkdir()
+    recording(other / "data.npy")
+    other_stat = (other / "data.npy").stat()
+    upload.prepare([other], {str(other / "data.npy"): (other_stat.st_size, other_stat.st_mtime_ns)})
+    wait(app, lambda: not upload.active)
+    assert not upload.info["error"] and upload.canStart
+    assert upload.batch["roots"] == [str(other)]
+    assert upload.batch["local_id"] != old["local_id"]
+    upload.prepare([original], {str(original / "data.npy"): (stat.st_size, stat.st_mtime_ns)})
+    wait(app, lambda: not upload.active)
+    assert upload.batch["local_id"] == old["local_id"]
+
+
 def test_upload_lock_prevents_parallel_batch_writes(quick, tmp_path):
     from oi_eegqc.upload_ui import UploadController
     app, controller, engine, window = quick
@@ -414,6 +471,35 @@ def test_upload_lock_prevents_parallel_batch_writes(quick, tmp_path):
         first.lock.unlock()
         first.lock = None
         second.shutdown()
+
+
+def test_new_acquisition_requires_confirmation(quick, tmp_path):
+    app, controller, engine, window = quick
+    root = tmp_path / "collection"
+    root.mkdir()
+    recording(root / "data.npy")
+    controller.add_paths([root])
+    wait(app, lambda: not controller.busy)
+    controller.scoreOrStop()
+    wait(app, lambda: not controller.busy)
+    controller.prepareUpload()
+    upload = controller._upload
+    wait(app, lambda: not upload.active)
+    upload.batch["upload_id"] = "existing-acquisition"
+    upload.store.save(upload.batch)
+    upload.changed.emit()
+    app.processEvents()
+    button = window.findChild(QObject, "newAcquisition")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     button.mapToScene(button.boundingRect().center()).toPoint())
+    wait(app, lambda: window.findChild(QObject, "newAcquisitionConfirm").property("visible"))
+    original = upload.store.load()["local_id"]
+    assert upload.store.load()["upload_id"] == "existing-acquisition"
+    confirm = window.findChild(QObject, "confirmNewAcquisition")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     confirm.mapToScene(confirm.boundingRect().center()).toPoint())
+    wait(app, lambda: not upload.active and upload.batch["local_id"] != original)
+    assert upload.batch["upload_id"] is None
 
 
 def test_upload_has_no_token_import(quick):
@@ -466,10 +552,6 @@ def test_upload_preview_does_not_replay_previous_error(quick, tmp_path, monkeypa
 @pytest.mark.parametrize("phase", ["ready", "uploading", "failed", "completed"])
 def test_upload_sheet_layout(quick, tmp_path, width, height, phase):
     from types import SimpleNamespace
-    from PySide6.QtGui import QFontDatabase
-    font_path = Path("C:/Windows/Fonts/msyh.ttc")
-    if font_path.exists():
-        QFontDatabase.addApplicationFont(str(font_path))
     app, controller, engine, window = quick
     upload = controller._upload
     upload.batch = dict(status=phase, roots=["c:/采集数据/第一批/" + "较长文件夹名称/" * 8],

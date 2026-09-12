@@ -36,20 +36,28 @@ QuietPopup {
                 id: details
                 width: body.availableWidth
                 spacing: sheet.compact ? 12 : 18
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: folderInfo.implicitHeight + 28
-                    radius: 8; color: "#f7f8fa"
-                    ColumnLayout {
-                        id: folderInfo
-                        anchors.fill: parent; anchors.margins: 14; spacing: 8
-                        Text {
-                            text: sheet.info.roots || "正在读取文件夹…"
-                            textFormat: Text.PlainText; color: "#303941"
-                            wrapMode: Text.WrapAnywhere; Layout.fillWidth: true
-                            maximumLineCount: 3; elide: Text.ElideMiddle
+                Text { text: sheet.info.folderCount + " 个文件夹 · " + sheet.info.count + " 个文件 · " + sheet.info.size; color: "#303941"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                Text { text: "包含子文件夹内全部文件"; color: "#89929b"; font.pixelSize: 11 }
+                Repeater {
+                    objectName: "uploadFolderList"
+                    model: sheet.info.folders
+                    delegate: Rectangle {
+                        required property var modelData
+                        objectName: "uploadFolderCard"
+                        Layout.fillWidth: true
+                        implicitHeight: folderInfo.implicitHeight + 24
+                        radius: 8; color: "#f7f8fa"
+                        ColumnLayout {
+                            id: folderInfo
+                            anchors.fill: parent; anchors.margins: 12; spacing: 6
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text { text: modelData.name.toLowerCase(); textFormat: Text.PlainText; color: "#303941"; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideMiddle }
+                                Text { text: modelData.count + " 个文件 · " + modelData.size; color: "#7c8791"; font.pixelSize: 11 }
+                            }
+                            Text { text: modelData.path.toLowerCase(); textFormat: Text.PlainText; color: "#89929b"; font.pixelSize: 11; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
+                            Text { text: "采集 " + modelData.uploadId; visible: modelData.uploadId !== ""; textFormat: Text.PlainText; color: "#89929b"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
                         }
-                        Text { text: sheet.info.count + " 个文件 · " + sheet.info.size; color: "#7c8791"; font.pixelSize: 12 }
                     }
                 }
                 ColumnLayout {
@@ -84,6 +92,7 @@ QuietPopup {
             Layout.fillWidth: true; spacing: 8
             QuietButton { text: sheet.backend.upload.active ? "收起" : "关闭"; onClicked: sheet.backend.upload.close() }
             Item { Layout.fillWidth: true }
+            QuietButton { objectName: "newAcquisition"; text: "作为新采集上传"; visible: !sheet.backend.upload.active && (sheet.info.started || sheet.info.uncertain); enabled: sheet.backend.canUpload; onClicked: newConfirm.open() }
             QuietButton { text: "恢复编号"; visible: sheet.info.uncertain; enabled: !sheet.backend.upload.active; onClicked: restoreDialog.open() }
             QuietButton { objectName: "cancelUpload"; text: "取消上传"; visible: sheet.backend.upload.active; enabled: sheet.backend.upload.canCancel; onClicked: sheet.backend.upload.cancel() }
             QuietButton {
@@ -93,6 +102,22 @@ QuietPopup {
                 enabled: sheet.backend.upload.canStart && sheet.backend.canUpload
                 primary: true
                 onClicked: sheet.backend.upload.start()
+            }
+        }
+    }
+    QuietPopup {
+        id: newConfirm
+        objectName: "newAcquisitionConfirm"
+        parent: Overlay.overlay; anchors.centerIn: parent
+        width: Math.min(420, sheet.width); modal: true
+        contentItem: ColumnLayout {
+            spacing: 16
+            Text { text: "作为新采集上传"; color: "#303941"; font.pixelSize: 16 }
+            Text { text: "将为所选文件夹创建新的采集编号，原云端数据保留。"; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                QuietButton { text: "取消"; onClicked: newConfirm.close() }
+                QuietButton { objectName: "confirmNewAcquisition"; text: "确认新采集"; primary: true; onClicked: { newConfirm.close(); sheet.backend.upload.newAcquisition(); } }
             }
         }
     }

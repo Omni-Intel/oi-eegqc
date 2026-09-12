@@ -49,7 +49,7 @@ ApplicationWindow {
                 RowLayout {
                     visible: backend.count > 0
                     Layout.fillWidth: true; Layout.leftMargin: 18; Layout.rightMargin: 18; Layout.preferredHeight: 44
-                    Text { text: "文件"; color: "#89929b"; Layout.fillWidth: true }
+                    Text { text: backend.folderCount > 0 ? "文件夹 " + backend.folderCount : "文件"; color: "#89929b"; Layout.fillWidth: true }
                     Text { text: "分数"; color: "#89929b"; Layout.preferredWidth: 76; horizontalAlignment: Text.AlignRight }
                     Text { text: "状态"; color: "#89929b"; Layout.preferredWidth: 96; horizontalAlignment: Text.AlignRight }
                 }
@@ -60,6 +60,19 @@ ApplicationWindow {
                     Layout.fillWidth: true; Layout.fillHeight: true
                     clip: true; model: backend.model; boundsBehavior: Flickable.StopAtBounds
                     reuseItems: true; cacheBuffer: 300; flickDeceleration: 1800
+                    section.property: "folder"
+                    section.criteria: ViewSection.FullString
+                    section.delegate: Rectangle {
+                        required property string section
+                        width: list.width; height: backend.folderCount > 0 ? 48 : 0
+                        visible: height > 0; color: "#f7f8fa"
+                        ColumnLayout {
+                            anchors.fill: parent; anchors.leftMargin: 18; anchors.rightMargin: 18
+                            anchors.topMargin: 7; anchors.bottomMargin: 7; spacing: 2
+                            Text { text: section.split(/[\\/]/).pop(); textFormat: Text.PlainText; color: "#303941"; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideMiddle }
+                            Text { text: section; textFormat: Text.PlainText; color: "#89929b"; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideMiddle }
+                        }
+                    }
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; width: 7 }
                     focus: true
                     Keys.onPressed: function(event) {

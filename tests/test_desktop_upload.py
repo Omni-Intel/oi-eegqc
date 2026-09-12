@@ -15,11 +15,15 @@ class FakeClient:
         self.cancel = None
         self.complete_calls = 0
         self.unknown = False
+        self.allocations = 0
 
     def sign(self, paths, upload_id=None):
         self.signs.append((list(paths), upload_id))
         if self.unknown:
             raise TimeoutError()
+        if not upload_id:
+            self.allocations += 1
+            upload_id = SERVER_ID if self.allocations == 1 else SERVER_ID + "-" + str(self.allocations)
         return dict(uploadId=upload_id or SERVER_ID, prefix=PREFIX + (upload_id or SERVER_ID) + "/",
                     expiresAt="2026-09-11T14:25:00Z", files=[
                         dict(path=p, objectKey=PREFIX + (upload_id or SERVER_ID) + "/" + p,
@@ -209,6 +213,23 @@ def test_old_hash_batches_resume_without_new_id(batch):
     assert client.signs[0][1] == SERVER_ID
 
 
+def test_all_folder_files_including_media_are_uploaded(batch):
+    store, state, root = batch
+    media = root / "media"
+    media.mkdir()
+    (media / "photo.jpg").write_bytes(b"photo")
+    (media / "video.mp4").write_bytes(b"video")
+    (media / "impedance.png").write_bytes(b"impedance")
+    s = (root / "a.npy").stat()
+    state = store.prepare([root, media], {str(root / "a.npy"): (s.st_size, s.st_mtime_ns)})
+    assert len(state["roots"]) == 1
+    client = FakeClient()
+    assert run(store, state, client)["status"] == "completed"
+    for name in ("photo.jpg", "video.mp4", "impedance.png"):
+        assert client.objects[PREFIX + SERVER_ID + "/source/media/" + name] == (media / name).read_bytes()
+    assert len(client.objects) == 6  # five files and the completion marker
+
+
 def test_limit_before_signing(batch, monkeypatch):
     import oi_eegqc.desktop_upload as module
     store, state, root = batch
@@ -282,3 +303,145 @@ def test_anonymous_signing_and_put_is_streamed(tmp_path, monkeypatch):
     assert b"".join(connections[1].blocks) == source.read_bytes()
     client.complete(SERVER_ID)
     assert connections[-1].headers["Content-Length"] == "0"
+
+
+def scored_files(*roots):
+    return {str(p): (p.stat().st_size, p.stat().st_mtime_ns)
+            for root in roots for p in root.rglob("*.npy")}
+
+
+def test_same_folder_next_day_overwrites_and_appends_after_restart(batch):
+    store, state, root = batch
+    client = FakeClient()
+    assert run(store, state, client)["status"] == "completed"
+    upload_id = state["upload_id"]
+    (root / "a.npy").write_bytes(b"second-day-more-eeg")
+    (root / "photo.jpg").write_bytes(b"photo")
+    (root / "session.json").write_bytes(b"{}")
+    (root / "z.txt").unlink()
+    restarted = BatchStore(store.directory)
+    second = restarted.prepare([root], scored_files(root))
+    assert second["upload_id"] == upload_id
+    assert not any(e["done"] for e in second["entries"])
+    assert run(restarted, second, client)["status"] == "completed"
+    prefix = PREFIX + upload_id + "/source/"
+    assert client.objects[prefix + "a.npy"] == b"second-day-more-eeg"
+    assert client.objects[prefix + "photo.jpg"] == b"photo"
+    assert client.objects[prefix + "session.json"] == b"{}"
+    assert client.objects[prefix + "z.txt"] == b"notes"  # never delete cloud-only objects
+    assert client.calls.count(prefix + "a.npy") == 2
+    assert client.allocations == 1
+    third = BatchStore(store.directory).prepare([root], scored_files(root))
+    assert third["upload_id"] == upload_id
+    assert not any(e["done"] for e in third["entries"])
+
+
+def test_only_explicit_new_acquisition_allocates_new_id(batch):
+    store, state, root = batch
+    client = FakeClient()
+    assert run(store, state, client)["status"] == "completed"
+    previous_id = state["upload_id"]
+    fresh = store.prepare([root], scored_files(root), new_acquisition=True)
+    assert fresh["upload_id"] is None and fresh["local_id"] != state["local_id"]
+    assert run(store, fresh, client)["status"] == "completed"
+    assert fresh["upload_id"] != previous_id
+    restored = BatchStore(store.directory).prepare([root], scored_files(root))
+    assert restored["upload_id"] == fresh["upload_id"]
+    assert PREFIX + previous_id + "/source/a.npy" in client.objects
+
+
+def test_multiple_folders_keep_independent_ids_when_uploaded_separately(tmp_path):
+    roots = [tmp_path / "first" / "collection", tmp_path / "second" / "collection"]
+    for root in roots:
+        root.mkdir(parents=True)
+        (root / "data.npy").write_bytes(b"eeg")
+    store = BatchStore(tmp_path / "state")
+    state = store.prepare(roots, scored_files(*roots))
+    client = FakeClient()
+    progress = []
+    session = UploadSession(store, state, store.directory.parent, progress.append, lambda p: client)
+    assert session.run()["status"] == "completed"
+    ids = [p["upload_id"] for p in state["children"]]
+    assert len(set(ids)) == 2
+    assert progress[-1]["done"] == progress[-1]["total"] == 6
+    separate = BatchStore(store.directory).prepare([roots[1]], scored_files(roots[1]))
+    assert separate["upload_id"] == ids[1]
+    assert run(store, separate, client)["status"] == "completed"
+    together = BatchStore(store.directory).prepare(roots, scored_files(*roots))
+    assert [p["upload_id"] for p in together["children"]] == ids
+
+
+def test_failed_folder_resumes_after_restart_without_new_id(batch):
+    store, state, root = batch
+    client = FakeClient()
+    client.fail = "z.txt"
+    assert run(store, state, client)["status"] == "failed"
+    restored = BatchStore(store.directory)
+    again = restored.prepare([root], scored_files(root))
+    assert again["upload_id"] == state["upload_id"]
+    assert any(e["done"] for e in again["entries"])
+    client.fail = None
+    assert run(restored, again, client)["status"] == "completed"
+    assert client.allocations == 1
+
+
+def test_lost_first_id_is_not_forgotten_by_folder_reselection(batch):
+    store, state, root = batch
+    client = FakeClient()
+    client.unknown = True
+    assert run(store, state, client)["status"] == "failed"
+    again = BatchStore(store.directory).prepare([root], scored_files(root))
+    assert again["allocation_pending"]
+    assert run(store, again, client)["status"] == "failed"
+    assert len(client.signs) == 1
+
+
+def test_legacy_multi_folder_id_and_object_paths_are_preserved(tmp_path):
+    roots = [tmp_path / "first" / "collection", tmp_path / "second" / "collection"]
+    for root in roots:
+        root.mkdir(parents=True)
+        (root / "data.npy").write_bytes(b"eeg")
+    store = BatchStore(tmp_path / "state")
+    entries = scan_sources(roots)
+    old = dict(version=2, local_id="legacy", upload_id=SERVER_ID, allocation_pending=False,
+               roots=[str(p) for p in roots], entries=entries, status="completed", error="")
+    store.save(old)
+    state = store.prepare(roots, scored_files(*roots))
+    assert all(p["upload_id"] == SERVER_ID for p in state["children"])
+    assert [e["relative"] for e in state["entries"]] == [e["relative"] for e in entries]
+    client = FakeClient()
+    assert run(store, state, client)["status"] == "completed"
+    assert client.complete_calls == 1
+    assert client.calls[-1].endswith("/_COMPLETE")
+
+
+def test_folder_mapping_survives_parent_state_interruption(tmp_path):
+    from copy import deepcopy
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for root in roots:
+        root.mkdir()
+        (root / "data.npy").write_bytes(b"eeg")
+    store = BatchStore(tmp_path / "state")
+    state = store.prepare(roots, scored_files(*roots))
+    stale = deepcopy(state)
+    client = FakeClient()
+    assert run(store, state, client)["status"] == "completed"
+    ids = [part["upload_id"] for part in state["children"]]
+    store._write_record(stale)  # simulate an old parent checkpoint after child records were saved
+    restored = BatchStore(store.directory).load()
+    assert [part["upload_id"] for part in restored["children"]] == ids
+    for index, root in enumerate(roots):
+        assert BatchStore(store.directory).prepare([root], scored_files(root))["upload_id"] == ids[index]
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="Windows path identity")
+def test_windows_path_case_reuses_id_and_object_names(batch):
+    store, state, root = batch
+    client = FakeClient()
+    assert run(store, state, client)["status"] == "completed"
+    other_case = Path(str(root).upper())
+    again = BatchStore(store.directory).prepare([other_case], scored_files(other_case))
+    assert again["upload_id"] == state["upload_id"]
+    assert run(store, again, client)["status"] == "completed"
+    assert client.allocations == 1
+    assert all("/SOURCE/" not in key for key in client.objects)

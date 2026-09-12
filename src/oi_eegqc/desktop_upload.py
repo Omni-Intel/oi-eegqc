@@ -61,7 +61,7 @@ def fingerprint(path, cancelled=lambda: False):
 def normalize_roots(roots):
     result = []
     for value in sorted({str(Path(p).absolute()) for p in roots}, key=lambda p: (len(Path(p).parts), p)):
-        path = plain_path(value)
+        path = plain_path(value).resolve()
         if not path.is_dir():
             raise UploadError("源文件夹不存在")
         if not any(path == parent or parent in path.parents for parent in result):
@@ -69,10 +69,10 @@ def normalize_roots(roots):
     return result
 
 
-def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None):
+def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, labels=None):
     entries, used = [], set()
     for root in normalize_roots(roots):
-        label = root.name
+        label = (labels or {}).get(str(root), root.name)
         if not label:
             raise UploadError("请选择采集文件夹，不要选择磁盘根目录")
         if label.casefold() in used:
@@ -108,11 +108,16 @@ class BatchStore:
         self.directory = Path(directory)
 
     def save(self, batch):
+        for child in batch.get("children", []):
+            self._write_record(child)
+        self._write_record(batch)
+        atomic_json(self.directory / "current.json", {"local_id": batch["local_id"]})
+
+    def _write_record(self, batch):
         batch_id = batch["local_id"]
         if not re.fullmatch(ID_PATTERN, batch_id):
             raise UploadError("上传状态中的批次编号无效")
         atomic_json(self.directory / batch_id / "state.json", batch)
-        atomic_json(self.directory / "current.json", {"local_id": batch_id})
 
     def load(self):
         pointer = self.directory / "current.json"
@@ -124,6 +129,15 @@ class BatchStore:
             if not re.fullmatch(ID_PATTERN, batch_id):
                 raise ValueError()
             batch = json.loads((self.directory / batch_id / "state.json").read_text(encoding="utf-8"))
+            if batch.get("children"):
+                children = []
+                for child in batch["children"]:
+                    child_id = child["local_id"]
+                    if not re.fullmatch(ID_PATTERN, child_id):
+                        raise ValueError()
+                    children.append(json.loads((self.directory / child_id / "state.json").read_text(encoding="utf-8")))
+                batch["children"] = children
+                batch["entries"] = [e for child in children for e in child["entries"]]
             if batch["version"] == 1:
                 if any(e["done"] for e in batch["entries"]):
                     raise UploadError("旧认证批次已传过文件，请联系管理员迁移；旧状态已保留")
@@ -138,8 +152,37 @@ class BatchStore:
         except (OSError, ValueError, KeyError, TypeError):
             raise UploadError("上传状态无法读取，请保留应用数据目录并联系维护人员") from None
 
-    def prepare(self, roots, scored, cancelled=lambda: False, progress=lambda name: None):
+    def _folder_record(self, root):
+        key = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
+        pointer = self.directory / "folders" / (key + ".json")
+        if pointer.exists():
+            local_id = json.loads(pointer.read_text(encoding="utf-8"))["local_id"]
+            if not re.fullmatch(ID_PATTERN, local_id):
+                raise UploadError("文件夹上传记录无效，请联系管理员")
+            record = json.loads((self.directory / local_id / "state.json").read_text(encoding="utf-8"))
+            if [os.path.normcase(p) for p in record["roots"]] != [os.path.normcase(str(root))]:
+                raise UploadError("文件夹上传记录不匹配，请联系管理员")
+            return pointer, record
+        # Adopt pre-index records without abandoning an already allocated cloud ID.
+        for path in sorted(self.directory.glob("*/state.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record.get("version") == 1 and os.path.normcase(str(root)) in [os.path.normcase(p) for p in record.get("roots", [])] and any(e.get("done") for e in record.get("entries", [])):
+                raise UploadError("旧认证批次已传过文件，请联系管理员迁移；旧状态已保留")
+            if record.get("version") != 2 or record.get("children"):
+                continue
+            if os.path.normcase(str(root)) not in [os.path.normcase(p) for p in record["roots"]]:
+                continue
+            members = [e for e in record["entries"] if root == Path(e["source"]) or root in Path(e["source"]).parents]
+            if len(record["roots"]) != 1:
+                record = dict(record, local_id=secrets.token_hex(16), roots=[str(root)], entries=members)
+            label = members[0]["relative"].split("/")[0] if members else root.name
+            record["labels"] = {str(root): label}
+            return pointer, record
+        return pointer, None
+
+    def prepare(self, roots, scored, cancelled=lambda: False, progress=lambda name: None, new_acquisition=False):
         roots = normalize_roots(roots)
+        scored = {os.path.normcase(str(Path(path).resolve())): value for path, value in scored.items()}
         for root in roots:
             if root == self.directory or root in self.directory.absolute().parents:
                 raise UploadError("采集目录不能包含应用上传状态目录")
@@ -147,13 +190,41 @@ class BatchStore:
         if any(e["size"] > MAX_FILE for e in entries):
             raise UploadError("单个文件超过 5 吉字节，暂不支持，请联系管理员启用分片上传")
         signals = [e for e in entries if not e["directory"] and Path(e["source"]).suffix.lower() in EEG_SUFFIXES]
-        if not signals or any(e["source"] not in scored for e in signals):
+        if not signals or any(os.path.normcase(e["source"]) not in scored for e in signals):
             raise UploadError("文件夹中仍有未完成评分的数据，请重新添加并评分")
         for entry in signals:
-            if list(scored[entry["source"]]) != [entry["size"], entry["mtime"]]:
+            if list(scored[os.path.normcase(entry["source"])]) != [entry["size"], entry["mtime"]]:
                 raise UploadError("评分后数据已变化，请重新评分")
-        batch = dict(version=2, local_id=secrets.token_hex(16), upload_id=None, allocation_pending=False, roots=[str(p) for p in roots],
-                     status="ready", entries=entries, error="")
+        children = []
+        for root in roots:
+            pointer, previous = self._folder_record(root)
+            if new_acquisition:
+                previous = None
+            label = next(iter(previous.get("labels", {}).values()), root.name) if previous else root.name
+            members = []
+            for entry in entries:
+                source = Path(entry["source"])
+                if root != source and root not in source.parents:
+                    continue
+                suffix = source.relative_to(root).as_posix()
+                relative = label + ("/" + suffix if suffix != "." else "")
+                members.append(dict(entry, relative=relative.rstrip("/") + "/" if entry["directory"] else relative))
+            identity = lambda e: (e["relative"], e["size"], e["mtime"], e["directory"])
+            unchanged = previous and [identity(e) for e in members] == [identity(e) for e in previous["entries"]]
+            child = dict(previous) if previous else dict(version=2, local_id=secrets.token_hex(16), upload_id=None, allocation_pending=False)
+            resume = unchanged and previous["status"] != "completed"
+            if resume:
+                for current, prior in zip(members, previous["entries"]):
+                    current["done"] = prior["done"]
+            child.update(roots=[str(root)], labels={str(root): label}, entries=members,
+                         status=previous["status"] if resume else "ready", error=previous.get("error", "") if resume else "", current="")
+            self._write_record(child)
+            atomic_json(pointer, {"local_id": child["local_id"]})
+            children.append(child)
+        batch = children[0] if len(children) == 1 else dict(
+            version=2, local_id=secrets.token_hex(16), upload_id=None, allocation_pending=False,
+            roots=[str(p) for p in roots], status="ready", error="", children=children,
+            entries=[e for child in children for e in child["entries"]])
         self.save(batch)
         return batch
 

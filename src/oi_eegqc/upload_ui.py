@@ -11,11 +11,12 @@ from .desktop_upload import BatchStore, UploadSession, UploadCancelled, friendly
 class UploadWorker(QThread):
     progress = Signal(object)
 
-    def __init__(self, store, data_directory, batch=None, roots=None, scored=None, parent=None):
+    def __init__(self, store, data_directory, batch=None, roots=None, scored=None, parent=None, new_acquisition=False):
         super().__init__(parent)
         self.store, self.data_directory = store, data_directory
         self.batch, self.roots, self.scored = deepcopy(batch), roots, scored
         self.session, self.error = None, ""
+        self.new_acquisition = new_acquisition
         self._last_progress = 0
 
     def report(self, value):
@@ -33,12 +34,8 @@ class UploadWorker(QThread):
     def run(self):
         try:
             if self.roots is not None:
-                old = self.store.load()
-                if old and old["status"] != "completed":
-                    self.batch = old
-                else:
-                    self.batch = self.store.prepare(self.roots, self.scored, self.isInterruptionRequested,
-                                                    lambda name: self.report({"current": name}))
+                self.batch = self.store.prepare(self.roots, self.scored, self.isInterruptionRequested,
+                                                lambda name: self.report({"current": name}), self.new_acquisition)
             else:
                 self.session = UploadSession(self.store, self.batch, self.data_directory, self.report)
                 if self.isInterruptionRequested():
@@ -63,6 +60,8 @@ class UploadController(QObject):
         self._opened, self._error = False, ""
         self._show_batch_error = False
         self._progress = {}
+        self._folder_cache_key, self._folder_cache = None, []
+        self._selection = None
         self.lock = None
         try:
             self.batch = self.store.load()
@@ -85,9 +84,24 @@ class UploadController(QObject):
         status = batch.get("status", "")
         if status == "completed":
             done = total
-        return dict(roots="\n".join(batch.get("roots", [])), uploadId=batch.get("upload_id") or "", uncertain=bool(batch.get("allocation_pending")),
+        cache_key = (id(batch), tuple(batch.get("roots", [])), len(entries))
+        if cache_key != self._folder_cache_key:
+            self._folder_cache = []
+            for root in batch.get("roots", []):
+                members = [e for e in entries if not e["directory"] and Path(root) in Path(e.get("source", "")).parents]
+                size = sum(e["size"] for e in members)
+                self._folder_cache.append(dict(name=Path(root).name, path=root, count=len(members),
+                                               size=f"{size / 1024 / 1024:.1f} 兆字节"))
+            self._folder_cache_key = cache_key
+        folders = self._folder_cache
+        parts = batch.get("children") or [batch]
+        for folder in folders:
+            part = next((p for p in parts if folder["path"] in p.get("roots", [])), {})
+            folder["uploadId"] = part.get("upload_id") or ""
+        return dict(roots="\n".join(batch.get("roots", [])), uploadId=batch.get("upload_id") or "", uncertain=any(p.get("allocation_pending") for p in parts),
+                    folders=folders, folderCount=len(folders),
                     preparing=bool(self.active and self.worker.roots is not None), completed=status == "completed",
-                    started=bool(batch.get("upload_id")), failed=self._show_batch_error and status == "failed",
+                    started=any(p.get("upload_id") for p in parts), failed=self._show_batch_error and status == "failed",
                     count=sum(not e["directory"] for e in entries), size=f"{total / 1024 / 1024:.1f} 兆字节",
                     progress=min(1., done / total) if total else (1. if status == "completed" else 0.),
                     speed=f"{self._progress.get('speed', 0) / 1024 / 1024:.1f} 兆字节/秒",
@@ -112,7 +126,7 @@ class UploadController(QObject):
         self.lock = lock
         return True
 
-    def prepare(self, roots, scored):
+    def prepare(self, roots, scored, new_acquisition=False):
         self._opened = True
         if self.active:
             self.changed.emit()
@@ -121,8 +135,14 @@ class UploadController(QObject):
         self._error = ""
         if not self._acquire():
             return
-        self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self)
+        self._selection = (list(roots), dict(scored))
+        self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition)
         self._launch()
+
+    @Slot()
+    def newAcquisition(self):
+        if not self.active and self._selection:
+            self.prepare(*self._selection, new_acquisition=True)
 
     def _launch(self):
         self._progress = {}
@@ -188,15 +208,21 @@ class UploadController(QObject):
     def restoreUploadId(self, value):
         from .desktop_upload import ID_PATTERN
         value = value.strip()
-        if self.active or not self.batch or not self.batch.get("allocation_pending") or not re.fullmatch(ID_PATTERN, value):
+        if self.active or not self.batch or not self.info["uncertain"] or not re.fullmatch(ID_PATTERN, value):
             return False
         if not self._acquire():
             return False
         try:
             batch = self.store.load()
-            if batch["local_id"] != self.batch["local_id"] or not batch.get("allocation_pending"):
+            if batch["local_id"] != self.batch["local_id"]:
                 return False
-            batch.update(upload_id=value, allocation_pending=False, error="", status="paused")
+            pending = [p for p in (batch.get("children") or [batch]) if p.get("allocation_pending")]
+            if len(pending) != 1:
+                self._error = "请单独添加需要恢复编号的文件夹"
+                self.changed.emit()
+                return False
+            pending[0].update(upload_id=value, allocation_pending=False, error="", status="paused")
+            batch.update(error="", status="paused")
             self.store.save(batch)
             self.batch, self._error = batch, ""
             self.changed.emit()

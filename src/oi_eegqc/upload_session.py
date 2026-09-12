@@ -11,9 +11,12 @@ class UploadSession:
         self.stopped = threading.Event()
         self.commit_lock = threading.Lock()
         self.committing = False
+        self.child = None
 
     def cancel(self):
         with self.commit_lock:
+            if self.child and not self.child.cancel():
+                return False
             if self.committing:
                 return False
             self.stopped.set()
@@ -71,12 +74,14 @@ class UploadSession:
         return signed
 
     def run(self):
+        if self.batch.get("children"):
+            return self._run_children()
         from .desktop_upload import scan_sources, fingerprint, UploadError, UploadCancelled, friendly_error
         batch, client = self.batch, None
         try:
             batch["status"], batch["error"] = "uploading", ""
             self.store.save(batch)
-            current = scan_sources(batch["roots"], self.stopped.is_set)
+            current = scan_sources(batch["roots"], self.stopped.is_set, labels=batch.get("labels"))
             identity = lambda e: (e["source"], e["relative"], e["size"], e["mtime"], e["directory"])
             if [identity(e) for e in current] != [identity(e) for e in batch["entries"]]:
                 raise UploadError("源文件夹已变化，请恢复原文件后继续此批次")
@@ -127,7 +132,7 @@ class UploadSession:
             self.check_cancel()
             if not all(e["done"] for e in batch["entries"]) or not batch["upload_id"]:
                 raise UploadError("文件尚未全部成功，不能完成批次")
-            after = scan_sources(batch["roots"], self.stopped.is_set)
+            after = scan_sources(batch["roots"], self.stopped.is_set, labels=batch.get("labels"))
             if [identity(e) for e in after] != [identity(e) for e in current]:
                 raise UploadError("源文件夹已变化，不会创建完成标记")
             marker = client.complete(batch["upload_id"])
@@ -149,4 +154,59 @@ class UploadSession:
                     client.close()
             finally:
                 self.store.save(batch)
+        return batch
+
+    def _run_children(self):
+        """Reuse the existing per-batch uploader for each persistent folder."""
+        from .desktop_upload import UploadCancelled, friendly_error
+        batch, outer = self.batch, self
+        total = sum(e["size"] for e in batch["entries"])
+        completed = 0
+        batch.update(status="uploading", error="")
+        groups = {}
+        for index, part in enumerate(batch["children"]):
+            groups.setdefault(part.get("upload_id") or part["local_id"], []).append(index)
+        try:
+            for indices in groups.values():
+                self.check_cancel()
+                parts = [batch["children"][i] for i in indices]
+                child = dict(parts[0], roots=[r for p in parts for r in p["roots"]],
+                             entries=[e for p in parts for e in p["entries"]],
+                             labels={r: label for p in parts for r, label in p.get("labels", {}).items()})
+                size = sum(e["size"] for e in child["entries"])
+                if all(p["status"] == "completed" for p in parts):
+                    completed += size
+                    continue
+                class ChildStore:
+                    def save(self, value):
+                        from pathlib import Path
+                        for index in indices:
+                            part = batch["children"][index]
+                            root = Path(part["roots"][0])
+                            for key in ("upload_id", "allocation_pending", "status", "error", "current"):
+                                if key in value:
+                                    part[key] = value[key]
+                            part["entries"] = [e for e in value["entries"] if root == Path(e["source"]) or root in Path(e["source"]).parents]
+                        batch["entries"] = [e for part in batch["children"] for e in part["entries"]]
+                        outer.store.save(batch)
+                def progress(value):
+                    self.committing = self.child.committing
+                    self.progress(dict(value, done=completed + value["done"], total=total))
+                self.child = UploadSession(ChildStore(), child, self.data_directory, progress, self.client_factory)
+                if self.stopped.is_set():
+                    self.child.cancel()
+                result = self.child.run()
+                self.child, self.committing = None, False
+                if result["status"] != "completed":
+                    batch.update(status=result["status"], error=result.get("error", ""))
+                    return batch
+                completed += size
+            batch.update(status="completed", error="", current="")
+            self.progress(dict(current="", done=total, total=total, speed=0))
+        except Exception as error:
+            batch.update(status="paused" if isinstance(error, UploadCancelled) else "failed",
+                         error="" if isinstance(error, UploadCancelled) else friendly_error(error))
+        finally:
+            self.child, self.committing = None, False
+            self.store.save(batch)
         return batch
