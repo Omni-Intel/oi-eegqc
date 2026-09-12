@@ -29,7 +29,9 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-Compression=lzma2
+; The fast preset uses a smaller dictionary and installs noticeably faster.
+; Solid mode retains most of the size benefit for the many small Qt files.
+Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile="..\assets\omni-intelli logo\OMNI_LOGO_100x100.ico"
