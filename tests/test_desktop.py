@@ -541,3 +541,30 @@ def test_shutdown_waits_for_worker(tmp_path, monkeypatch):
     assert not window.worker.isRunning()
     wait_for_batch(app, window)
     window.close()
+
+
+def test_batch_worker_reuses_cached_score(tmp_path):
+    from oi_eegqc.desktop import BatchWorker
+    from oi_eegqc.types import REPORT_SCHEMA_VERSION
+
+    source = tmp_path / "signal.npy"
+    source.write_bytes(b"content")
+    calls = []
+
+    class Client:
+        def score(self, *args):
+            calls.append(args[0])
+            return "result", {"schema_version": REPORT_SCHEMA_VERSION, "gqi": 88}
+
+        def close(self):
+            pass
+
+    job = (0, str(source), {"sfreq": 250}, tmp_path / "score-cache.sqlite3")
+    first = BatchWorker([job], process_factory=Client)
+    first.run()
+    second = BatchWorker([job], process_factory=Client)
+    results = []
+    second.scored.connect(lambda index, report: results.append(report.gqi))
+    second.run()
+    assert calls == [str(source)]
+    assert results == [88]

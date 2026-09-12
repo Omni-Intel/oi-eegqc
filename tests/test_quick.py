@@ -53,6 +53,27 @@ def recording(path, complete=True, channels=4):
         path.with_suffix(".json").write_text(json.dumps({"sfreq": 250, "unit": "uV"}))
 
 
+def test_reimport_preserves_unchanged_scores_and_invalidates_changed_files(quick, tmp_path):
+    app, controller, _, _ = quick
+    first, second = tmp_path / "a.npy", tmp_path / "b.npy"
+    recording(first)
+    recording(second)
+    controller.add_paths([tmp_path])
+    wait(app, lambda: not controller.busy)
+    controller.scoreOrStop()
+    wait(app, lambda: not controller.busy)
+    reports = {row["path"]: row["report"] for row in controller.files.rows}
+    assert all(reports.values())
+    recording(second, channels=5)
+    controller.add_paths([tmp_path])
+    wait(app, lambda: not controller.busy)
+    assert controller.count == 2
+    rows = {row["path"]: row for row in controller.files.rows}
+    assert rows[str(first)]["report"] is reports[str(first)]
+    assert rows[str(second)]["report"] is None
+    assert not controller.canUpload
+
+
 def test_qml_load_text_selection_and_settings(quick, tmp_path):
     app, controller, engine, window = quick
     paths = [tmp_path / f"FILE{i}.npy" for i in range(3)]
@@ -490,6 +511,12 @@ def test_new_acquisition_requires_confirmation(quick, tmp_path):
     upload.changed.emit()
     app.processEvents()
     button = window.findChild(QObject, "newAcquisition")
+    assert not button.property("visible")
+    more = window.findChild(QObject, "uploadMaintenance")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     more.mapToScene(more.boundingRect().center()).toPoint())
+    wait(app, lambda: button.property("visible"))
+    QTest.qWait(100)  # Allow the popup to relayout after expanding maintenance actions.
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      button.mapToScene(button.boundingRect().center()).toPoint())
     wait(app, lambda: window.findChild(QObject, "newAcquisitionConfirm").property("visible"))
@@ -508,6 +535,21 @@ def test_upload_has_no_token_import(quick):
     assert not hasattr(controller._upload, "importDeviceToken")
     assert window.findChild(QObject, "importDeviceToken") is None
     assert window.findChild(QObject, "deviceTokenInput") is None
+
+
+def test_changed_file_during_scoring_stays_rescorable(quick, tmp_path):
+    app, controller, engine, window = quick
+    path = tmp_path / "changing.npy"
+    recording(path)
+    controller.add_paths([path])
+    wait(app, lambda: not controller.busy)
+    row = controller.files.rows[0]
+    stat = path.stat()
+    row["score_input_stat"] = (stat.st_size, stat.st_mtime_ns)
+    path.write_bytes(b"different-content")
+    controller._scored(0, object())
+    assert row["report"] is None and controller.canScore
+    assert row["state"] == "需要重评"
 
 
 def test_reset_requires_two_confirmations_and_offline_only_retries(quick, tmp_path):
@@ -534,8 +576,13 @@ def test_reset_requires_two_confirmations_and_offline_only_retries(quick, tmp_pa
     upload.changed.emit()
     app.processEvents()
     assert not window.findChild(QObject, "startUpload").property("visible")
+    more = window.findChild(QObject, "uploadMaintenance")
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     more.mapToScene(more.boundingRect().center()).toPoint())
+    app.processEvents()
     for name in ("restoreUploadId", "newAcquisition", "resetUploadRecord"):
         assert window.findChild(QObject, name).property("visible")
+    QTest.qWait(100)
     def click(name):
         button = window.findChild(QObject, name)
         QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,

@@ -1,4 +1,4 @@
-"""Check GitHub Releases for a newer Windows build.
+"""Check the project release mirror for a newer Windows build.
 
 The app fetches release metadata and verified installers. It never uploads recordings.
 """
@@ -14,6 +14,8 @@ from urllib.request import Request, urlopen
 GITHUB_REPO = "Omni-Intel/oi-eegqc"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+MIRROR_ORIGIN = "https://pack.kunpeng.blog"
+MIRROR_RELEASE_URL = MIRROR_ORIGIN + "/oi-eegqc/latest.json"
 INSTALLER_ASSET = "OI-EEGQC-Setup-Windows-x64.exe"
 ZIP_ASSET = "OI-EEGQC-Windows-x64.zip"
 TIMEOUT_S = 8
@@ -104,7 +106,8 @@ def fetch_latest_release(
         "X-GitHub-Api-Version": "2022-11-28",
     }
     token = os.environ.get("OI_EEGQC_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token:
+    from urllib.parse import urlsplit
+    if token and urlsplit(url).scheme == "https" and urlsplit(url).netloc == "api.github.com":
         headers["Authorization"] = f"Bearer {token}"
     request = Request(url, headers=headers)
     open_url = opener or urlopen
@@ -122,7 +125,7 @@ def check_update(
     url: str | None = None,
     opener: Callable[..., Any] | None = None,
 ) -> UpdateInfo:
-    endpoint = url or os.environ.get("OI_EEGQC_RELEASES_URL") or LATEST_RELEASE_URL
+    endpoint = url or os.environ.get("OI_EEGQC_RELEASES_URL") or MIRROR_RELEASE_URL
     try:
         payload = fetch_latest_release(
             endpoint, current_version=current_version, opener=opener
@@ -136,9 +139,15 @@ def downloadable(info):
     import re
     from urllib.parse import urlsplit
     url = urlsplit(info.asset_url)
+    github_path = f"/{GITHUB_REPO}/releases/download/v{info.latest}/{INSTALLER_ASSET}"
+    mirror_path = f"/oi-eegqc/releases/v{info.latest}/{INSTALLER_ASSET}"
+    trusted = (
+        url.netloc == "github.com" and url.path == github_path
+    ) or (
+        url.netloc == "pack.kunpeng.blog" and url.path == mirror_path
+    )
     return (info.status == "available" and info.asset_name == INSTALLER_ASSET
-            and url.scheme == "https" and url.netloc == "github.com"
-            and url.path == f"/{GITHUB_REPO}/releases/download/v{info.latest}/{INSTALLER_ASSET}"
+            and url.scheme == "https" and trusted
             and not url.query and not url.fragment
             and re.fullmatch(r"sha256:[a-fA-F0-9]{64}", info.digest) is not None
             and 0 < info.size <= 1_000_000_000)
@@ -152,7 +161,8 @@ def installer_opener():
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             url = urlsplit(newurl)
             if url.scheme != "https" or url.netloc not in {
-                "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"
+                "pack.kunpeng.blog", "github.com", "release-assets.githubusercontent.com",
+                "objects.githubusercontent.com"
             }:
                 raise ValueError("更新下载跳转不受信任")
             return super().redirect_request(req, fp, code, msg, headers, newurl)

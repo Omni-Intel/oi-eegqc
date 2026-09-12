@@ -12,8 +12,8 @@ from pathlib import Path
 BUCKET = "xiekp"
 PREFIX = "eeg/inbox/"
 ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
-MAX_FILE = 5 * 1024 ** 3
 EEG_SUFFIXES = {".edf", ".edf+", ".bdf", ".npy"}
+EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 class UploadError(Exception):
@@ -51,8 +51,6 @@ def fingerprint(path, cancelled=lambda: False):
         raise UploadCancelled()
     path = plain_path(path)
     before = path.stat()
-    if before.st_size > MAX_FILE:
-        raise UploadError("单个文件超过 5 吉字节，暂不支持，请联系管理员启用分片上传")
     if not stat.S_ISREG(before.st_mode):
         raise UploadError("存在不支持的特殊文件")
     return dict(size=before.st_size, mtime=before.st_mtime_ns)
@@ -69,7 +67,8 @@ def normalize_roots(roots):
     return result
 
 
-def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, labels=None):
+def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, labels=None,
+                 hash_cache=None):
     entries, used = [], set()
     for root in normalize_roots(roots):
         label = (labels or {}).get(str(root), root.name)
@@ -90,15 +89,27 @@ def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, lab
                 relative = folder.relative_to(root).as_posix()
                 suffix = label + ("/" + relative if relative != "." else "")
                 entries.append(dict(source=str(folder), relative=suffix.rstrip("/") + "/",
-                                    directory=True, size=0, mtime=0, done=False))
+                                    directory=True, size=0, mtime=0, sha256=EMPTY_SHA256,
+                                    done=False))
             for child in children:
                 plain_path(child)
                 if child.is_dir():
                     walk(child)
                 else:
                     progress(str(child))
+                    values = fingerprint(child, cancelled)
+                    if hash_cache is not None:
+                        from .score_cache import CacheCancelled
+
+                        try:
+                            digest, identity = hash_cache.digest(child, cancelled)
+                        except CacheCancelled:
+                            raise UploadCancelled() from None
+                        if identity != (values["size"], values["mtime"]):
+                            raise UploadError("文件在核验期间发生变化，请重试")
+                        values["sha256"] = digest
                     entries.append(dict(source=str(child), relative=label + "/" + child.relative_to(root).as_posix(),
-                                        directory=False, done=False, **fingerprint(child, cancelled)))
+                                        directory=False, done=False, **values))
         walk(root)
     return entries
 
@@ -146,6 +157,10 @@ class BatchStore:
                     entry.pop("crc64", None)
             if batch["version"] != 2 or batch["local_id"] != batch_id:
                 raise ValueError()
+            for part in batch.get("children") or [batch]:
+                part.setdefault("round_id", None)
+                part.setdefault("round_request_id", secrets.token_hex(16))
+                part.setdefault("round_sealed", False)
             if batch["status"] == "uploading":
                 batch["status"] = "paused"
             return batch
@@ -186,14 +201,20 @@ class BatchStore:
         for root in roots:
             if root == self.directory or root in self.directory.absolute().parents:
                 raise UploadError("采集目录不能包含应用上传状态目录")
-        entries = scan_sources(roots, cancelled, progress)
-        if any(e["size"] > MAX_FILE for e in entries):
-            raise UploadError("单个文件超过 5 吉字节，暂不支持，请联系管理员启用分片上传")
+        from .score_cache import ScoreCache
+
+        with ScoreCache(self.directory.parent / "score-cache.sqlite3") as hash_cache:
+            entries = scan_sources(
+                roots, cancelled, progress, hash_cache=hash_cache
+            )
         signals = [e for e in entries if not e["directory"] and Path(e["source"]).suffix.lower() in EEG_SUFFIXES]
         if not signals or any(os.path.normcase(e["source"]) not in scored for e in signals):
             raise UploadError("文件夹中仍有未完成评分的数据，请重新添加并评分")
         for entry in signals:
-            if list(scored[os.path.normcase(entry["source"])]) != [entry["size"], entry["mtime"]]:
+            scored_identity = list(scored[os.path.normcase(entry["source"])])
+            if scored_identity[:2] != [entry["size"], entry["mtime"]] or (
+                len(scored_identity) > 2 and scored_identity[2] not in (None, entry["sha256"])
+            ):
                 raise UploadError("评分后数据已变化，请重新评分")
         children = []
         for root in roots:
@@ -209,7 +230,9 @@ class BatchStore:
                 suffix = source.relative_to(root).as_posix()
                 relative = label + ("/" + suffix if suffix != "." else "")
                 members.append(dict(entry, relative=relative.rstrip("/") + "/" if entry["directory"] else relative))
-            identity = lambda e: (e["relative"], e["size"], e["mtime"], e["directory"])
+            identity = lambda e: (
+                e["relative"], e["size"], e["mtime"], e["directory"], e.get("sha256")
+            )
             unchanged = previous and [identity(e) for e in members] == [identity(e) for e in previous["entries"]]
             child = dict(previous) if previous else dict(version=2, local_id=secrets.token_hex(16), upload_id=None, allocation_pending=False)
             resume = unchanged and previous["status"] != "completed"
@@ -218,6 +241,18 @@ class BatchStore:
                     current["done"] = prior["done"]
             child.update(roots=[str(root)], labels={str(root): label}, entries=members,
                          status=previous["status"] if resume else "ready", error=previous.get("error", "") if resume else "", current="")
+            if not resume:
+                # Keep unresolved allocations too: a lost response must not create a new collection.
+                predecessors = list(child.get("superseded_requests", []))
+                if previous and previous.get("round_request_id") and previous["status"] != "completed":
+                    predecessors.append(previous["round_request_id"])
+                child.update(round_id=None, round_request_id=secrets.token_hex(16), round_sealed=False,
+                             allocation_pending=child.get("allocation_pending", False),
+                             superseded_requests=predecessors)
+            else:
+                child.setdefault("round_id", None)
+                child.setdefault("round_request_id", secrets.token_hex(16))
+                child.setdefault("round_sealed", False)
             self._write_record(child)
             atomic_json(pointer, {"local_id": child["local_id"]})
             children.append(child)
@@ -281,6 +316,8 @@ def friendly_error(error):
         return "上传请求被服务拒绝，请联系管理员检查接口权限"
     if code == 404:
         return "上传接口或目标不存在，请联系管理员"
+    if code == 409:
+        return "这个采集正在另一轮上传，请稍后重试"
     if code == 429 or (isinstance(code, int) and code >= 500):
         return "存储服务暂时不可用，请稍后重试"
     return "网络连接、文件读取或上传校验失败，请检查网络和本地文件后重试"

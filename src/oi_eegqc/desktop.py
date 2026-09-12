@@ -133,11 +133,34 @@ class BatchWorker(QThread):
 
     def run(self):
         client = self.process_factory()
+        caches = {}
         try:
-            for index, path, metadata in self.jobs:
+            for job in self.jobs:
+                index, path, metadata = job[:3]
+                cache_path = job[3] if len(job) > 3 else None
                 if self.isInterruptionRequested():
                     break
                 self.started_file.emit(index)
+                digest = source_stat = cache = None
+                if cache_path:
+                    try:
+                        from .score_cache import CacheCancelled, ScoreCache
+
+                        cache = caches.setdefault(str(cache_path), ScoreCache(cache_path))
+                        self.phase_changed.emit(index, "核验缓存")
+                        digest, source_stat = cache.digest(path, self.isInterruptionRequested)
+                        cached = cache.lookup(digest, metadata)
+                        if cached is not None:
+                            report = ReportView(cached)
+                            report.content_sha256 = digest
+                            self.scored.emit(index, report)
+                            continue
+                    except CacheCancelled:
+                        self.cancelled_file.emit(index)
+                        break
+                    except Exception:
+                        cache = digest = source_stat = None
+                        logging.getLogger("oi_eegqc.desktop").exception("Score cache lookup failed")
                 try:
                     kind, payload = client.score(path, metadata, self.isInterruptionRequested,
                                                  lambda phase: self.phase_changed.emit(index, phase), self.timeout_s)
@@ -146,7 +169,16 @@ class BatchWorker(QThread):
                         self.cancelled_file.emit(index)
                         break
                     if kind == "result":
-                        self.scored.emit(index, ReportView(payload))
+                        if cache is not None and digest is not None:
+                            try:
+                                current = Path(path).stat()
+                                if source_stat == (current.st_size, current.st_mtime_ns):
+                                    cache.store(digest, metadata, payload)
+                            except Exception:
+                                logging.getLogger("oi_eegqc.desktop").exception("Score cache store failed")
+                        report = ReportView(payload)
+                        report.content_sha256 = digest
+                        self.scored.emit(index, report)
                     else:
                         client.close()
                         logging.getLogger("oi_eegqc.desktop").warning("Scoring %s: %s", kind, payload)
@@ -157,6 +189,8 @@ class BatchWorker(QThread):
                     self.failed.emit(index, str(exc).lower())
         finally:
             client.close()
+            for cache in caches.values():
+                cache.close()
 
 
 class Window(QMainWindow):

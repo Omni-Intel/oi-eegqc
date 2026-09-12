@@ -5,6 +5,7 @@ from oi_eegqc.desktop_upload import BatchStore, UploadSession, UploadError, scan
 from oi_eegqc.upload_http import PREFIX, ServiceError, validate_put_url
 
 SERVER_ID = "20260911T132500Z-a1b2c3d4"
+ROUND_ID = "r_20260911T132500Z_a1b2c3d4"
 
 
 class FakeClient:
@@ -16,6 +17,9 @@ class FakeClient:
         self.complete_calls = 0
         self.unknown = False
         self.allocations = 0
+        self.requests, self.rounds, self.register_batches = {}, {}, []
+        self.multipart, self.parts = {}, {}
+        self.inventory = {}
 
     def health(self):
         pass
@@ -31,6 +35,131 @@ class FakeClient:
                     expiresAt="2026-09-11T14:25:00Z", files=[
                         dict(path=p, objectKey=PREFIX + (upload_id or SERVER_ID) + "/" + p,
                              putUrl=self.url(PREFIX + (upload_id or SERVER_ID) + "/" + p)) for p in paths])
+
+    def start_round(self, upload_id, request_id, replaces_request_id=None):
+        if request_id in self.requests:
+            allocated, round_id = self.requests[request_id]
+            return {"uploadId": allocated, "roundId": round_id}
+        if replaces_request_id:
+            upload_id, previous_round = self.requests[replaces_request_id]
+            self.rounds[previous_round]["state"] = "superseded"
+        if not upload_id:
+            self.allocations += 1
+            upload_id = SERVER_ID if self.allocations == 1 else f"20260911T132500Z-{self.allocations:08x}"
+        round_id = ROUND_ID[:-8] + f"{len(self.rounds) + 1:08x}"
+        if any(r["upload_id"] == upload_id and r["state"] not in ("complete", "superseded") for r in self.rounds.values()):
+            raise ServiceError(409)
+        self.requests[request_id] = (upload_id, round_id)
+        self.rounds[round_id] = {
+            "upload_id": upload_id, "state": "updating", "files": {}, "sealed": False
+        }
+        self.objects.pop(PREFIX + upload_id + "/_COMPLETE", None)
+        self.objects[PREFIX + upload_id + "/_UPDATING"] = round_id.encode()
+        if self.unknown:
+            self.unknown = False
+            raise TimeoutError()
+        return {"uploadId": upload_id, "roundId": round_id}
+
+    def register_files(self, upload_id, round_id, files):
+        self.register_batches.append(list(files))
+        record = self.rounds[round_id]
+        for item in files:
+            old = record["files"].get(item["path"])
+            value = {
+                "path": item["path"], "size": item["size"],
+                "mode": "single" if item.get("directory") or item["size"] <= 5 * 1024**3 else "multipart",
+                "state": "complete" if self.inventory.get((upload_id, item["path"])) == (
+                    item["size"], item.get("sha256")
+                ) else "pending",
+                "sha256": item.get("sha256"),
+            }
+            if old:
+                assert (old["size"], old["mode"]) == (value["size"], value["mode"])
+            else:
+                assert not record["sealed"]
+                record["files"][item["path"]] = value
+        return {"files": files}
+
+    def seal_round(self, upload_id, round_id, file_count):
+        record = self.rounds[round_id]
+        assert len(record["files"]) == file_count
+        record["sealed"] = True
+        record["state"] = "sealed"
+        return {"fileCount": file_count, "state": "sealed"}
+
+    def round_status(self, upload_id, round_id):
+        record = self.rounds[round_id]
+        return {
+            "uploadId": upload_id, "roundId": round_id, "state": record["state"],
+            "fileCount": len(record["files"]), "files": list(record["files"].values()),
+        }
+
+    def sign_round(self, upload_id, round_id, paths):
+        self.signs.append((list(paths), upload_id))
+        return {
+            "uploadId": upload_id, "roundId": round_id, "prefix": PREFIX + upload_id + "/",
+            "expiresAt": "2026-09-11T14:25:00Z",
+            "objects": [
+                {"path": path, "objectKey": PREFIX + upload_id + "/" + path,
+                 "putUrl": self.url(PREFIX + upload_id + "/" + path)} for path in paths
+            ],
+        }
+
+    def complete_files(self, upload_id, round_id, files):
+        for item in files:
+            self.rounds[round_id]["files"][item["path"]]["state"] = "complete"
+            row = self.rounds[round_id]["files"][item["path"]]
+            self.inventory[(upload_id, item["path"])] = (row["size"], row["sha256"])
+        return {"completed": len(files)}
+
+    def start_multipart(self, upload_id, round_id, path, part_size):
+        record = self.rounds[round_id]["files"][path]
+        upload = record.get("multipartUploadId") or "tos-multipart-" + str(len(self.multipart) + 1)
+        count = (record["size"] + part_size - 1) // part_size
+        record.update(multipartUploadId=upload, partSize=part_size, partCount=count)
+        self.multipart[upload] = (upload_id, round_id, path)
+        self.parts.setdefault(upload, {})
+        return {"path": path, "multipartUploadId": upload, "partSize": part_size, "partCount": count}
+
+    def list_parts(self, upload_id, round_id, path):
+        record = self.rounds[round_id]["files"][path]
+        return {"parts": [dict(partNumber=n, size=len(data), etag=f"etag-{n}")
+                          for n, data in sorted(self.parts[record["multipartUploadId"]].items())]}
+
+    def sign_parts(self, upload_id, round_id, path, part_numbers):
+        key = PREFIX + upload_id + "/" + path
+        return {"parts": [{"partNumber": n, "putUrl": self.url(key) + f"&partNumber={n}"}
+                          for n in part_numbers]}
+
+    def put_part(self, url, key, source, offset, size, cancelled, progress):
+        upload = next(value for value, (_, _, path) in self.multipart.items() if key.endswith(path))
+        number = offset // self.rounds[self.multipart[upload][1]]["files"][self.multipart[upload][2]]["partSize"] + 1
+        with Path(source).open("rb") as stream:
+            stream.seek(offset)
+            data = stream.read(size)
+        assert len(data) == size
+        self.parts[upload][number] = data
+        progress(size)
+        return f"etag-{number}"
+
+    def complete_multipart(self, upload_id, round_id, path):
+        record = self.rounds[round_id]["files"][path]
+        self.objects[PREFIX + upload_id + "/" + path] = b"".join(
+            self.parts[record["multipartUploadId"]][n] for n in range(1, record["partCount"] + 1)
+        )
+        record["state"] = "complete"
+        return {"path": path, "state": "complete"}
+
+    def complete_round(self, upload_id, round_id):
+        self.complete_calls += 1
+        record = self.rounds[round_id]
+        assert record["sealed"] and all(item["state"] == "complete" for item in record["files"].values())
+        record["state"] = "complete"
+        for item in record["files"].values():
+            self.inventory[(upload_id, item["path"])] = (item["size"], item.get("sha256"))
+        self.objects.pop(PREFIX + upload_id + "/_UPDATING", None)
+        self.objects[PREFIX + upload_id + "/_COMPLETE"] = round_id.encode()
+        return {"uploadId": upload_id, "roundId": round_id, "state": "complete"}
 
     def url(self, key):
         from urllib.parse import quote
@@ -52,6 +181,7 @@ class FakeClient:
         assert len(content) == size
         progress(size)
         self.objects[key] = content
+        return "etag"
 
     def complete(self, upload_id):
         self.complete_calls += 1
@@ -77,7 +207,7 @@ def run(store, state, client):
     return UploadSession(store, state, store.directory.parent, lambda v: None, lambda p: client).run()
 
 
-@pytest.mark.parametrize("stage", ["health", "sign"])
+@pytest.mark.parametrize("stage", ["health", "start_round"])
 def test_offline_first_upload_can_retry_without_recovery(batch, stage):
     from oi_eegqc.upload_http import NetworkUnavailable
     store, state, root = batch
@@ -149,35 +279,22 @@ def test_id_from_service_persisted_and_marker_last(batch):
     assert state["upload_id"] is None
     client = FakeClient()
     assert run(store, state, client)["status"] == "completed"
-    assert client.signs[0][1] is None
+    assert client.allocations == 1
     assert store.load()["upload_id"] == SERVER_ID
-    assert client.calls[-1].endswith("/_COMPLETE")
+    assert client.objects[PREFIX + SERVER_ID + "/_COMPLETE"] == state["round_id"].encode()
+    assert not any(key.endswith("/_UPDATING") for key in client.objects)
     raw = (store.directory / state["local_id"] / "state.json").read_text()
     assert "signature=" not in raw and "do-not-persist" not in raw and "putUrl" not in raw
-
-
-@pytest.mark.parametrize("field", ["objects", "files"])
-def test_sign_response_list_formats(batch, field):
-    store, state, root = batch
-    client = FakeClient()
-    original = client.sign
-    def sign(paths, upload_id=None):
-        response = original(paths, upload_id)
-        response[field] = response.pop("files")
-        return response
-    client.sign = sign
-    assert run(store, state, client)["status"] == "completed"
-    assert client.complete_calls == 1
 
 
 @pytest.mark.parametrize("fault", ["missing", "duplicate", "wrong_target", "malformed"])
 def test_objects_list_still_requires_exact_manifest(batch, fault):
     store, state, root = batch
     client = FakeClient()
-    original = client.sign
-    def sign(paths, upload_id=None):
-        response = original(paths, upload_id)
-        objects = response.pop("files")
+    original = client.sign_round
+    def sign(upload_id, round_id, paths):
+        response = original(upload_id, round_id, paths)
+        objects = response["objects"]
         if fault == "missing":
             objects.pop()
         elif fault == "duplicate":
@@ -186,9 +303,8 @@ def test_objects_list_still_requires_exact_manifest(batch, fault):
             objects[0]["objectKey"] = "outside/prefix"
         else:
             objects[0] = None
-        response["objects"] = objects
         return response
-    client.sign = sign
+    client.sign_round = sign
     assert run(store, state, client)["status"] == "failed"
     assert not client.calls and client.complete_calls == 0
     assert store.load()["upload_id"] == SERVER_ID
@@ -225,23 +341,38 @@ def test_expired_url_renews_with_same_id(batch):
     assert len(client.signs) == 2 and client.signs[1][1] == SERVER_ID
 
 
-def test_lost_initial_response_blocks_new_allocation(batch):
+def test_lost_initial_response_retries_idempotently(batch):
     store, state, root = batch
     client = FakeClient()
     client.unknown = True
     assert run(store, state, client)["status"] == "failed"
-    assert run(store, store.load(), client)["status"] == "failed"
-    assert len(client.signs) == 1
+    assert run(store, store.load(), client)["status"] == "completed"
+    assert client.allocations == 1
 
 
-def test_sign_chunking_reuses_id(batch):
+def test_legacy_uncertain_allocation_still_requires_manual_recovery(batch):
+    store, state, root = batch
+    state["allocation_pending"] = True
+    state.pop("round_id", None)
+    store.save(state)
+    client = FakeClient()
+    result = run(store, store.load(), client)
+    assert result["status"] == "failed"
+    assert "恢复采集编号" in result["error"]
+    assert client.allocations == 0
+
+
+def test_manifest_registration_is_chunked(batch):
     store, state, root = batch
     client = FakeClient()
     task = UploadSession(store, state, store.directory.parent, lambda v: None, lambda p: client)
-    first = [{"relative": str(n)} for n in range(5000)]
-    task.signed(client, first)
-    task.signed(client, [{"relative": "5000"}])
-    assert client.signs[0][1] is None and client.signs[1][1] == SERVER_ID
+    entries = [
+        {"relative": str(n), "size": 1, "directory": False, "sha256": "a" * 64}
+        for n in range(5001)
+    ]
+    task._ensure_round(client, entries)
+    assert [len(group) for group in client.register_batches] == [5000, 1]
+    assert client.allocations == 1
 
 
 @pytest.mark.parametrize("url", [
@@ -300,27 +431,25 @@ def test_all_folder_files_including_media_are_uploaded(batch):
     assert len(client.objects) == 6  # five files and the completion marker
 
 
-def test_limit_before_signing(batch, monkeypatch):
-    import oi_eegqc.desktop_upload as module
-    store, state, root = batch
-    entry = dict(state["entries"][0], size=5 * 1024**3 + 1)
-    monkeypatch.setattr(module, "scan_sources", lambda *a, **k: [entry])
-    with pytest.raises(UploadError, match="暂不支持"):
-        store.prepare([root], {})
+def test_large_file_uses_a_valid_multipart_part_size():
+    size = 5 * 1024**3 + 1
+    part_size = UploadSession._part_size(size)
+    assert part_size >= 5 * 1024**2
+    assert (size + part_size - 1) // part_size <= 10000
 
 
-def test_cancel_after_complete_url_does_not_put_marker(batch):
+def test_completion_commit_is_not_reported_as_cancelled(batch):
     store, state, root = batch
     client = FakeClient()
     task = UploadSession(store, state, store.directory.parent, lambda v: None, lambda p: client)
-    original = client.complete
-    def complete(uid):
-        result = original(uid)
-        task.cancel()
+    original = client.complete_round
+    def complete(upload_id, round_id):
+        result = original(upload_id, round_id)
+        assert task.cancel() is False
         return result
-    client.complete = complete
-    assert task.run()["status"] == "paused"
-    assert not any(k.endswith("/_COMPLETE") for k in client.objects)
+    client.complete_round = complete
+    assert task.run()["status"] == "completed"
+    assert any(k.endswith("/_COMPLETE") for k in client.objects)
 
 
 def test_server_id_saved_before_first_put(batch):
@@ -408,6 +537,101 @@ def test_same_folder_next_day_overwrites_and_appends_after_restart(batch):
     assert not any(e["done"] for e in third["entries"])
 
 
+def test_next_round_uploads_only_new_or_changed_files(batch):
+    store, state, root = batch
+    client = FakeClient()
+    assert run(store, state, client)["status"] == "completed"
+    original_calls = list(client.calls)
+    (root / "new.txt").write_text("new")
+    second = BatchStore(store.directory).prepare([root], scored_files(root))
+    assert run(store, second, client)["status"] == "completed"
+    assert client.calls[: len(original_calls)] == original_calls
+    assert client.calls[len(original_calls) :] == [PREFIX + state["upload_id"] + "/source/new.txt"]
+
+
+def test_changed_pending_folder_replaces_round_and_reuses_uploaded_files(batch):
+    store, state, root = batch
+    client = FakeClient()
+    client.fail = "z.txt"
+    assert run(store, state, client)["status"] == "failed"
+    previous = store.load()
+    (root / "new.txt").write_text("new")
+    updated = store.prepare([root], scored_files(root))
+    client.fail = None
+    client.calls.clear()
+    assert run(store, updated, client)["status"] == "completed"
+    assert updated["upload_id"] == previous["upload_id"]
+    assert updated["round_id"] != previous["round_id"]
+    assert client.rounds[previous["round_id"]]["state"] == "superseded"
+    assert {key.rsplit("/", 1)[-1] for key in client.calls} == {"z.txt", "new.txt"}
+
+
+def test_round_network_retry_keeps_request_id(monkeypatch):
+    from oi_eegqc.upload_http import SignClient
+    client = SignClient()
+    calls = []
+    monkeypatch.setattr(client.stopped, "wait", lambda seconds: False)
+    def request(route, payload, method):
+        calls.append(dict(payload))
+        if len(calls) == 1:
+            raise TimeoutError()
+        return {"roundId": "same-round"}
+    monkeypatch.setattr(client, "_request_once", request)
+    assert client.start_round(None, "stable-request")["roundId"] == "same-round"
+    assert calls == [{"clientRequestId": "stable-request"}] * 2
+
+
+def test_folder_changes_after_lost_allocation_and_replacement_responses(batch):
+    store, state, root = batch
+    client = FakeClient()
+    client.unknown = True
+    assert run(store, state, client)["status"] == "failed"
+    (root / "new.txt").write_text("first")
+    second = store.prepare([root], scored_files(root))
+    client.unknown = True
+    assert run(store, second, client)["status"] == "failed"
+    (root / "new.txt").write_text("second")
+    third = store.prepare([root], scored_files(root))
+    (root / "later.txt").write_text("third")
+    fourth = store.prepare([root], scored_files(root))
+    assert run(store, fourth, client)["status"] == "completed"
+    assert client.allocations == 1
+    assert fourth["upload_id"] == SERVER_ID
+    assert client.objects[PREFIX + SERVER_ID + "/source/new.txt"] == b"second"
+
+
+def test_single_put_accepts_round_scoped_staging_key(batch):
+    store, state, _ = batch
+    class StagingClient(FakeClient):
+        def sign_round(self, uid, rid, paths):
+            result = super().sign_round(uid, rid, paths)
+            for item in result["objects"]:
+                key = PREFIX + ".staging/" + uid + "/" + rid + "/" + item["path"]
+                item.update(uploadKey=key, putUrl=self.url(key))
+            return result
+
+        def complete_files(self, uid, rid, files):
+            for item in files:
+                self.objects[PREFIX + uid + "/" + item["path"]] = self.objects[
+                    PREFIX + ".staging/" + uid + "/" + rid + "/" + item["path"]]
+            return super().complete_files(uid, rid, files)
+    client = StagingClient()
+    client.expire = True
+    assert run(store, state, client)["status"] == "completed"
+    assert all(key.startswith(PREFIX + ".staging/") for key in client.calls)
+    assert PREFIX + SERVER_ID + "/source/z.txt" in client.objects
+
+
+def test_pause_interrupts_socket_and_retry_wait():
+    from oi_eegqc.upload_http import SignClient
+    from types import SimpleNamespace
+    calls = []
+    client = SignClient()
+    client.connection = SimpleNamespace(sock=SimpleNamespace(shutdown=calls.append))
+    client.interrupt()
+    assert calls and client.stopped.is_set()
+
+
 def test_only_explicit_new_acquisition_allocates_new_id(batch):
     store, state, root = batch
     client = FakeClient()
@@ -463,9 +687,9 @@ def test_lost_first_id_is_not_forgotten_by_folder_reselection(batch):
     client.unknown = True
     assert run(store, state, client)["status"] == "failed"
     again = BatchStore(store.directory).prepare([root], scored_files(root))
-    assert again["allocation_pending"]
-    assert run(store, again, client)["status"] == "failed"
-    assert len(client.signs) == 1
+    assert again["round_request_id"] == state["round_request_id"]
+    assert run(store, again, client)["status"] == "completed"
+    assert client.allocations == 1
 
 
 def test_legacy_multi_folder_id_and_object_paths_are_preserved(tmp_path):
@@ -484,7 +708,7 @@ def test_legacy_multi_folder_id_and_object_paths_are_preserved(tmp_path):
     client = FakeClient()
     assert run(store, state, client)["status"] == "completed"
     assert client.complete_calls == 1
-    assert client.calls[-1].endswith("/_COMPLETE")
+    assert any(key.endswith("/_COMPLETE") for key in client.objects)
 
 
 def test_folder_mapping_survives_parent_state_interruption(tmp_path):

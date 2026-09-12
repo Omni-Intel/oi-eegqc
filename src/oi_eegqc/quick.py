@@ -95,6 +95,7 @@ class FileModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows = []
+        self.path_indices = {}
 
     def roleNames(self):
         return self.roles
@@ -109,11 +110,27 @@ class FileModel(QAbstractListModel):
         return self.rows[index.row()].get(key.decode()) if key else None
 
     def append(self, path, metadata):
+        try:
+            stat = Path(path).stat()
+            identity = (stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            identity = None  # A removed/disconnected source is reported by scoring, not a GUI crash.
+        key = os.path.normcase(path)
+        i = self.path_indices.get(key)
+        if i is not None:
+            row = self.rows[i]
+            if row.get("import_stat") == identity and row["metadata"] == metadata:
+                return
+            self.patch(i, metadata=metadata, import_stat=identity, report=None,
+                       scored_stat=None, content_sha256=None, score="—", state="待评分",
+                       ready=False, error="", detail=path.lower())
+            return
         n = len(self.rows)
         self.beginInsertRows(QModelIndex(), n, n)
         self.rows.append(dict(path=path, metadata=metadata, label=Path(path).name.lower(),
                               score="—", state="待评分", detail=path.lower(), chosen=False,
-                              ready=False, report=None, error="", folder=""))
+                              ready=False, report=None, error="", folder="", import_stat=identity))
+        self.path_indices[key] = n
         self.endInsertRows()
 
     def patch(self, index, **values):
@@ -206,6 +223,7 @@ class Controller(QObject):
         self.store = settings if settings is not None else QSettings("Omni-Intelligence", "EEGQC")
         data_directory = (Path(settings.fileName()).parent / "appdata" if settings is not None else
                           Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)))
+        self._data_directory = data_directory
         self._upload = UploadController(data_directory, self)
         self._upload.idle.connect(self._upload_idle)
         self._folder_roots = []
@@ -285,8 +303,7 @@ class Controller(QObject):
         self._notice = ""
         self._shared = None
         self._import_roots = [str(Path(p).absolute()) for p in paths if Path(p).is_dir()]
-        known = {os.path.normcase(r["path"]) for r in self.files.rows}
-        self.worker = IntakeWorker(paths, known)
+        self.worker = IntakeWorker(paths, set())
         self.worker.finished.connect(self._scanned)
         self.worker.start()
         self.changed.emit()
@@ -313,7 +330,9 @@ class Controller(QObject):
         budget = 50
         while self._cursor < len(self._pending) and not self._stopping:
             path, declared = self._pending[self._cursor]
-            params = dict(self._shared or {})
+            existing_index = self.files.path_indices.get(os.path.normcase(path))
+            existing = self.files.rows[existing_index] if existing_index is not None else None
+            params = dict(existing["metadata"] if existing else self._shared or {})
             params.update(declared)
             if Path(path).suffix.lower() == ".npy" and not npy_ready(params):
                 self._parameters = {"name": Path(path).name.lower(), "sfreq": params.get("sfreq", ""),
@@ -407,6 +426,7 @@ class Controller(QObject):
                 self.files.beginRemoveRows(QModelIndex(), i, i)
                 self.files.rows.pop(i)
                 self.files.endRemoveRows()
+        self.files.path_indices = {os.path.normcase(row["path"]): i for i, row in enumerate(self.files.rows)}
         self._anchor = 0
         self._notice = ""
         self._folder_roots = [root for root in self._folder_roots
@@ -418,7 +438,9 @@ class Controller(QObject):
     def prepareUpload(self):
         if not self.canUpload:
             return
-        scored = {r["path"]: r["scored_stat"] for r in self.files.rows
+        scored = {
+            r["path"]: (*r["scored_stat"], r.get("content_sha256"))
+            for r in self.files.rows
                   if r["report"] is not None and r.get("scored_stat")}
         self._upload.prepare(self._folder_roots, scored)
 
@@ -623,7 +645,7 @@ class Controller(QObject):
                 meta["channels_first"] = self._order == 1
             if keep:
                 meta["keep_channels"] = keep
-            jobs.append((i, row["path"], meta))
+            jobs.append((i, row["path"], meta, self._data_directory / "score-cache.sqlite3"))
             try:
                 source_stat = Path(row["path"]).stat()
                 row["score_input_stat"] = (source_stat.st_size, source_stat.st_mtime_ns)
@@ -665,6 +687,14 @@ class Controller(QObject):
             self.files.rows[index]["scored_stat"] = after if self.files.rows[index].get("score_input_stat") == after else None
         except OSError:
             self.files.rows[index]["scored_stat"] = None
+        if self.files.rows[index]["scored_stat"] is None:
+            self.files.patch(index, report=None, score="—", ready=False,
+                             state="需要重评", error="评分期间文件已变化，请停止采集后重新评分",
+                             detail="评分期间文件已变化，请停止采集后重新评分",
+                             content_sha256=None)
+            self._done += 1
+            self.changed.emit()
+            return
         extras = getattr(report, "extras", None) or {}
         detail = f"{extras['sfreq_hz']:g} 赫兹 · {report.duration_s:g} 秒"
         coverage = extras.get("frequency_coverage") or {}
@@ -674,7 +704,8 @@ class Controller(QObject):
         if headline:
             detail += "\n" + headline
         self.files.patch(index, report=report, score=f"{report.gqi:.1f}", state="完成",
-                         detail=detail, ready=True)
+                         detail=detail, ready=True,
+                         content_sha256=getattr(report, "content_sha256", None))
         self._done += 1
         self.changed.emit()
 

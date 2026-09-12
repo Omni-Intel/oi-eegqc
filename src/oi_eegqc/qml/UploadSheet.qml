@@ -8,6 +8,7 @@ QuietPopup {
     required property var backend
     readonly property var info: backend.upload.info
     readonly property bool compact: Overlay.overlay.height < 440
+    property bool maintenanceOpen: false
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: Math.min(520, Overlay.overlay.width - 40)
@@ -15,6 +16,7 @@ QuietPopup {
     height: Math.min(content.implicitHeight + topPadding + bottomPadding, Overlay.overlay.height - 40)
     modal: true
     visible: backend.upload.opened
+    onVisibleChanged: if (!visible) maintenanceOpen = false
     onAboutToHide: if (backend.upload.opened) backend.upload.close()
     contentItem: ColumnLayout {
         id: content
@@ -37,7 +39,7 @@ QuietPopup {
                 width: body.availableWidth
                 spacing: sheet.compact ? 12 : 18
                 Text { text: sheet.info.folderCount + " 个文件夹 · " + sheet.info.count + " 个文件 · " + sheet.info.size; color: "#303941"; Layout.fillWidth: true; wrapMode: Text.Wrap }
-                Text { text: "包含子文件夹内全部文件"; color: "#89929b"; font.pixelSize: 11 }
+                Text { text: "包含全部文件；自动跳过已上传的相同内容，暂停后可继续"; color: "#89929b"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.Wrap }
                 Repeater {
                     objectName: "uploadFolderList"
                     model: sheet.info.folders
@@ -56,7 +58,7 @@ QuietPopup {
                                 Text { text: modelData.count + " 个文件 · " + modelData.size; color: "#7c8791"; font.pixelSize: 11 }
                             }
                             Text { text: modelData.path.toLowerCase(); textFormat: Text.PlainText; color: "#89929b"; font.pixelSize: 11; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
-                            Text { text: "采集 " + modelData.uploadId; visible: modelData.uploadId !== ""; textFormat: Text.PlainText; color: "#89929b"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                            Text { text: "采集 " + modelData.uploadId; visible: sheet.maintenanceOpen && modelData.uploadId !== ""; textFormat: Text.PlainText; color: "#89929b"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true }
                         }
                     }
                 }
@@ -76,7 +78,7 @@ QuietPopup {
                     Text { text: sheet.info.speed; visible: sheet.backend.upload.active && !sheet.info.preparing; color: "#99a2ab"; font.pixelSize: 11 }
                 }
                 Text {
-                    text: "批次 " + sheet.info.uploadId; visible: sheet.info.uploadId !== ""
+                    text: "批次 " + sheet.info.uploadId; visible: false
                     textFormat: Text.PlainText; elide: Text.ElideMiddle
                     Layout.fillWidth: true; color: "#99a2ab"; font.pixelSize: 11
                 }
@@ -90,7 +92,7 @@ QuietPopup {
         }
         Flow {
             Layout.fillWidth: true; spacing: 8
-            visible: !sheet.backend.upload.active && (!sheet.info.failed || sheet.info.uncertain)
+            visible: sheet.maintenanceOpen && !sheet.backend.upload.active
             QuietButton { objectName: "newAcquisition"; text: "作为新采集上传"; visible: sheet.info.started || sheet.info.uncertain; enabled: sheet.backend.canUpload; onClicked: newConfirm.open() }
             QuietButton { objectName: "restoreUploadId"; text: "恢复编号"; visible: sheet.info.uncertain; onClicked: restoreDialog.open() }
             QuietButton { objectName: "resetUploadRecord"; text: "重置上传记录"; visible: sheet.info.folderCount > 0; onClicked: resetFirst.open() }
@@ -98,8 +100,9 @@ QuietPopup {
         RowLayout {
             Layout.fillWidth: true; spacing: 8
             QuietButton { text: sheet.backend.upload.active ? "收起" : "关闭"; onClicked: sheet.backend.upload.close() }
+            QuietButton { objectName: "uploadMaintenance"; text: sheet.maintenanceOpen ? "收起更多" : "更多"; visible: !sheet.backend.upload.active; onClicked: sheet.maintenanceOpen = !sheet.maintenanceOpen }
             Item { Layout.fillWidth: true }
-            QuietButton { objectName: "cancelUpload"; text: "取消上传"; visible: sheet.backend.upload.active; enabled: sheet.backend.upload.canCancel; onClicked: sheet.backend.upload.cancel() }
+            QuietButton { objectName: "cancelUpload"; text: sheet.info.preparing ? "取消准备" : "暂停"; visible: sheet.backend.upload.active; enabled: sheet.backend.upload.canCancel; onClicked: sheet.backend.upload.cancel() }
             QuietButton {
                 objectName: "startUpload"
                 text: sheet.info.failed ? "重试" : sheet.info.started ? "继续上传" : "上传"
