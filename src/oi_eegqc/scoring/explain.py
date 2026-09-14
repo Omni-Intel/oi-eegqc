@@ -10,7 +10,7 @@ _PLACEHOLDER = re.compile(r"^(ch|eeg)\d+$", re.IGNORECASE)
 _DIMENSION_LABELS = {
     "contact": "接触",
     "cleanliness": "洁净",
-    "usable_time": "可用时长",
+    "usable_time": "时长评分",
     "integrity": "完整性",
     "stimulus_sync": "刺激同步",
 }
@@ -19,7 +19,7 @@ _ISSUE_TEXT = {
     "zero": "{name} 全程为 0，像是没接上或这路没出数",
     "constant": "{name} 数值几乎不变，像是死导",
     "flat": "{name} 幅度过小，像是接触不良或空接",
-    "clipped": "{name} 顶到量程，检查是否松脱或被试乱动",
+    "clipped": "{name} 部分时间窗出现疑似削顶平台，需查看原始波形",
     "extreme": "{name} 幅度过大，检查是否松脱或运动伪迹",
     "uncoupled": "{name} 和其他电极对不上，像是浮空或贴偏",
     "line": "{name} 工频干扰偏高，检查地线和附近电源",
@@ -38,7 +38,7 @@ _DIMENSION_HINTS = {
 
 _REASON_NOTES = (
     (re.compile(r"median impedance|impedance", re.I), "开录阻抗偏高，重新打湿或压紧电极再录"),
-    (re.compile(r"rail-clipped|rail clipped", re.I), "有导联顶到量程，检查是否松脱或被试大幅乱动"),
+    (re.compile(r"clipping-like plateaus", re.I), "检测到疑似削顶平台；未提供设备量程，不能据此确定硬件饱和或被试运动"),
     (re.compile(r"flat/dead|dead channels", re.I), "有死导或几乎没信号的导联，先查帽位和插头"),
     (re.compile(r"bad channels", re.I), "坏导偏多，优先检查接触差的那几路"),
     (re.compile(r"HF noise|noise-to-signal|nsr", re.I), "高频噪声偏高，减少说话、咬牙、附近电器"),
@@ -153,6 +153,12 @@ def _reason_notes(report) -> list[str]:
 
 
 def _usable_note(report) -> str | None:
+    qa = getattr(report, "window_qa", None)
+    rule = (getattr(report, "extras", {}) or {}).get("usable_window_rule")
+    if qa is not None and rule:
+        return (f"可用窗口 {qa.usable_windows}/{qa.n_windows}（{100 * report.usable_ratio:.1f}%）；"
+                f"每窗 {rule['window_s']:g} 秒，最多允许 {rule['max_bad_channels']} 路异常。"
+                "窗口有重叠，该比例不是精确可用秒数，时长评分也不是时长百分比。")
     ratio = getattr(report, "usable_ratio", None)
     if ratio is None:
         return None
@@ -218,7 +224,7 @@ def _action_notes(issues: list[dict], report) -> list[str]:
     if "zero" in kinds or "constant" in kinds or "flat" in kinds:
         actions.append("先查没出数的那几路：插头、帽子、导电膏")
     if "clipped" in kinds or "extreme" in kinds:
-        actions.append("让被试少动，检查电极是否松脱")
+        actions.append("结合原始波形、单位和采集记录，检查电极接触及运动影响")
     if "line" in kinds:
         actions.append("挪开电源线，确认地线")
     if "noisy" in kinds:
@@ -235,7 +241,15 @@ def build_operator(report) -> dict:
     issues = list(extras.get("channel_issues") or [])
     n_channels = int(getattr(report, "n_channels_used", 0) or 0)
 
-    notes: list[dict] = []
+    usable = _usable_note(report)
+    notes: list[dict] = [{"text": usable}] if usable else []
+    qa = getattr(report, "window_qa", None)
+    if qa is not None:
+        bad = [item for item in qa.window_evidence if not item["usable"]]
+        if bad:
+            examples = "、".join(f"{item['start_s']:.1f}–{item['end_s']:.1f} 秒（{len(item['bad_channels'])} 路）"
+                                for item in bad[:3])
+            notes.append({"text": "未通过窗口示例：" + examples})
     for item in issues:
         for text in _issue_texts(item):
             notes.append({"text": text})
@@ -243,9 +257,6 @@ def build_operator(report) -> dict:
         notes.append({"text": text})
     for text in _reason_notes(report):
         notes.append({"text": text})
-    usable = _usable_note(report)
-    if usable:
-        notes.append({"text": usable})
     for text in _context_notes(report, extras):
         notes.append({"text": text})
     for text in _action_notes(issues, report):

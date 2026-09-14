@@ -267,8 +267,8 @@ def test_qml_native_drop_and_score_button(quick, tmp_path):
 
 def test_qml_cancel_scoring_and_resume(quick, tmp_path, monkeypatch):
     import oi_eegqc.quick as module
-    from oi_eegqc.desktop import BatchWorker
-    from oi_eegqc.desktop_process import ScoringProcess
+    from oi_eegqc.application.qt_workers import BatchWorker
+    from oi_eegqc.application.scoring_process import ScoringProcess
     from process_workers import blocked_scores
     app, controller, engine, window = quick
     path = tmp_path / "signal.npy"

@@ -105,10 +105,10 @@ def collect_hard_fails(
     if not rec.event_ok:
         fails.append("event marker integrity failed")
     if n_channels_used and (
-        len(window_qa.clipped_channels) >= cfg.hard_fail_clipped_frac * n_channels_used
+        len(window_qa.persistent_clipped_channels) >= cfg.hard_fail_clipped_frac * n_channels_used
     ):
         fails.append(
-            f"{len(window_qa.clipped_channels)}/{n_channels_used} channels rail-clipped"
+            f"{len(window_qa.persistent_clipped_channels)}/{n_channels_used} channels with persistent clipping-like plateaus"
         )
     expected = rec.expected_n_channels
     if expected:
@@ -168,10 +168,10 @@ def compute_dimension_scores(
             f"{window_qa.dead_channels[:6]}"
         )
     if window_qa.clipped_channels:
-        clip_frac = len(window_qa.clipped_channels) / max(window_qa.n_channels, 1)
+        clip_frac = window_qa.clipped_ratio
         contact -= min(1.0, 2.0 * clip_frac)
         reasons.append(
-            f"{len(window_qa.clipped_channels)} rail-clipped channels ({clip_frac:.0%}): "
+            f"{len(window_qa.clipped_channels)} channels with clipping-like plateaus ({clip_frac:.0%} of channel-window cells): "
             f"{window_qa.clipped_channels[:6]}"
         )
     scores["contact"] = DimensionScore(_clip01(contact), True)

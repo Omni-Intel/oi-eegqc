@@ -42,32 +42,6 @@ def pick_eeg_channels(
     return data[np.asarray(keep_idx)], keep_names, dropped
 
 
-def detect_clipped_channels(
-    data_uv: np.ndarray,
-    frac_threshold: float,
-) -> list[int]:
-    """Indices of channels whose samples pile up on their own extreme rail.
-
-    Run this on the unfiltered microvolt signal, because high-pass filtering
-    smears the flat top of a saturated segment and hides the rail. The DC
-    offset is removed first: DC-coupled amplifiers sit several millivolts away
-    from zero, which would otherwise place every sample near ``max|x|`` and
-    flag healthy channels as clipped.
-    """
-    clipped: list[int] = []
-    for i in range(data_uv.shape[0]):
-        x = np.asarray(data_uv[i], dtype=float)
-        x = x[np.isfinite(x)]
-        if x.size == 0:
-            continue
-        centred = np.abs(x - np.median(x))
-        peak = float(centred.max())
-        if peak <= 0:
-            continue
-        at_rail = float(np.mean(centred >= 0.999 * peak))
-        if at_rail > frac_threshold:
-            clipped.append(i)
-    return clipped
 
 
 def _highpass_single_pole(x: np.ndarray, sfreq: float, cutoff_hz: float) -> np.ndarray:

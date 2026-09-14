@@ -1,4 +1,4 @@
-threshold_version: oi-eegqc-v0.2.0
+threshold_version: oi-eegqc-v0.6.0
 highpass_hz: 1.0
 line_hz: 50.0
 line_halfwidth_hz: 2.0
@@ -7,6 +7,8 @@ impedance_ok_kohm: 10.0
 sync_warn_ms: 40.0
 sync_fail_ms: 100.0
 clip_frac_threshold: 0.01
+clip_min_plateau_s: 0.008
+hard_fail_clipped_window_ratio: 0.9
 hard_fail_clipped_frac: 0.5
 hard_fail_present_channel_frac: 0.75
 spectral_blend: 0.4

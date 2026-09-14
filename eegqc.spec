@@ -16,7 +16,7 @@ a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root / "src")],
                             "oi_eegqc.layouts", "oi_eegqc.quick", "oi_eegqc.desktop_upload", "oi_eegqc.upload_ui",
                             "oi_eegqc.pipeline", "oi_eegqc.protocol", "oi_eegqc.types"]
                            + ["mne.io.edf.edf", "mne._fiff.pick"],
-             excludes=["tkinter", "pytest", "IPython", "notebook", "matplotlib",
+             excludes=["oi_eegqc.legacy", "oi_eegqc.upload_signer", "tkinter", "pytest", "IPython", "notebook", "matplotlib",
                        "PySide6.QtWebEngineCore"],
              noarchive=False)
 

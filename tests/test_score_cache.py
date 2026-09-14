@@ -38,3 +38,12 @@ def test_changed_file_gets_a_new_digest(tmp_path):
     source.write_bytes(b"second-and-longer")
     second, _ = cache.digest(source)
     assert first != second
+
+
+def test_old_algorithm_report_is_not_reused_after_clipping_fix(tmp_path, monkeypatch):
+    import oi_eegqc.score_cache as module
+    cache = ScoreCache(tmp_path / "cache.sqlite3")
+    with monkeypatch.context() as old:
+        old.setattr(module, "SCORING_ALGORITHM_VERSION", "oi-eegqc-score-v1")
+        cache.store("a" * 64, {}, report(0))
+    assert cache.lookup("a" * 64, {}) is None

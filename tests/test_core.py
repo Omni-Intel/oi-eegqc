@@ -3,7 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from oi_eegqc.adapters import detect_clipped_channels, pick_eeg_channels, sliding_windows
+from oi_eegqc.adapters import pick_eeg_channels, sliding_windows
+from oi_eegqc.qa.clipping import plateau_fractions
 from oi_eegqc.config import default_config
 from oi_eegqc.pipeline import evaluate_recording
 from oi_eegqc.scoring.grades import letter_from_odq
@@ -120,7 +121,7 @@ def test_detect_clipped_channels():
     rng = np.random.default_rng(0)
     data = rng.standard_normal((3, 2000)) * 20.0
     data[1] = np.clip(data[1] * 50.0, -100.0, 100.0)
-    assert detect_clipped_channels(data, 0.01) == [1]
+    assert np.flatnonzero(plateau_fractions(data, 3, 1.0) > 0.01).tolist() == [1]
 
 
 def test_missing_channels_hard_fail():

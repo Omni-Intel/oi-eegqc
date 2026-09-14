@@ -91,7 +91,7 @@ class GQIWeights:
 
 @dataclass
 class BenchConfig:
-    threshold_version: str = "oi-eegqc-v0.2.0"
+    threshold_version: str = "oi-eegqc-v0.6.0"
     letter: LetterCutoffs = field(default_factory=LetterCutoffs)
     gqi_weights: GQIWeights = field(default_factory=GQIWeights)
     highpass_hz: float = 1.0
@@ -120,9 +120,11 @@ class BenchConfig:
     impedance_ok_kohm: float = 10.0
     sync_warn_ms: float = 40.0
     sync_fail_ms: float = 100.0
-    # Fraction of samples sitting on a channel's own extreme rail before the
-    # channel is declared clipped. Clean EEG stays far below 1%.
+    # Window-local repeated extrema, not merely samples close to a smooth peak.
     clip_frac_threshold: float = 0.01
+    clip_min_plateau_s: float = 0.008
+    # Only sustained evidence can trigger the recording-level clipping gate.
+    hard_fail_clipped_window_ratio: float = 0.90
     # Share of the montage that must be rail-clipped or missing before the
     # recording is rejected outright rather than merely scored low. Kept
     # narrow on purpose: broad hard-fail gates make GQI discontinuous, so
@@ -295,6 +297,8 @@ _SCALAR_KEYS = (
     "sync_warn_ms",
     "sync_fail_ms",
     "clip_frac_threshold",
+    "clip_min_plateau_s",
+    "hard_fail_clipped_window_ratio",
     "hard_fail_clipped_frac",
     "hard_fail_present_channel_frac",
     "spectral_blend",

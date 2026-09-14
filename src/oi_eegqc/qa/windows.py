@@ -6,6 +6,7 @@ from scipy.signal import welch
 from ..adapters import sliding_windows
 from ..config import BenchConfig, DurationProfile, MontageProfile
 from ..types import WindowQASummary
+from .clipping import plateau_fractions
 
 #: Minimum sample count before a median/MAD statistic is trusted. The MAD has a
 #: 50% breakdown point, and with only a handful of values it collapses to zero
@@ -50,8 +51,8 @@ def assess_windows(
     duration_profile: DurationProfile,
     montage_profile: MontageProfile,
     cfg: BenchConfig,
-    clipped_idx: list[int] | None = None,
-) -> WindowQASummary:
+    raw_data_uv: np.ndarray,
+) -> tuple[WindowQASummary, list[dict]]:
     """Window QA with absolute amplitude gates plus relative outlier detection.
 
     ``data_uv`` must already be high-passed and expressed in microvolts, since
@@ -73,6 +74,8 @@ def assess_windows(
     scoring blends the flag density with these continuous measures.
     """
     n_ch, n_times = data_uv.shape
+    if raw_data_uv.shape != data_uv.shape:
+        raise ValueError("raw and filtered data must have the same shape")
     windows = sliding_windows(n_times, sfreq, duration_profile.window_s, duration_profile.hop_s)
     n_win = len(windows)
 
@@ -84,6 +87,8 @@ def assess_windows(
     high_nsr = np.zeros((n_ch, n_win), dtype=bool)
     line_noise = np.zeros((n_ch, n_win), dtype=bool)
     low_corr = np.zeros((n_ch, n_win), dtype=bool)
+    clipped = np.zeros((n_ch, n_win), dtype=bool)
+    plateau_ratio = np.zeros((n_ch, n_win), dtype=float)
 
     stds = np.zeros((n_ch, n_win), dtype=float)
     ptps = np.zeros((n_ch, n_win), dtype=float)
@@ -102,6 +107,11 @@ def assess_windows(
     abs_max: list[float] = []
 
     for w_i, (a, b) in enumerate(windows):
+        plateau_ratio[:, w_i] = plateau_fractions(
+            raw_data_uv[:, a:b], max(3, int(np.ceil(cfg.clip_min_plateau_s * sfreq))),
+            montage_profile.ptp_min_uv,
+        )
+        clipped[:, w_i] = plateau_ratio[:, w_i] > cfg.clip_frac_threshold
         seg = data_uv[:, a:b]
         finite = np.isfinite(seg)
         abs_seg = np.abs(seg[finite]) if finite.any() else np.zeros(1)
@@ -203,13 +213,9 @@ def assess_windows(
         | high_nsr
         | line_noise
         | low_corr
+        | clipped
     )
-
-    # Rail-clipped channels are unusable for their whole span.
-    clipped_idx = list(clipped_idx or [])
-    for c in clipped_idx:
-        if 0 <= c < n_ch:
-            bad_any[c, :] = True
+    clipped_idx = np.flatnonzero(clipped.any(axis=1)).tolist()
 
     # Contamination density over channel x window cells.
     bad_cell_ratio = float(bad_any.mean())
@@ -219,6 +225,19 @@ def assess_windows(
     usable_window_ratio = float(
         (bad_frac_per_window <= montage_profile.max_bad_ch_frac_per_window).mean()
     )
+    detectors = dict(constant=constant, flat=flat, extreme=extreme_amp,
+                     temporal_outlier=temporal_outlier, spatial_outlier=spatial_outlier,
+                     high_nsr=high_nsr, line=line_noise, low_corr=low_corr, clipped=clipped)
+    evidence = [
+        dict(start_s=a / sfreq, end_s=b / sfreq,
+             usable=bool(bad_frac_per_window[i] <= montage_profile.max_bad_ch_frac_per_window),
+             bad_channels=np.flatnonzero(bad_any[:, i]).tolist(),
+             causes={name: np.flatnonzero(flags[:, i]).tolist()
+                     for name, flags in detectors.items() if flags[:, i].any()},
+             clipping_plateau_ratio={str(c): float(plateau_ratio[c, i])
+                                     for c in np.flatnonzero(clipped[:, i])})
+        for i, (a, b) in enumerate(windows)
+    ]
 
     broken_frac = bad_any.mean(axis=1)
     bad_ch_mask = broken_frac >= montage_profile.bad_channel_broken_frac
@@ -273,6 +292,11 @@ def assess_windows(
         max_abs_uv=float(np.max(abs_max)) if abs_max else 0.0,
         line_noise_ratio=_nanmedian(line_vals),
         muscle_band_ratio=_nanmedian(muscle_vals),
+        clipped_ratio=float(clipped.mean()),
+        persistent_clipped_channels=[ch_names[c] for c in range(n_ch)
+                                     if clipped[c].mean() >= cfg.hard_fail_clipped_window_ratio],
+        usable_windows=sum(item["usable"] for item in evidence),
+        window_evidence=evidence,
     )
     return summary, channel_issues
 

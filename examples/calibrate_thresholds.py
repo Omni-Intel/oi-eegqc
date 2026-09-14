@@ -268,7 +268,7 @@ def main() -> None:
     parser.add_argument(
         "-o",
         "--output",
-        default="/vePFS-0x0e/xkp/oi-eegqc/bench_runs/calibration.json",
+        default="build/calibration.json",
     )
     args = parser.parse_args()
 

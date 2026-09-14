@@ -1,4 +1,4 @@
-"""OI-EEGQC: adaptive EEG quality validation bench."""
+"""OI-EEGQC: one scoring engine for the desktop application and automation."""
 
 from importlib import import_module
 
@@ -28,7 +28,7 @@ def __getattr__(name):
 def __dir__():
     return sorted(set(globals()) | set(__all__))
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 __all__ = [
     "AvailabilityFlag",
     "BenchConfig",

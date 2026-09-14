@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import asdict
 from typing import Iterable
 
 import numpy as np
 
-from .adapters import detect_clipped_channels, highpass_channels, pick_eeg_channels
+from .adapters import highpass_channels, pick_eeg_channels
 from .config import BenchConfig, load_config
 from .io.array import load_npy
 from .qa.windows import assess_windows
@@ -35,10 +36,8 @@ def evaluate_recording(
     # compare against physical thresholds, so the unit cannot be left implicit.
     eeg = eeg * recording.to_uv_scale()
 
-    # Clipping is detected before filtering, which would smear the rail.
-    clipped_idx = detect_clipped_channels(eeg, cfg.clip_frac_threshold)
-
-    eeg = highpass_channels(eeg, recording.sfreq, cfg.highpass_hz)
+    raw_eeg = eeg
+    eeg = highpass_channels(raw_eeg, recording.sfreq, cfg.highpass_hz)
 
     duration_s = recording.resolved_duration_s()
     dur_prof = cfg.select_duration(duration_s)
@@ -51,7 +50,7 @@ def evaluate_recording(
         dur_prof,
         mon_prof,
         cfg,
-        clipped_idx=clipped_idx,
+        raw_data_uv=raw_eeg,
     )
 
     hard_fails = collect_hard_fails(
@@ -113,8 +112,19 @@ def evaluate_recording(
                 k: round(v.quality, 4) for k, v in scores.items() if v.assessed
             },
             "channel_issues": channel_issues,
+            "channel_names": names,
+            "scoring_config": asdict(cfg),
+            "usable_window_rule": {
+                "window_s": dur_prof.window_s, "hop_s": dur_prof.hop_s,
+                "max_bad_channel_fraction": mon_prof.max_bad_ch_frac_per_window,
+                "max_bad_channels": int(np.floor(mon_prof.max_bad_ch_frac_per_window * len(names))),
+                "usable_target": dur_prof.usable_target,
+            },
+            "clipping_method": "window-extrema-plateaus-v2",
         },
     )
+    from .scoring_version import SCORING_ALGORITHM_VERSION
+    report.extras["algorithm_version"] = SCORING_ALGORITHM_VERSION
     if recording.meta.get("channel_layout"):
         report.extras["channel_layout"] = recording.meta["channel_layout"]
     report.extras["operator"] = build_operator(report)

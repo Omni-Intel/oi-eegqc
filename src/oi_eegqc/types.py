@@ -20,7 +20,8 @@ class AvailabilityFlag(str, Enum):
 
 #: Frozen into every ``QualityReport.to_dict()``. Bump when report fields change.
 #: v2: letter / availability tracks are closed for intake; fields serialize as null.
-REPORT_SCHEMA_VERSION = "oi-eegqc-report-v2"
+#: v3: window evidence, local suspected clipping and reproducible score configuration.
+REPORT_SCHEMA_VERSION = "oi-eegqc-report-v3"
 
 
 #: Multipliers converting a declared input unit into microvolts.
@@ -129,6 +130,10 @@ class WindowQASummary:
     max_abs_uv: float
     line_noise_ratio: float
     muscle_band_ratio: float
+    clipped_ratio: float = 0.0
+    persistent_clipped_channels: list[str] = field(default_factory=list)
+    usable_windows: int = 0
+    window_evidence: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

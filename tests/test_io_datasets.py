@@ -133,8 +133,11 @@ def test_synthetic_adapter_scores():
     assert by_id["synthetic_clean"]["letter_grade"] is None
     assert by_id["synthetic_saturated"]["letter_grade"] is None
     assert by_id["synthetic_clean"]["gqi"] > by_id["synthetic_saturated"]["gqi"]
-    assert by_id["synthetic_saturated"]["gqi"] == 0.0
-    assert rows[0]["schema_version"] == "oi-eegqc-report-v2"
+    # This gain-limited fixture is severe but only some channels show sustained
+    # plateaus. Local clipping no longer forces an unconditional whole-record 0.
+    assert by_id["synthetic_saturated"]["gqi"] < 40.0
+    assert by_id["synthetic_saturated"]["usable_ratio"] == 0.0
+    assert rows[0]["schema_version"] == "oi-eegqc-report-v3"
     assert "schema_version" in rows[0]
     assert rows[0]["extras"]["dataset"] == "synthetic"
     assert "device" not in rows[0]

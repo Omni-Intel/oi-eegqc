@@ -15,7 +15,7 @@ Windows 进程不读波形；评分在本地 Python 里完成，不接云。
 `https://pack.kunpeng.blog/oi-eegqc/latest.json`，
 并从同一固定 HTTPS 镜像下载安装器；采集电脑不直接访问 GitHub。检查不上传脑电。
 
-本地：`scripts/build-desktop.ps1`。远程：打 `v*` tag 或手动跑
+本地与 CI 的验证入口为 `python scripts/check.py --calibrate`。构建入口 `scripts/build-desktop.ps1` 会执行同一验证，并在打包后验证启动和评分子进程。远程：打 `v*` tag 或手动跑
 `.github/workflows/windows-release.yml`。
 
 ## 和 sidecar 的关系
@@ -24,12 +24,14 @@ Windows 进程不读波形；评分在本地 Python 里完成，不接云。
 参考 [`examples/sidecar_session.py`](../examples/sidecar_session.py)。
 已打包的 Qt 应用走同一套 `score_file`，不另写评分。
 
-信封 `schema_version` 必须是 `oi-eegqc-protocol-v1`；报告体 `oi-eegqc-report-v1`。
+信封 `schema_version` 是 `oi-eegqc-protocol-v1`；v0.6 报告体是 `oi-eegqc-report-v3`。
 
 ## 界面
 
 一个窗口、一张表：文件、GQI（0–100）、状态。
 字母分和可用性仍写在报告 JSON 里，界面不当入库判定；入库线不写进软件。
+
+v0.6 详情增加可用窗口计数与异常时间段说明，“可用时长”子项改名为“时长评分”。疑似削顶按窗口判定，详见 [评分规则](scoring.md)。旧评分缓存会重新计算。
 
 NPY 缺采样率或单位时弹窗；EDF/BDF 读文件头。已知 SDK 的行序见
 [channel-layouts.md](channel-layouts.md)，可在 sidecar 里写 `channel_layout`。

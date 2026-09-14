@@ -11,7 +11,7 @@ from .types import REPORT_SCHEMA_VERSION
 
 
 # Bump only when a change can alter score output; UI and transport releases keep the cache.
-SCORING_ALGORITHM_VERSION = "oi-eegqc-score-v1"
+from .scoring_version import SCORING_ALGORITHM_VERSION
 
 
 class CacheCancelled(Exception):

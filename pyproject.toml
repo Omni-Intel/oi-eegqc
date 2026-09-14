@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oi-eegqc"
-version = "0.5.1"
-description = "Adaptive EEG quality control bench for clean commercial multi-duration, multi-montage intake."
+version = "0.6.0"
+description = "Local EEG quality scoring and resumable collection uploads for the desktop."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -33,6 +33,7 @@ oi-eegqc-desktop = "oi_eegqc.desktop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["oi_eegqc.legacy*"]
 
 [tool.setuptools.package-data]
 oi_eegqc = ["py.typed", "qml/*.qml", "layouts/*.yaml"]

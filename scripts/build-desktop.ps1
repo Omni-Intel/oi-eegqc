@@ -7,11 +7,17 @@ if (-not (Test-Path '.venv/Scripts/python.exe')) {
     if ($LASTEXITCODE -ne 0) { throw 'Virtual environment creation failed' }
 }
 if (-not $SkipDependencies) {
-    & ./.venv/Scripts/python.exe -m pip install -e '.[desktop,packaging]'
+    & ./.venv/Scripts/python.exe -m pip install -e '.[desktop,packaging,dev]'
     if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
 }
+$checkArgs = @('scripts/check.py', '--calibrate')
+if ($env:GITHUB_REF_TYPE -eq 'tag') { $checkArgs += @('--tag', $env:GITHUB_REF_NAME) }
+& ./.venv/Scripts/python.exe @checkArgs
+if ($LASTEXITCODE -ne 0) { throw 'Product verification failed' }
 & ./.venv/Scripts/python.exe -m PyInstaller --noconfirm eegqc.spec
 if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
+& ./.venv/Scripts/python.exe scripts/smoke-desktop.py dist/OI-EEGQC/OI-EEGQC.exe
+if ($LASTEXITCODE -ne 0) { throw 'Packaged application check failed' }
 Copy-Item docs/desktop.md dist/OI-EEGQC/README.md -Force
 Copy-Item docs/folder-upload.md dist/OI-EEGQC/folder-upload.md -Force
 

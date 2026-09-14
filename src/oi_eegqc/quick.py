@@ -12,7 +12,7 @@ from PySide6.QtGui import QGuiApplication, QIcon, QFont, QDesktopServices
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtQuickControls2 import QQuickStyle
-from .desktop import BatchWorker, UpdateWorker, configure_logging
+from .application.qt_workers import BatchWorker, UpdateWorker, configure_logging
 from .desktop_import import discover_files
 from .desktop_service import inspect_channel_names, inspect_file, npy_ready, time_weighted_usable
 from . import __version__

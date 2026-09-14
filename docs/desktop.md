@@ -77,13 +77,14 @@ powershell -ExecutionPolicy Bypass -File scripts/build-desktop.ps1
 ```
 
 构建脚本要求 Inno Setup 6（验证版本 6.7.3），仅生成中文安装器，缺少编译器时会明确失败。
+本地和 CI 共用 `scripts/check.py --calibrate`；构建脚本自动执行测试、故障注入校验和打包后的启动/评分验证。
 非标准路径可传 `-IsccPath`；已安装依赖时可传 `-SkipDependencies`。
 使用 Inno Setup 6.7.3 进行商业分发前应确认其商业许可要求；应用本身不做代码签名。
 打与应用版本一致的 tag `v*` 会发布 GitHub Release；手动运行 `.github/workflows/windows-release.yml` 只上传构建产物，不发布 release。
 资源文件名必须是 `OI-EEGQC-Setup-Windows-x64.exe`，桌面「检查更新」按这个名字认。
 
 安装器使用固定应用标识，覆盖升级沿用安装目录，卸载只移除安装器管理的文件，不删除自行放入的数据或用户设置。
-开发验证脚本 `scripts/verify-windows.ps1` 在隔离目录测试旧版安装、新版覆盖、启动、设置检查更新和卸载；检测到已有安装时拒绝运行，避免影响用户副本。
+开发验证脚本 `scripts/verify-windows.ps1` 在隔离目录测试旧版安装、新版覆盖、启动和卸载；版本取自当前源码。附加 `-CheckUpdate` 才检查更新镜像。检测到已有安装时拒绝运行，避免影响用户副本。
 
 macOS / Linux 可安装相同依赖后运行 `oi-eegqc-desktop`。
 二进制需在目标系统运行 `python -m PyInstaller eegqc.spec` 分别构建；

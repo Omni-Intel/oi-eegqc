@@ -7,7 +7,7 @@ DEFAULT_FILE_TIMEOUT_S = 15 * 60
 
 def serve_scores(connection):
     try:
-        from .desktop_service import score_file
+        from ..intake import score_file
         while True:
             request = connection.recv()
             if request is None:

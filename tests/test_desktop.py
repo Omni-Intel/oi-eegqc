@@ -9,7 +9,7 @@ import pytest
 try:
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import QTimer
-    from oi_eegqc.desktop import STYLE, Window
+    from oi_eegqc.legacy.widgets import STYLE, Window
 except ImportError as exc:
     pytest.skip(f"Qt unavailable: {exc}", allow_module_level=True)
 
@@ -115,8 +115,8 @@ def test_batch_failure_retry_dedup_and_default(tmp_path):
 
 
 def test_stop_preserves_pending_and_resume(tmp_path, monkeypatch):
-    import oi_eegqc.desktop as desktop
-    from oi_eegqc.desktop_process import ScoringProcess
+    import oi_eegqc.legacy.widgets as desktop
+    from oi_eegqc.application.scoring_process import ScoringProcess
     from process_workers import blocked_scores
     app = QApplication.instance() or QApplication([])
     window = Window()
@@ -153,8 +153,8 @@ def test_stop_preserves_pending_and_resume(tmp_path, monkeypatch):
 
 
 def test_timeout_and_process_crash_continue_queue():
-    from oi_eegqc.desktop import BatchWorker
-    from oi_eegqc.desktop_process import ScoringProcess
+    from oi_eegqc.application.qt_workers import BatchWorker
+    from oi_eegqc.application.scoring_process import ScoringProcess
     from process_workers import fault_scores
     import multiprocessing
     app = QApplication.instance() or QApplication([])
@@ -178,7 +178,7 @@ def test_timeout_and_process_crash_continue_queue():
 
 
 def test_multiselect_dialog_and_npy_parameters(tmp_path, monkeypatch):
-    import oi_eegqc.desktop as desktop
+    import oi_eegqc.legacy.widgets as desktop
     app = QApplication.instance() or QApplication([])
     window = Window()
     paths = [tmp_path / f"{i}.npy" for i in range(2)]
@@ -318,7 +318,7 @@ def test_folder_drop_recursive_and_duplicate_names(tmp_path):
 
 def test_empty_folder_and_import_cancellation(tmp_path, monkeypatch):
     import threading
-    import oi_eegqc.desktop as desktop
+    import oi_eegqc.legacy.widgets as desktop
     app = QApplication.instance() or QApplication([])
     window = Window()
     window.add_files([tmp_path])
@@ -451,7 +451,7 @@ def test_missing_rate_has_no_250_default(tmp_path):
 
 def test_summary_includes_pending_failed_and_caution():
     from types import SimpleNamespace
-    from oi_eegqc.desktop import Entry
+    from oi_eegqc.legacy.widgets import Entry
     app = QApplication.instance() or QApplication([])
     window = Window()
     def entry(gqi):
@@ -483,8 +483,8 @@ def test_startup_does_not_import_scientific_stack():
     import subprocess
     import sys
     subprocess.run([sys.executable, "-c",
-                    "import sys; import oi_eegqc.desktop; "
-                    "assert not any(n in sys.modules for n in ('numpy','scipy','mne','matplotlib'))"], check=True)
+                    "import sys; import oi_eegqc.quick; "
+                    "assert not any(n in sys.modules for n in ('numpy','scipy','mne','matplotlib','oi_eegqc.legacy.widgets','oi_eegqc.upload_signer'))"], check=True)
 
 
 def test_lazy_public_api_keeps_existing_exports():
@@ -496,7 +496,7 @@ def test_lazy_public_api_keeps_existing_exports():
 
 
 def test_import_crash_restores_controls(tmp_path, monkeypatch):
-    import oi_eegqc.desktop as desktop
+    import oi_eegqc.legacy.widgets as desktop
     app = QApplication.instance() or QApplication([])
     window = Window()
     def broken(*args):
@@ -524,7 +524,7 @@ def test_oversized_sidecar_rejected(tmp_path):
 
 
 def test_shutdown_waits_for_worker(tmp_path, monkeypatch):
-    import oi_eegqc.desktop as desktop
+    import oi_eegqc.legacy.widgets as desktop
     import threading
     app = QApplication.instance() or QApplication([])
     window = Window()
@@ -544,7 +544,7 @@ def test_shutdown_waits_for_worker(tmp_path, monkeypatch):
 
 
 def test_batch_worker_reuses_cached_score(tmp_path):
-    from oi_eegqc.desktop import BatchWorker
+    from oi_eegqc.application.qt_workers import BatchWorker
     from oi_eegqc.types import REPORT_SCHEMA_VERSION
 
     source = tmp_path / "signal.npy"
