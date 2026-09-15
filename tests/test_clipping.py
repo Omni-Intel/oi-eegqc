@@ -57,7 +57,7 @@ def test_sustained_platforms_retain_evidence_but_do_not_force_zero():
     assert 0 < report.gqi < 40  # amplitude/noise still penalize this recording
     assert len(report.window_qa.persistent_clipped_channels) >= 4
     assert report.extras["scoring_config"]["clip_frac_threshold"] == .01
-    assert report.extras["algorithm_version"] == "oi-eegqc-score-v3"
+    assert report.extras["algorithm_version"] == "oi-eegqc-score-v4"
     assert report.extras["usable_window_rule"]["max_bad_channels"] == 2
     assert report.window_qa.window_evidence[0]["clipping_plateau_ratio"]
     notes = " ".join(x["text"] for x in report.extras["operator"]["notes"])

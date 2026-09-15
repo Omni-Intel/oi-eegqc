@@ -29,11 +29,7 @@ def pick_eeg_channels(
         if name.upper() in aux:
             dropped.append(name)
             continue
-        if not np.isfinite(data[i]).any():
-            # Fully non-finite channels carry no signal to score; they are
-            # reported so integrity can react to the missing channel count.
-            dropped.append(name)
-            continue
+        # Missing EEG stays in the denominator, just like flat EEG.
         keep_idx.append(i)
         keep_names.append(name)
 

@@ -44,7 +44,7 @@ _REASON_NOTES = (
     (re.compile(r"bad channels", re.I), "坏导偏多，优先检查接触差的那几路"),
     (re.compile(r"HF noise|noise-to-signal|nsr", re.I), "高频噪声偏高，减少说话、咬牙、附近电器"),
     (re.compile(r"mains ratio|line", re.I), "工频干扰偏高，检查地线和旁边电源"),
-    (re.compile(r"muscle-band|muscle", re.I), "肌电偏高，提醒被试少动、放松下颌"),
+    (re.compile(r"muscle-band|muscle", re.I), "20–45 Hz 功率占比偏高，来源待核实；不能仅据此认定肌电，本项不单独扣分"),
     (re.compile(r"usable window ratio", re.I), "能用的时间偏短，中间坏段太多"),
     (re.compile(r"event marker", re.I), "事件标记不可用，这份记录没法按刺激切段验收"),
     (re.compile(r"duration mismatch|duration drift", re.I), "录制时长和刺激对不上，核对起止日志"),

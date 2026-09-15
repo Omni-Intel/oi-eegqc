@@ -93,6 +93,7 @@ def collect_hard_fails(
     n_channels_used: int,
     n_dropped: int,
     cfg: BenchConfig,
+    n_missing: int = 0,
 ) -> list[str]:
     """Non-negotiable rejection gates.
 
@@ -108,7 +109,7 @@ def collect_hard_fails(
     # software processing can produce the same pattern. Keep it diagnostic.
     expected = rec.expected_n_channels
     if expected:
-        present = n_channels_used + n_dropped
+        present = n_channels_used + n_dropped - n_missing
         if present < cfg.hard_fail_present_channel_frac * expected:
             fails.append(f"only {present} of {expected} expected channels present")
     return fails
@@ -121,6 +122,7 @@ def compute_dimension_scores(
     montage_profile: MontageProfile,
     cfg: BenchConfig,
     n_dropped: int = 0,
+    n_missing: int = 0,
 ) -> tuple[dict[str, DimensionScore], list[str]]:
     reasons: list[str] = []
     scores: dict[str, DimensionScore] = {}
@@ -178,27 +180,28 @@ def compute_dimension_scores(
         window_qa.nsr_median,
         0.5 * montage_profile.nsr_threshold,
         2.0 * montage_profile.nsr_threshold,
-    )
+    ) if window_qa.nsr_median is not None else None
     line_q = _ramp(
         window_qa.line_noise_ratio,
         0.5 * montage_profile.line_ratio_threshold,
         2.0 * montage_profile.line_ratio_threshold,
-    )
-    spectral_q = min(nsr_q, line_q)
+    ) if window_qa.line_noise_ratio is not None else None
+    measured_spectral = [q for q in (nsr_q, line_q) if q is not None]
     blend = _clip01(cfg.spectral_blend)
-    cleanliness = (1.0 - blend) * window_qa.clean_ratio + blend * spectral_q
-    if nsr_q < 0.5:
+    cleanliness = window_qa.clean_ratio
+    if measured_spectral:
+        cleanliness = (1.0 - blend) * cleanliness + blend * min(measured_spectral)
+    if nsr_q is not None and nsr_q < 0.5:
         reasons.append(
             f"median HF noise-to-signal {window_qa.nsr_median:.2f} approaching "
             f"threshold {montage_profile.nsr_threshold}"
         )
-    if line_q < 0.5:
+    if line_q is not None and line_q < 0.5:
         reasons.append(
             f"median mains ratio {window_qa.line_noise_ratio:.2f} approaching "
             f"threshold {montage_profile.line_ratio_threshold}"
         )
-    if window_qa.muscle_band_ratio > 0.45:
-        cleanliness -= 0.10
+    if window_qa.muscle_band_ratio is not None and window_qa.muscle_band_ratio > 0.45:
         reasons.append(f"elevated muscle-band ratio {window_qa.muscle_band_ratio:.2f}")
     scores["cleanliness"] = DimensionScore(_clip01(cleanliness), True)
 
@@ -233,7 +236,7 @@ def compute_dimension_scores(
     expected = rec.expected_n_channels
     if expected:
         integrity_assessed = True
-        present = window_qa.n_channels + n_dropped
+        present = window_qa.n_channels + n_dropped - n_missing
         if present < expected:
             integrity -= min(1.0, 2.0 * (expected - present) / expected)
             reasons.append(f"{expected - present} of {expected} channels missing")

@@ -125,11 +125,14 @@ def assess_windows(
         abs_p99.append(float(np.percentile(abs_seg, 99)))
         abs_max.append(float(abs_seg.max()))
 
-        with np.errstate(invalid="ignore"):
-            stds[:, w_i] = np.nanstd(seg, axis=1)
-            ptps[:, w_i] = np.nanmax(seg, axis=1) - np.nanmin(seg, axis=1)
-        stds[:, w_i] = np.nan_to_num(stds[:, w_i], nan=0.0)
-        ptps[:, w_i] = np.nan_to_num(ptps[:, w_i], nan=0.0)
+        # Masked reductions also handle an entirely missing EEG channel.
+        if finite.all():
+            stds[:, w_i] = seg.std(axis=1)
+            ptps[:, w_i] = np.ptp(seg, axis=1)
+        else:
+            masked = np.ma.masked_invalid(seg)
+            stds[:, w_i] = masked.std(axis=1).filled(0.0)
+            ptps[:, w_i] = (masked.max(axis=1) - masked.min(axis=1)).filled(0.0)
 
         # Detector 1: non-finite or numerically constant.
         missing_counts[:, w_i] = (~np.isfinite(raw_data_uv[:, a:b])).sum(axis=1)
@@ -210,9 +213,12 @@ def assess_windows(
     # own baseline across windows rather than against its neighbours.
     if n_win >= MIN_ROBUST_N:
         for c in range(n_ch):
-            if np.nanmedian(stds[c]) <= 0:
+            valid = ~(missing[c] | constant[c] | flat[c])
+            if valid.sum() < MIN_ROBUST_N:
                 continue
-            temporal_z[c] = np.abs(_robust_z(stds[c]))
+            # A lower-amplitude minority is not necessarily poor quality.
+            # Absolute flat/constant gates handle loss of signal separately.
+            temporal_z[c, valid] = _robust_z(stds[c, valid])
             temporal_outlier[c] = temporal_z[c] > montage_profile.amp_z
 
     bad_any = (
@@ -280,9 +286,9 @@ def assess_windows(
         montage_profile.bad_channel_broken_frac,
     )
 
-    def _nanmedian(arr: np.ndarray) -> float:
+    def _nanmedian(arr: np.ndarray) -> float | None:
         finite = arr[np.isfinite(arr)]
-        return float(np.median(finite)) if finite.size else 0.0
+        return float(np.median(finite)) if finite.size else None
 
     summary = WindowQASummary(
         n_windows=n_win,
@@ -302,7 +308,7 @@ def assess_windows(
         nsr_median=_nanmedian(nsr_vals),
         nsr_p90=float(np.percentile(nsr_vals[np.isfinite(nsr_vals)], 90))
         if np.isfinite(nsr_vals).any()
-        else 0.0,
+        else None,
         bad_channel_pct=100.0 * float(bad_ch_mask.mean()),
         bad_channels=bad_channels,
         clipped_channels=[ch_names[c] for c in clipped_idx if 0 <= c < n_ch],
@@ -340,7 +346,8 @@ def _channel_issues(
     for index, name in enumerate(ch_names):
         if index >= data_uv.shape[0]:
             break
-        absmax = float(np.nanmax(np.abs(data_uv[index]))) if data_uv.shape[1] else 0.0
+        finite_values = data_uv[index][np.isfinite(data_uv[index])]
+        absmax = float(np.max(np.abs(finite_values))) if finite_values.size else 0.0
         if not np.isfinite(absmax):
             absmax = 0.0
         kinds = []

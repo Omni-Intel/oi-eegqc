@@ -119,8 +119,8 @@ class WindowQASummary:
     low_corr_ratio: float
     # Continuous spectral measures kept alongside the binary flags: a score
     # built only from thresholded flags degenerates into a step function.
-    nsr_median: float
-    nsr_p90: float
+    nsr_median: float | None
+    nsr_p90: float | None
     bad_channel_pct: float
     bad_channels: list[str]
     clipped_channels: list[str]
@@ -128,8 +128,8 @@ class WindowQASummary:
     mean_abs_uv: float
     p99_abs_uv: float
     max_abs_uv: float
-    line_noise_ratio: float
-    muscle_band_ratio: float
+    line_noise_ratio: float | None
+    muscle_band_ratio: float | None
     clipped_ratio: float = 0.0
     persistent_clipped_channels: list[str] = field(default_factory=list)
     usable_windows: int = 0

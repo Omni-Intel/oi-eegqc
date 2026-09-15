@@ -81,7 +81,7 @@ def build_details(report):
                 if values.get("missing_samples"):
                     n, count = values["sample_count"], values["missing_samples"]
                     metrics.append(f"缺失 {count}/{n} 样本（{100 * count / n:.2f}%）")
-                for key, title in (("nsr", "高频/信号功率比"), ("line_ratio", "工频/信号功率比"), ("spatial_z", "空间离群 z"), ("temporal_z", "时间离群 |z|"), ("correlation", "最强邻路相关性")):
+                for key, title in (("nsr", "高频/信号功率比"), ("line_ratio", "工频/信号功率比"), ("spatial_z", "空间离群 z"), ("temporal_z", "时间离群 z（仅高侧判定）"), ("correlation", "最强邻路相关性")):
                     if values.get(key) is not None:
                         metrics.append(f"{title} {values[key]:.4f}")
                 for cause, key, threshold, direction in (("extreme", "ptp_uv", "ptp_max_uv", 1), ("flat", "ptp_uv", "ptp_min_uv", -1), ("high_nsr", "nsr", "nsr_threshold", 1), ("line", "line_ratio", "line_ratio_threshold", 1), ("spatial_outlier", "spatial_z", "amp_z", 1), ("temporal_outlier", "temporal_z", "amp_z", 1), ("low_corr", "correlation", "corr_threshold", -1)):
@@ -105,6 +105,13 @@ def build_details(report):
     unknowns = ["本页百分比是检测结果占比，不是病因概率或置信度。当前算法没有经设备/人群校准的概率模型，不提供虚构的置信区间。",
                 "异常定位精度受窗口长度与步长限制；窗口起止不等于伪迹精确起止，运动次数不能从异常窗口数推算。",
                 "阻抗、运动、电极脱落等原因需结合设备测量、现场记录和原始波形确认。"]
+    unknowns.append("时间离群以本记录有效窗口为相对基线，仅检测高侧偏离；多数状态不一定健康，追加数据可能改变基线和历史窗口判定。")
+    for value, title in ((getattr(qa, "nsr_median", None), "高频噪声"), (getattr(qa, "line_noise_ratio", None), "工频功率比")):
+        if value is None:
+            unknowns.append(f"{title}：未评估（没有有效频谱测量），未按零噪声计分；本次分数仅基于已完成检查，不能与完整频谱评估直接等同。")
+    muscle_ratio = getattr(qa, "muscle_band_ratio", None)
+    if muscle_ratio is not None and muscle_ratio > 0.45:
+        unknowns.append(f"20–45 Hz / 信号频段功率比为 {muscle_ratio:.3f}，来源待核实；脑电与肌电频谱可重叠，本项不单独扣分，也不能定位肌电发生秒数。")
     assessed = extras.get("assessed_dimensions") or []
     for key, title in (("integrity", "完整性"), ("stimulus_sync", "刺激同步")):
         if key not in assessed:

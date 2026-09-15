@@ -42,6 +42,58 @@ def make_rec(data: np.ndarray, sfreq: float = SFREQ, **kwargs) -> RecordingInput
 # --- Profiles and cutoffs -----------------------------------------------------
 
 
+@pytest.mark.parametrize("missing", [4, 8])
+def test_fully_missing_eeg_remains_in_quality_denominator(missing):
+    data = synth(8, 30)
+    data[:missing] = np.nan
+    report = evaluate_recording(make_rec(data, expected_n_channels=8))
+    assert report.n_channels_used == 8
+    assert report.extras["dropped_channels"] == []
+    assert report.extras["dimension_quality"]["integrity"] == 0
+    assert report.gqi == 0
+    assert report.odq == 0
+    for window in report.window_qa.window_evidence:
+        assert window["causes"]["missing"] == list(range(missing))
+        assert not set(range(missing)) & set(window["causes"].get("constant", []))
+
+
+@pytest.mark.parametrize("high_fraction", [0.2, 0.8])
+def test_temporal_baseline_does_not_reject_lower_amplitude_state(high_fraction):
+    t = np.arange(30 * 250) / 250
+    amplitude = np.where(t < 30 * high_fraction, 80., 20.)
+    data = np.tile(amplitude * np.sin(2 * np.pi * 10 * t), (8, 1))
+    report = evaluate_recording(make_rec(data))
+    low_windows = [w for w in report.window_qa.window_evidence
+                   if w["start_s"] > 30 * high_fraction + 2]
+    assert low_windows
+    assert all("temporal_outlier" not in w["causes"] for w in low_windows)
+    if high_fraction == 0.2:
+        assert any("temporal_outlier" in w["causes"] for w in report.window_qa.window_evidence)
+
+
+def test_beta_band_power_is_diagnostic_not_muscle_penalty():
+    t = np.arange(30 * 250) / 250
+    report = evaluate_recording(make_rec(np.tile(20 * np.sin(2 * np.pi * 25 * t), (8, 1))))
+    assert report.window_qa.muscle_band_ratio > 0.45
+    assert report.gqi == pytest.approx(100)
+    from oi_eegqc.report_details import build_details
+    assert "本项不单独扣分" in str(build_details(report))
+
+
+def test_unmeasurable_spectrum_is_null_and_does_not_reward_bad_cells():
+    t = np.arange(30 * 100) / 100
+    data = np.tile(20 * np.sin(2 * np.pi * 10 * t), (8, 1))
+    data[0] = 0
+    report = evaluate_recording(make_rec(data, sfreq=100))
+    assert report.window_qa.nsr_median is None
+    assert report.window_qa.line_noise_ratio is None
+    assert report.extras["dimension_quality"]["cleanliness"] == report.clean_ratio
+    from oi_eegqc.report_details import build_details
+    assert "没有有效频谱测量" in str(build_details(report))
+    import json
+    json.dumps(report.to_dict(), allow_nan=False)
+
+
 def test_select_duration_and_montage_profiles():
     cfg = default_config()
     assert cfg.select_duration(6).name == "ultra_short"
@@ -182,14 +234,17 @@ def test_clean_ratio_and_usable_ratio_are_distinct_quantities():
     assert report.clean_ratio != pytest.approx(report.odq / 100.0)
 
 
-def test_gqi_reaches_zero_for_unusable_data():
+def test_gqi_remains_low_for_unusable_data():
     """Regression: pure noise used to bottom out at GQI 26 because untested
     dimensions handed out their weight for free."""
     rng = np.random.default_rng(7)
     data = rng.standard_normal((32, 5000)) * 20.0
     report = evaluate_recording(make_rec(data))
     assert report.letter_grade is None
-    assert report.gqi < 5.0
+    # Removing the unsupported muscle penalty restores 3.75 points; independent
+    # noise/correlation rules must still reject all windows and keep GQI low.
+    assert report.odq == 0
+    assert report.gqi < 10.0
 
 
 def test_unassessed_dimensions_get_no_free_credit():

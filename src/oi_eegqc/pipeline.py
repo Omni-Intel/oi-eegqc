@@ -37,6 +37,7 @@ def evaluate_recording(
     eeg = eeg * recording.to_uv_scale()
 
     raw_eeg = eeg
+    n_missing = int((~np.isfinite(raw_eeg).any(axis=1)).sum())
     eeg = highpass_channels(raw_eeg, recording.sfreq, cfg.highpass_hz)
 
     duration_s = recording.resolved_duration_s()
@@ -59,6 +60,7 @@ def evaluate_recording(
         n_channels_used=eeg.shape[0],
         n_dropped=len(dropped),
         cfg=cfg,
+        n_missing=n_missing,
     )
 
     scores, reasons = compute_dimension_scores(
@@ -68,6 +70,7 @@ def evaluate_recording(
         mon_prof,
         cfg,
         n_dropped=len(dropped),
+        n_missing=n_missing,
     )
     gqi, penalties, effective_weights = gqi_from_scores(scores, cfg)
 
@@ -101,6 +104,11 @@ def evaluate_recording(
             "clipped_channels": window_qa.clipped_channels,
             "dropped_channels": dropped,
             "input_unit": recording.unit,
+            "frequency_coverage": {
+                "signal_band_complete": recording.sfreq / 2 - 1 >= cfg.signal_band_hz[1],
+                "noise_band_complete": recording.sfreq / 2 - 1 >= cfg.noise_band_hz[1],
+                "line_measurable": cfg.line_hz + cfg.line_halfwidth_hz < recording.sfreq / 2,
+            },
             "stimulus_duration_s": recording.stimulus_duration_s,
             "sync_error_ms": recording.sync_error_ms,
             "decision_tracks": {"letter": False, "availability": False},
