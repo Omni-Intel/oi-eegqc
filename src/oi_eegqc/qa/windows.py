@@ -60,7 +60,8 @@ def assess_windows(
 
     Detectors marking a channel x window cell as bad:
 
-    ``constant``          non-finite samples or zero variance
+    ``missing``           non-finite raw samples
+    ``constant``          finite samples with zero variance
     ``flat``              peak-to-peak below ``ptp_min_uv`` (dead lead)
     ``extreme_amp``       peak-to-peak above ``ptp_max_uv`` (saturation, movement)
     ``temporal_outlier``  spread far from the channel's own median spread
@@ -80,6 +81,8 @@ def assess_windows(
     n_win = len(windows)
 
     constant = np.zeros((n_ch, n_win), dtype=bool)
+    missing = np.zeros((n_ch, n_win), dtype=bool)
+    missing_counts = np.zeros((n_ch, n_win), dtype=int)
     flat = np.zeros((n_ch, n_win), dtype=bool)
     extreme_amp = np.zeros((n_ch, n_win), dtype=bool)
     temporal_outlier = np.zeros((n_ch, n_win), dtype=bool)
@@ -95,6 +98,9 @@ def assess_windows(
     nsr_vals = np.full((n_ch, n_win), np.nan, dtype=float)
     line_vals = np.full((n_ch, n_win), np.nan, dtype=float)
     muscle_vals = np.full((n_ch, n_win), np.nan, dtype=float)
+    spatial_z = np.full((n_ch, n_win), np.nan, dtype=float)
+    temporal_z = np.full((n_ch, n_win), np.nan, dtype=float)
+    corr_vals = np.full((n_ch, n_win), np.nan, dtype=float)
 
     noise_band = cfg.resolved_noise_band(sfreq)
     sig_lo, sig_hi = cfg.signal_band_hz
@@ -126,25 +132,28 @@ def assess_windows(
         ptps[:, w_i] = np.nan_to_num(ptps[:, w_i], nan=0.0)
 
         # Detector 1: non-finite or numerically constant.
-        constant[:, w_i] = (~finite.all(axis=1)) | (stds[:, w_i] < 1e-12)
+        missing_counts[:, w_i] = (~np.isfinite(raw_data_uv[:, a:b])).sum(axis=1)
+        missing[:, w_i] = missing_counts[:, w_i] > 0
+        constant[:, w_i] = finite.all(axis=1) & (stds[:, w_i] < 1e-12)
 
         # Detectors 2 and 3: absolute amplitude gates in microvolts.
-        flat[:, w_i] = ptps[:, w_i] < montage_profile.ptp_min_uv
+        flat[:, w_i] = (ptps[:, w_i] < montage_profile.ptp_min_uv) & ~missing[:, w_i]
         extreme_amp[:, w_i] = ptps[:, w_i] > montage_profile.ptp_max_uv
 
         # Detector 5: spatial amplitude outliers, high side only. The low side
         # is already covered by the flat gate, and including it would make the
         # statistic collapse when half the montage is dead.
         if n_ch >= MIN_ROBUST_N:
-            alive = ~(constant[:, w_i] | flat[:, w_i])
+            alive = ~(constant[:, w_i] | flat[:, w_i] | missing[:, w_i])
             if alive.sum() >= MIN_ROBUST_N:
                 z = np.zeros(n_ch)
                 z[alive] = _robust_z(stds[alive, w_i])
+                spatial_z[alive, w_i] = z[alive]
                 spatial_outlier[:, w_i] = alive & (z > montage_profile.amp_z)
 
         # Detectors 6 and 7: spectral ratios, one Welch estimate per cell.
         for c in range(n_ch):
-            if constant[c, w_i]:
+            if constant[c, w_i] or missing[c, w_i]:
                 continue
             spec = _cell_spectrum(np.nan_to_num(seg[c], nan=0.0), sfreq)
             if spec is None:
@@ -178,7 +187,7 @@ def assess_windows(
         # Detector 8: low spatial coupling. After common-average or ICA
         # cleaning the mean pairwise correlation collapses, so score each
         # channel by its strongest couplings rather than its average one.
-        usable_mask = ~(constant[:, w_i] | flat[:, w_i])
+        usable_mask = ~(constant[:, w_i] | flat[:, w_i] | missing[:, w_i])
         if montage_profile.corr_detector_enabled and usable_mask.sum() >= 3:
             good = np.nan_to_num(seg[usable_mask], nan=0.0)
             good = good - good.mean(axis=1, keepdims=True)
@@ -193,7 +202,8 @@ def assess_windows(
                 row = row[~np.isnan(row)]
                 if row.size == 0:
                     continue
-                if float(np.mean(np.sort(row)[-k:])) < montage_profile.corr_threshold:
+                corr_vals[c, w_i] = float(np.mean(np.sort(row)[-k:]))
+                if corr_vals[c, w_i] < montage_profile.corr_threshold:
                     low_corr[c, w_i] = True
 
     # Detector 4: temporal amplitude outliers, judged against each channel's
@@ -202,10 +212,12 @@ def assess_windows(
         for c in range(n_ch):
             if np.nanmedian(stds[c]) <= 0:
                 continue
-            temporal_outlier[c] = np.abs(_robust_z(stds[c])) > montage_profile.amp_z
+            temporal_z[c] = np.abs(_robust_z(stds[c]))
+            temporal_outlier[c] = temporal_z[c] > montage_profile.amp_z
 
     bad_any = (
         constant
+        | missing
         | flat
         | extreme_amp
         | temporal_outlier
@@ -213,7 +225,6 @@ def assess_windows(
         | high_nsr
         | line_noise
         | low_corr
-        | clipped
     )
     clipped_idx = np.flatnonzero(clipped.any(axis=1)).tolist()
 
@@ -225,7 +236,7 @@ def assess_windows(
     usable_window_ratio = float(
         (bad_frac_per_window <= montage_profile.max_bad_ch_frac_per_window).mean()
     )
-    detectors = dict(constant=constant, flat=flat, extreme=extreme_amp,
+    detectors = dict(missing=missing, constant=constant, flat=flat, extreme=extreme_amp,
                      temporal_outlier=temporal_outlier, spatial_outlier=spatial_outlier,
                      high_nsr=high_nsr, line=line_noise, low_corr=low_corr, clipped=clipped)
     evidence = [
@@ -235,7 +246,16 @@ def assess_windows(
              causes={name: np.flatnonzero(flags[:, i]).tolist()
                      for name, flags in detectors.items() if flags[:, i].any()},
              clipping_plateau_ratio={str(c): float(plateau_ratio[c, i])
-                                     for c in np.flatnonzero(clipped[:, i])})
+                                     for c in np.flatnonzero(clipped[:, i])},
+             measurements={str(c): dict(
+                 ptp_uv=float(ptps[c, i]),
+                 missing_samples=int(missing_counts[c, i]), sample_count=b-a,
+                 nsr=float(nsr_vals[c, i]) if np.isfinite(nsr_vals[c, i]) else None,
+                 line_ratio=float(line_vals[c, i]) if np.isfinite(line_vals[c, i]) else None,
+                 spatial_z=float(spatial_z[c, i]) if np.isfinite(spatial_z[c, i]) else None,
+                 temporal_z=float(temporal_z[c, i]) if np.isfinite(temporal_z[c, i]) else None,
+                 correlation=float(corr_vals[c, i]) if np.isfinite(corr_vals[c, i]) else None,
+             ) for c in np.flatnonzero(bad_any[:, i] | clipped[:, i])})
         for i, (a, b) in enumerate(windows)
     ]
 

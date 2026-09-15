@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .grades import DIMENSIONS
+from ..report_details import build_details
 
 _PLACEHOLDER = re.compile(r"^(ch|eeg)\d+$", re.IGNORECASE)
 
@@ -108,7 +109,7 @@ def _dimension_cards(extras: dict) -> list[dict]:
 
 def _headline(report, issues: list[dict]) -> str:
     if getattr(report, "hard_failed", False):
-        return "这份记录有硬问题，质量分数记为 0，建议重采或先修采集链路"
+        return "本次触发质量规则，总分记为 0；请先核对下方依据和采集参数，再决定是否重采"
     gqi = float(getattr(report, "gqi", 0) or 0)
     if not issues:
         if gqi >= 90:
@@ -274,6 +275,7 @@ def build_operator(report) -> dict:
         deduped = [{"text": "没看出需要处理的导联。"}]
 
     return {
+        **build_details(report),
         "headline": _headline(report, issues),
         "layout": _layout_line(extras, n_channels),
         "dimensions": _dimension_cards(extras),

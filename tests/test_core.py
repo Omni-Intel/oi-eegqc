@@ -256,7 +256,7 @@ def test_event_failure_hard_fails():
     assert report.availability is None
     assert report.duration_profile == "ultra_short"
     assert report.montage_profile == "low_density"
-    assert "硬问题" in report.extras["operator"]["headline"]
+    assert "质量规则" in report.extras["operator"]["headline"]
 
 
 def test_hard_fail_operator_notes_not_letter_track():
@@ -274,6 +274,9 @@ def test_operator_handles_multi_kind_channel_and_context():
     from oi_eegqc.scoring.explain import build_operator
 
     class _Fake:
+        window_qa = None
+        duration_s = 12.0
+        threshold_version = "test"
         gqi = 55.0
         hard_failed = False
         hard_fail_reasons = []

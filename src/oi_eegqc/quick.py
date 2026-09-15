@@ -586,6 +586,8 @@ class Controller(QObject):
             }
         extras = getattr(report, "extras", None) or {}
         card = dict(extras.get("operator") or {})
+        from .report_details import build_details
+        card.update(build_details(report))
         card["name"] = label
         card["score"] = f"{float(report.gqi):.0f}"
         card.setdefault("headline", "")

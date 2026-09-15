@@ -50,17 +50,49 @@ def test_brief_whole_head_clipping_only_marks_affected_windows():
     assert report.usable_ratio == pytest.approx(qa.usable_windows / qa.n_windows)
 
 
-def test_sustained_clipping_still_rejects_and_retains_evidence():
+def test_sustained_platforms_retain_evidence_but_do_not_force_zero():
     data = np.clip(synth_clean(8, 250, 30, seed=3) * 100, -400, 400)
     report = evaluate_recording(recording(data))
-    assert report.gqi == 0
+    assert not report.hard_failed
+    assert 0 < report.gqi < 40  # amplitude/noise still penalize this recording
     assert len(report.window_qa.persistent_clipped_channels) >= 4
     assert report.extras["scoring_config"]["clip_frac_threshold"] == .01
-    assert report.extras["algorithm_version"] == "oi-eegqc-score-v2"
+    assert report.extras["algorithm_version"] == "oi-eegqc-score-v3"
     assert report.extras["usable_window_rule"]["max_bad_channels"] == 2
     assert report.window_qa.window_evidence[0]["clipping_plateau_ratio"]
     notes = " ".join(x["text"] for x in report.extras["operator"]["notes"])
     assert "可用窗口" in notes and "未通过窗口示例" in notes and "疑似削顶" in notes
+
+
+def test_spike_does_not_hide_local_upper_plateau():
+    t = np.arange(625) / 250
+    x = np.minimum(30 * np.sin(2 * np.pi * 10 * t), 10)
+    x[100] = 100
+    assert plateau_fractions(x[None], 3, 1)[0] > .01
+
+
+def test_quantized_sine_platforms_are_diagnostic_only():
+    t = np.arange(15000) / 250
+    x = np.tile(np.round(30 * np.sin(2 * np.pi * t)), (8, 1))
+    result = evaluate_recording(recording(x))
+    assert result.window_qa.clipped_channels
+    assert not result.hard_failed
+    for w in result.window_qa.window_evidence:
+        if set(w['causes']) == {'clipped'}:
+            assert w['usable']
+            assert not w['bad_channels']
+    assert any(set(w['causes']) == {'clipped'} for w in result.window_qa.window_evidence)
+
+
+def test_nonfinite_sample_is_missing_not_constant():
+    x = synth_clean(8, 250, 10, seed=2)
+    x[0, 750] = np.nan
+    result = evaluate_recording(recording(x))
+    for w in result.window_qa.window_evidence:
+        if w['start_s'] <= 3 < w['end_s']:
+            assert w['causes']['missing'] == [0]
+            assert 0 not in w['causes'].get('constant', [])
+            assert w['measurements']['0']['missing_samples'] == 1
 
 
 def test_exceeding_channel_budget_does_not_spread_to_other_windows():
