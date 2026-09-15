@@ -21,7 +21,7 @@ Existing subprocess crash recovery, scoring caches and upload-round semantics ar
 
 ## Versioned results
 
-Application v0.6.0, algorithm `oi-eegqc-score-v3`, thresholds `oi-eegqc-v0.6.0`, report `oi-eegqc-report-v3`. The stdio envelope remains `oi-eegqc-protocol-v1`. The algorithm change invalidates old score caches but not upload identities or upload records. Plateau evidence is diagnostic only; missing samples have a separate window cause.
+Application v0.6.1, algorithm `oi-eegqc-score-v3`, thresholds `oi-eegqc-v0.6.0`, report `oi-eegqc-report-v3`. The stdio envelope remains `oi-eegqc-protocol-v1`. The algorithm change invalidates old score caches but not upload identities or upload records. Plateau evidence is diagnostic only; missing samples have a separate window cause.
 
 Reports retain effective configuration, channel names, window rules, algorithm version and window-level causes. Unknown hardware rails remain unknown: extrema plateaus are labelled suspected clipping. See [scoring rules](scoring.md).
 
