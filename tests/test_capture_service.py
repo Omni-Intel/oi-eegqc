@@ -29,6 +29,7 @@ def test_headless_handoff_scores_then_uses_existing_upload_engine(tmp_path, monk
     from oi_eegqc import desktop_upload, intake, score_cache
     folder, recording = fixture_round(tmp_path)
     called = []
+    uploaded = []
 
     class Cache:
         def __init__(self, path): pass
@@ -45,6 +46,8 @@ def test_headless_handoff_scores_then_uses_existing_upload_engine(tmp_path, monk
 
     class Store:
         def __init__(self, path): self.directory = Path(path)
+        def completed_for(self, root):
+            return {'status': 'completed', 'upload_id': 'cloud-1'} if uploaded else None
         def prepare(self, roots, scored, progress):
             assert roots == [folder]
             assert recording in scored
@@ -56,6 +59,7 @@ def test_headless_handoff_scores_then_uses_existing_upload_engine(tmp_path, monk
         def __init__(self, store, batch, data, progress): pass
         def run(self):
             called.append('upload')
+            uploaded.append(True)
             return {'status': 'completed', 'upload_id': 'cloud-1'}
 
     monkeypatch.setattr(score_cache, 'ScoreCache', Cache)
@@ -66,6 +70,11 @@ def test_headless_handoff_scores_then_uses_existing_upload_engine(tmp_path, monk
                       data_directory=tmp_path / 'app')
     assert called == ['cache', 'prepare', 'upload']
     assert result['score'] == 84.25 and result['upload_id'] == 'cloud-1'
+    report_mtime = (folder / 'file-quality.json').stat().st_mtime_ns
+    repeated = complete({'schema': SCHEMA, 'request_id': 'req-2', 'folder': str(folder)},
+                        data_directory=tmp_path / 'app')
+    assert repeated['upload_id'] == 'cloud-1' and called.count('upload') == 1
+    assert (folder / 'file-quality.json').stat().st_mtime_ns == report_mtime
 
 
 def test_handoff_rejects_unmatched_quality_before_upload(tmp_path):
@@ -77,3 +86,27 @@ def test_handoff_rejects_unmatched_quality_before_upload(tmp_path):
     with pytest.raises(ValueError, match='不匹配'):
         complete({'schema': SCHEMA, 'request_id': 'req-1', 'folder': str(folder)},
                  data_directory=tmp_path / 'app')
+
+
+def test_completed_folder_is_reused_only_when_unchanged(tmp_path):
+    import hashlib
+    from oi_eegqc.desktop_upload import BatchStore, UploadError
+
+    folder = tmp_path / 'round'
+    folder.mkdir()
+    recording = folder / 'recording.edf'
+    recording.write_bytes(b'original recording')
+    info = recording.stat()
+    digest = hashlib.sha256(recording.read_bytes()).hexdigest()
+    store = BatchStore(tmp_path / 'app' / 'uploads')
+    batch = store.prepare([folder], {recording: (info.st_size, info.st_mtime_ns, digest)})
+    batch['status'] = 'completed'
+    batch['upload_id'] = 'cloud-1'
+    for entry in batch['entries']:
+        entry['done'] = True
+    store.save(batch)
+
+    assert store.completed_for(folder)['upload_id'] == 'cloud-1'
+    recording.write_bytes(b'changed recording')
+    with pytest.raises(UploadError, match='不会重复上传'):
+        store.completed_for(folder)

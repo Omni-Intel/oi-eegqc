@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oi-eegqc"
-version = "0.6.5"
+version = "0.6.6"
 description = "Local EEG quality scoring and resumable collection uploads for the desktop."
 readme = "README.md"
 requires-python = ">=3.9"

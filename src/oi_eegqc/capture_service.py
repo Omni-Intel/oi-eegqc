@@ -75,10 +75,17 @@ def complete(request, progress=lambda value: None, data_directory=None):
                     raise ValueError("评分期间脑电文件发生变化")
                 cache.store(digest, {}, report)
         report_path = folder / "file-quality.json"
-        atomic_json(report_path, {"schema": SCHEMA, "recording": str(recording.relative_to(folder)), "sha256": digest, "report": report})
+        file_report = {"schema": SCHEMA, "recording": str(recording.relative_to(folder)), "sha256": digest, "report": report}
+        try:
+            previous_report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous_report = None
+        if previous_report != file_report:
+            atomic_json(report_path, file_report)
         progress({"phase": "preparing", "message": "正在核验文件与准备上传"})
-        batch = store.prepare([folder], {recording: (*identity, digest)}, progress=lambda name: progress({"phase": "preparing", "message": "正在核验 " + Path(name).name}))
-        if batch["status"] != "completed":
+        batch = store.completed_for(folder)
+        if batch is None:
+            batch = store.prepare([folder], {recording: (*identity, digest)}, progress=lambda name: progress({"phase": "preparing", "message": "正在核验 " + Path(name).name}))
             progress({"phase": "uploading", "message": "正在上传原始数据"})
             batch = UploadSession(store, batch, data_directory, lambda info: progress({"phase": "uploading", **info})).run()
         result = {"schema": SCHEMA, "request_id": request["request_id"], "session_id": plan["session_id"],

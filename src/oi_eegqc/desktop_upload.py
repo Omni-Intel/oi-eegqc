@@ -229,6 +229,24 @@ class BatchStore:
             return pointer, record
         return pointer, None
 
+    def completed_for(self, root):
+        """Return a previously completed, unchanged folder without allocating a new round."""
+        root = normalize_roots([root])[0]
+        _, previous = self._folder_record(root)
+        if not previous or previous.get("status") != "completed":
+            return None
+        if not previous.get("upload_id") or not all(item.get("done") for item in previous["entries"]):
+            raise UploadError("已上传记录不完整，请联系维护人员核查")
+        from .score_cache import ScoreCache
+
+        with ScoreCache(self.directory.parent / "score-cache.sqlite3") as cache:
+            current = scan_sources([root], labels=previous.get("labels"), hash_cache=cache)
+        identity = lambda item: (item["source"], item["relative"], item["size"], item["mtime"],
+                                 item["directory"], item.get("sha256"))
+        if [identity(item) for item in current] != [identity(item) for item in previous["entries"]]:
+            raise UploadError("这轮数据已上传，但本地文件后来发生变化；不会重复上传，请联系维护人员核查")
+        return previous
+
     def prepare(self, roots, scored, cancelled=lambda: False, progress=lambda name: None, new_acquisition=False):
         roots = normalize_roots(roots)
         scored = {os.path.normcase(str(Path(path).resolve())): value for path, value in scored.items()}
