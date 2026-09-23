@@ -80,7 +80,11 @@ Interrupted uploads can continue without retransmitting confirmed, unchanged fil
 
 ### Windows application
 
-Use the [published installer](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe). It installs per user without administrator privileges. The application supports in-place update checks and downloads. Scoring remains local; checking for updates does not upload EEG data.
+Use the [published installer](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe) or the [portable zip](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip). Silent install from GitHub Releases:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1
+```
 
 ### Command line
 

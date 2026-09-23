@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: OmniIntel.OIEEGQC
+PackageVersion: 0.6.2
+PackageLocale: zh-CN
+Publisher: Omni-Intelligence
+PublisherUrl: https://github.com/Omni-Intel/oi-eegqc
+PublisherSupportUrl: https://github.com/Omni-Intel/oi-eegqc/releases
+PackageName: 脑电质量评估
+PackageUrl: https://github.com/Omni-Intel/oi-eegqc
+License: MIT
+LicenseUrl: https://github.com/Omni-Intel/oi-eegqc/blob/main/LICENSE
+ShortDescription: 本地 EEG 采集质控与文件夹上传
+Description: 在采集电脑上对 EDF/BDF/NPY 做本地质量评分，并把采集文件夹上传到指定收件主机。评分不上传脑电数据。
+Moniker: oi-eegqc
+Tags:
+  - eeg
+  - qc
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

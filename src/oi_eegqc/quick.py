@@ -84,8 +84,10 @@ class ChannelModel(QAbstractListModel):
         self.endResetModel()
 
     def patch(self, index, **values):
-        self.rows[index].update(values)
-        self.dataChanged.emit(self.index(index), self.index(index), [])
+        changes={k:v for k,v in values.items() if self.rows[index].get(k)!=v}
+        if not changes:return
+        self.rows[index].update(changes)
+        self.dataChanged.emit(self.index(index), self.index(index), [role for role,name in self.roles.items() if name.decode() in changes])
 
 
 class FileModel(QAbstractListModel):
@@ -134,8 +136,10 @@ class FileModel(QAbstractListModel):
         self.endInsertRows()
 
     def patch(self, index, **values):
-        self.rows[index].update(values)
-        self.dataChanged.emit(self.index(index), self.index(index), [])
+        changes={k:v for k,v in values.items() if self.rows[index].get(k)!=v}
+        if not changes:return
+        self.rows[index].update(changes)
+        self.dataChanged.emit(self.index(index), self.index(index), [role for role,name in self.roles.items() if name.decode() in changes])
 
     def names(self, folders=()):
         from collections import defaultdict
@@ -421,6 +425,10 @@ class Controller(QObject):
     def remove(self, all_rows=False):
         if self._busy:
             return
+        if getattr(self,'record_bridge',None):
+            self.record_bridge.remove_paths([r['path'] for r in self.files.rows if all_rows or r['chosen']])
+            self.record_bridge.refresh()
+            if self._upload.active:return
         for i in range(len(self.files.rows)-1, -1, -1):
             if all_rows or self.files.rows[i]["chosen"]:
                 self.files.beginRemoveRows(QModelIndex(), i, i)
@@ -438,6 +446,8 @@ class Controller(QObject):
     def prepareUpload(self):
         if not self.canUpload:
             return
+        if getattr(self,'record_bridge',None) and not self.record_bridge.upload_allowed(self._folder_roots):
+            self._notice='所选文件夹包含已移除记录，请改选需要上传的记录文件夹';self.changed.emit();return
         scored = {
             r["path"]: (*r["scored_stat"], r.get("content_sha256"))
             for r in self.files.rows
@@ -874,6 +884,14 @@ def main():
     app = QGuiApplication(sys.argv[:1])
     app.setOrganizationName("Omni-Intelligence")
     app.setApplicationName("EEGQC")
+    args=sys.argv[1:]
+    bridge_enabled=not args or args[0]=='--record-hub'
+    hub=None
+    if bridge_enabled:
+        from .record_link import RecordHub
+        from .record_bridge import SharedRecordView,notify_existing
+        hub=RecordHub(args[1] if args else None)
+        if notify_existing(hub.path):return 0
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
     icon = QIcon(str(root / "assets" / "omni-intelli logo" / "OMNI_LOGO_100x100.ico"))
     app.setWindowIcon(icon)
@@ -885,9 +903,15 @@ def main():
     if not engine.rootObjects():
         return 1
     window = engine.rootObjects()[0]
+    if bridge_enabled:
+        controller.record_bridge=SharedRecordView(controller,window,hub)
+        controller.record_bridge.listen()
+        from .window_activation import show_window
+        QTimer.singleShot(0,lambda:show_window(window))
+        QTimer.singleShot(0,controller.record_bridge.refresh)
     app.aboutToQuit.connect(controller.shutdown)
     args = sys.argv[1:]
-    if args:
+    if args and not bridge_enabled:
         import json
         from dataclasses import asdict
         output = Path(args[-1])

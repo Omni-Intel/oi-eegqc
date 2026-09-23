@@ -28,7 +28,7 @@ Run-Checked (Join-Path $appDir 'OI-EEGQC.exe') ('--startup-check "' + $testDir +
 if ($CheckUpdate) {
     Run-Checked (Join-Path $appDir 'OI-EEGQC.exe') ('--update-check "' + $testDir + '\update.json"')
     $update = Get-Content -LiteralPath (Join-Path $testDir 'update.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($update.status -eq 'error' -or -not $update.latest) { throw 'Mirror update check failed' }
+    if ($update.status -eq 'error' -or -not $update.latest) { throw 'GitHub update check failed' }
 }
 $startup = Get-Content -LiteralPath (Join-Path $testDir 'startup.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($startup.heavy_modules.Count -ne 0 -or -not $startup.icon_loaded -or $startup.title -ne 'Omni-Intelligence EEG Quality Control App') { throw 'Startup check failed' }

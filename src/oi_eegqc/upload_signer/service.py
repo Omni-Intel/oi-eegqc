@@ -12,7 +12,7 @@ import threading
 from pathlib import Path, PurePosixPath
 
 
-INBOX_PREFIX = "eeg/inbox"
+INBOX_PREFIX = "neuro-lm/data/inbox"
 MAX_SINGLE_PUT = 5 * 1024**3
 MAX_FILES_PER_REQUEST = 5000
 MAX_PARTS_PER_REQUEST = 1000

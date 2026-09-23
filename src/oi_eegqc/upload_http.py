@@ -1,13 +1,18 @@
-"""Strict HTTPS transport. Anonymous signing and direct object uploads."""
+"""LAN signing service and HTTPS object uploads to the dedicated COS bucket."""
 import http.client
 import json
+import os
 import ssl
 import socket
 import threading
 from urllib.parse import quote, urlsplit, unquote
 
-ORIGIN = "https://eeg-upload.kunpeng.blog"
-PREFIX = "eeg/inbox/"
+INTRANET_HOST = "personnel.intra.omni-intel.cn"
+INTRANET_PORT = 8443
+ALLOWED_HOSTS = {INTRANET_HOST, "172.16.1.249", "127.0.0.1", "localhost"}
+COS_HOST = "neurolm-1442740494.cos.ap-beijing.myqcloud.com"
+ORIGIN = os.environ.get("OI_EEGQC_UPLOAD_ORIGIN", f"https://{INTRANET_HOST}")
+PREFIX = "neuro-lm/data/inbox/"
 MAX_SINGLE_PUT = 5 * 1024**3
 PART_SIZE = 64 * 1024**2
 
@@ -21,13 +26,39 @@ class NetworkUnavailable(Exception):
     """No allocating request was sent."""
 
 
+def _origin():
+    parsed = urlsplit(ORIGIN)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in ALLOWED_HOSTS:
+        raise ValueError("upload origin is not an allowed intranet host")
+    return parsed
+
+
 def validate_put_url(url, object_key):
     parsed = urlsplit(url)
-    hosts = {"xiekp.tos-cn-beijing.volces.com", "tos-cn-beijing.volces.com"}
-    expected = "/" + object_key if parsed.hostname == "xiekp.tos-cn-beijing.volces.com" else "/xiekp/" + object_key
-    if (parsed.scheme != "https" or parsed.netloc not in hosts or parsed.fragment
-            or unquote(parsed.path) != expected or not parsed.query):
+    if parsed.hostname==COS_HOST:
+        if parsed.scheme!='https' or parsed.port not in (None,443) or parsed.username or parsed.password or parsed.fragment or not parsed.query or unquote(parsed.path)!='/'+object_key or not object_key.startswith(PREFIX) or '..' in object_key.split('/'):raise ValueError('invalid COS destination')
+        return
+    expected = "/objects/" + object_key
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname not in ALLOWED_HOSTS
+        or parsed.fragment
+        or unquote(parsed.path) != expected
+        or not parsed.query
+    ):
         raise ValueError("invalid signed destination")
+
+
+def _connection(parsed, timeout):
+    if parsed.hostname not in ALLOWED_HOSTS and not (parsed.hostname==COS_HOST and parsed.scheme=='https'):
+        raise ValueError("upload host is not an allowed intranet address")
+    if parsed.scheme == "https":
+        return http.client.HTTPSConnection(
+            parsed.hostname, parsed.port, timeout=timeout, context=ssl.create_default_context()
+        )
+    if parsed.scheme == "http":
+        return http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=timeout)
+    raise ValueError("invalid upload origin")
 
 
 class SignClient:
@@ -61,10 +92,10 @@ class SignClient:
             connection.close()
 
     def health(self):
-        connection = http.client.HTTPSConnection("eeg-upload.kunpeng.blog", timeout=8, context=ssl.create_default_context())
+        connection = _connection(_origin(), 8)
         self._track(connection)
         try:
-            connection.request("GET", "/health")
+            connection.request("GET", "/upload-health" if _origin().hostname == INTRANET_HOST else "/health")
             if connection.getresponse().status != 200:
                 raise NetworkUnavailable()
         except (OSError, http.client.HTTPException):
@@ -88,10 +119,9 @@ class SignClient:
 
     def _request_once(self, route, payload=None, method="POST"):
         body = b"" if payload is None else json.dumps(payload).encode("utf-8")
-        connection = http.client.HTTPSConnection("eeg-upload.kunpeng.blog", timeout=30, context=ssl.create_default_context())
+        connection = _connection(_origin(), 30)
         self._track(connection)
         try:
-            # Connect and verify TLS before any allocating HTTP request is sent.
             try:
                 connection.connect()
             except ssl.SSLError:
@@ -188,7 +218,7 @@ class SignClient:
     def _put_range(self, url, key, source, offset, size, cancelled, progress):
         validate_put_url(url, key)
         parsed = urlsplit(url)
-        connection = http.client.HTTPSConnection(parsed.hostname, timeout=30, context=ssl.create_default_context())
+        connection = _connection(parsed, 30)
         self._track(connection)
         stream = None
         try:
@@ -197,7 +227,8 @@ class SignClient:
             stream = open(source, "rb") if source is not None else None
             if stream:
                 stream.seek(offset)
-            connection.putrequest("PUT", parsed.path + "?" + parsed.query)
+            path = parsed.path + ("?" + parsed.query if parsed.query else "")
+            connection.putrequest("PUT", path)
             connection.putheader("Content-Length", str(size))
             connection.endheaders()
             sent = 0

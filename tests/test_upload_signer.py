@@ -13,13 +13,13 @@ class Storage:
         self.begun = []
 
     def begin_round(self, upload_id, round_id, created_at):
-        prefix = f"eeg/inbox/{upload_id}/"
+        prefix = f"neuro-lm/data/inbox/{upload_id}/"
         self.objects.pop(prefix + "_COMPLETE", None)
         self.objects[prefix + "_UPDATING"] = round_id
         self.begun.append((upload_id, round_id))
 
     def finish_round(self, upload_id, round_id, completed_at):
-        prefix = f"eeg/inbox/{upload_id}/"
+        prefix = f"neuro-lm/data/inbox/{upload_id}/"
         self.objects[prefix + "_COMPLETE"] = round_id
         self.objects.pop(prefix + "_UPDATING", None)
 
@@ -65,7 +65,7 @@ def start(coordinator, upload_id=None, request_id="request-0001"):
 def test_round_request_is_idempotent_and_invalidates_old_complete(coordinator):
     service, storage = coordinator
     upload_id, round_id = start(service)
-    storage.objects[f"eeg/inbox/{upload_id}/_COMPLETE"] = "old"
+    storage.objects[f"neuro-lm/data/inbox/{upload_id}/_COMPLETE"] = "old"
     service.db.execute("UPDATE collections SET current_round_id = NULL WHERE upload_id = ?", (upload_id,))
     service.db.execute("UPDATE rounds SET state = 'complete' WHERE round_id = ?", (round_id,))
     service.db.commit()
@@ -73,8 +73,8 @@ def test_round_request_is_idempotent_and_invalidates_old_complete(coordinator):
     second = service.start_round(upload_id, "request-0002")
     same = service.start_round(upload_id, "request-0002")
     assert second == same
-    assert f"eeg/inbox/{upload_id}/_COMPLETE" not in storage.objects
-    assert storage.objects[f"eeg/inbox/{upload_id}/_UPDATING"] == second["round_id"]
+    assert f"neuro-lm/data/inbox/{upload_id}/_COMPLETE" not in storage.objects
+    assert storage.objects[f"neuro-lm/data/inbox/{upload_id}/_UPDATING"] == second["round_id"]
 
 
 def test_sealed_manifest_retry_and_round_completion_are_idempotent(coordinator):
@@ -85,14 +85,14 @@ def test_sealed_manifest_retry_and_round_completion_are_idempotent(coordinator):
     service.seal_round(upload_id, round_id, 1)
     service.register_files(upload_id, round_id, manifest)
     signed = service.sign_single(upload_id, round_id, ["session/a.npy"])
-    assert signed[0]["objectKey"] == f"eeg/inbox/{upload_id}/session/a.npy"
+    assert signed[0]["objectKey"] == f"neuro-lm/data/inbox/{upload_id}/session/a.npy"
     service.mark_single_complete(
         upload_id, round_id, [{"path": "session/a.npy", "size": 3, "etag": "etag"}]
     )
     first = service.complete_round(upload_id, round_id)
     second = service.complete_round(upload_id, round_id)
     assert first["state"] == second["state"] == "complete"
-    assert storage.objects[f"eeg/inbox/{upload_id}/_COMPLETE"] == round_id
+    assert storage.objects[f"neuro-lm/data/inbox/{upload_id}/_COMPLETE"] == round_id
 
     _, next_round = start(service, upload_id, "request-0002")
     service.register_files(upload_id, next_round, manifest)
@@ -194,9 +194,9 @@ def test_replacement_rejects_old_round_and_late_put_cannot_overwrite(coordinator
         with pytest.raises(Conflict):
             action()
     assert storage.objects[signed["objectKey"]] == b"new"
-    assert f"eeg/inbox/{uid}/_COMPLETE" not in storage.objects
+    assert f"neuro-lm/data/inbox/{uid}/_COMPLETE" not in storage.objects
     service.complete_round(uid, new)
-    assert storage.objects[f"eeg/inbox/{uid}/_COMPLETE"] == new
+    assert storage.objects[f"neuro-lm/data/inbox/{uid}/_COMPLETE"] == new
 
 
 def test_replacement_reuses_partial_multipart_across_unregistered_round(coordinator):

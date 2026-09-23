@@ -8,8 +8,7 @@ from urllib.request import Request
 
 from oi_eegqc.desktop_update import (
     INSTALLER_ASSET,
-    MIRROR_ORIGIN,
-    MIRROR_RELEASE_URL,
+    LATEST_RELEASE_URL,
     ZIP_ASSET,
     check_update,
     downloadable,
@@ -85,7 +84,7 @@ def test_check_update_uses_opener_and_maps_errors():
         requested.append(request.full_url)
         return io.BytesIO(json.dumps(payload).encode("utf-8"))
     check_update("0.3.0", opener=mirror)
-    assert requested == [MIRROR_RELEASE_URL]
+    assert requested == [LATEST_RELEASE_URL]
 
 
 def installer_info(data=b"installer"):
@@ -122,6 +121,8 @@ def test_download_cancel_and_untrusted_source(tmp_path):
     info = installer_info()
     assert not downloadable(replace(info, digest=""))
     assert not downloadable(replace(info, asset_url=info.asset_url.replace("github.com", "evil.test")))
+    assert not downloadable(replace(info, asset_url=info.asset_url.replace(
+        "https://github.com/Omni-Intel/oi-eegqc", "https://pack.kunpeng.blog/oi-eegqc")))
     assert not downloadable(replace(info, asset_name=ZIP_ASSET))
     with pytest.raises(DownloadCancelled):
         download_installer(info, tmp_path, lambda n: None, lambda: True,
@@ -129,22 +130,21 @@ def test_download_cancel_and_untrusted_source(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_mirrored_installer_is_downloadable():
-    info = installer_info()
-    mirrored = replace(
-        info,
-        asset_url=f"{MIRROR_ORIGIN}/oi-eegqc/releases/v{info.latest}/{INSTALLER_ASSET}",
-    )
-    assert downloadable(mirrored)
-
-
-def test_mirror_never_receives_github_token(monkeypatch):
+def test_github_api_may_use_token_other_hosts_do_not(monkeypatch):
     from oi_eegqc.desktop_update import fetch_latest_release
     monkeypatch.setenv("GITHUB_TOKEN", "github-only")
-    def opener(request, timeout):
+
+    def github(request, timeout):
+        assert request.get_header("Authorization") == "Bearer github-only"
+        return io.BytesIO(b'{}')
+
+    fetch_latest_release(LATEST_RELEASE_URL, opener=github)
+
+    def other(request, timeout):
         assert request.get_header("Authorization") is None
         return io.BytesIO(b'{}')
-    fetch_latest_release(MIRROR_RELEASE_URL, opener=opener)
+
+    fetch_latest_release("https://example.test/latest.json", opener=other)
 
 
 def test_launch_rechecks_and_never_forces_close(tmp_path, monkeypatch):

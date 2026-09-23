@@ -4,6 +4,8 @@
 
 OI-EEGQC 是面向 EEG 采集质控与数据入库的本地优先工具。Windows 桌面端和命令行共用同一套评分引擎、输入规范化流程和版本化报告格式。一个采集文件夹可以同时包含 EEG 记录、采集元数据、阻抗截图、佩戴定位照片、视频和其他辅助文件。
 
+AV Capture 是主试的一站式入口，EEGQC 提供可无窗口调用的逐视频质检、整轮评分和可续传上传；EEGQC 窗口保留给专家复核与批量历史处理。协议与仓库职责见 [采集集成接口](docs/capture-integration.md)。
+
 评分用于采集质量复核和数据入库，不推断认知状态、注意力、临床诊断或伪迹的生理原因。
 
 ## 数据流
@@ -80,7 +82,13 @@ GQI 是 0–100 的综合分数，由接触质量、信号洁净度和可用时�
 
 ### Windows 桌面端
 
-使用[已发布安装包](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)。安装器写入当前用户目录，不要求管理员权限。应用支持原位检查和下载更新。评分保持本地执行，检查更新不会上传 EEG 数据。
+使用[已发布安装包](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)或[便携版压缩包](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip)。采集电脑静默安装/更新走 GitHub Releases：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1
+```
+
+安装器写入当前用户目录，不要求管理员权限。设置里的「检查更新」读 GitHub Releases API。评分保持本地执行，检查更新不会上传 EEG 数据。公开 WinGet 源需要另提 PR，采集点网络差时不要把它当主安装通道。
 
 ### 命令行
 

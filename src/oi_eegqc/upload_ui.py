@@ -54,7 +54,7 @@ class UploadController(QObject):
     def __init__(self, data_directory, parent=None):
         super().__init__(parent)
         self.data_directory = Path(data_directory)
-        self.store = BatchStore(self.data_directory / "uploads")
+        self.store = BatchStore(self.data_directory / "uploads-cos-beijing")
         self.worker = None
         self.batch = None
         self._opened, self._error = False, ""
@@ -127,6 +127,8 @@ class UploadController(QObject):
         return True
 
     def prepare(self, roots, scored, new_acquisition=False):
+        if getattr(self,'record_guard',None) and not self.record_guard(roots):
+            self._error='该名单包含已移除记录，请重新选择';self.changed.emit();return
         self._opened = True
         if self.active:
             self.changed.emit()
@@ -161,6 +163,33 @@ class UploadController(QObject):
             self.lock = None
         self.prepare(*self._selection)
 
+    def detachLocalRecords(self, roots):
+        """Detach the current queue, retaining historical upload identities on disk."""
+        from .record_link import contains
+        import secrets
+        if self.active or not self._acquire():return False
+        try:
+            batch=self.store.load()
+            if batch and any(contains(root,p) or contains(p,root) for root in roots for p in batch.get('roots',[])):
+                # Never rewrite old children or their completed upload IDs.
+                children=[p for p in batch.get('children',[]) if not any(contains(root,q) or contains(q,root) for root in roots for q in p.get('roots',[]))]
+                if children:
+                    batch=deepcopy(batch);batch.update(local_id=secrets.token_hex(16),children=children,
+                        roots=[r for p in children for r in p['roots']],entries=[e for p in children for e in p['entries']])
+                    self.store.save(batch)
+                else:
+                    (self.store.directory/'current.json').unlink(missing_ok=True);batch=None
+                self.batch=batch;self._opened=False;self._error=''
+            if self._selection:
+                selected,scored=self._selection
+                self._selection=([p for p in selected if not any(contains(r,p) or contains(p,r) for r in roots)],
+                                 {p:v for p,v in scored.items() if not any(contains(r,p) for r in roots)})
+            self.changed.emit();return True
+        except Exception as error:
+            self._error=friendly_error(error);self.changed.emit();return False
+        finally:
+            self.lock.unlock();self.lock=None
+
     def _launch(self):
         self._progress = {}
         self.worker.progress.connect(self._on_progress)
@@ -189,6 +218,8 @@ class UploadController(QObject):
 
     @Slot()
     def start(self):
+        if getattr(self,'record_guard',None) and self.batch and not self.record_guard(self.batch.get('roots',[])):
+            self._error='该记录已从公共名单移除';self.changed.emit();return
         if self.active or not self.hasBatch:
             return
         self._show_batch_error = False
@@ -197,6 +228,9 @@ class UploadController(QObject):
             return
         try:
             self.batch = self.store.load()
+            if getattr(self,'record_guard',None) and self.batch and not self.record_guard(self.batch.get('roots',[])):
+                self._error='上传名单已移除，请重新选择'
+                self.lock.unlock();self.lock=None;self.changed.emit();return
             if not self.batch or self.batch["status"] == "completed":
                 self.lock.unlock()
                 self.lock = None

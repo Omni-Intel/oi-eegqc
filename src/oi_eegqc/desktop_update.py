@@ -1,6 +1,6 @@
-"""Check the project release mirror for a newer Windows build.
+"""Check GitHub Releases for a newer Windows build.
 
-The app fetches release metadata and verified installers. It never uploads recordings.
+The app never uploads recordings.
 """
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from urllib.request import Request, urlopen
 GITHUB_REPO = "Omni-Intel/oi-eegqc"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
-MIRROR_ORIGIN = "https://pack.kunpeng.blog"
-MIRROR_RELEASE_URL = MIRROR_ORIGIN + "/oi-eegqc/latest.json"
 INSTALLER_ASSET = "OI-EEGQC-Setup-Windows-x64.exe"
 ZIP_ASSET = "OI-EEGQC-Windows-x64.zip"
 TIMEOUT_S = 8
@@ -125,7 +123,7 @@ def check_update(
     url: str | None = None,
     opener: Callable[..., Any] | None = None,
 ) -> UpdateInfo:
-    endpoint = url or os.environ.get("OI_EEGQC_RELEASES_URL") or MIRROR_RELEASE_URL
+    endpoint = url or os.environ.get("OI_EEGQC_RELEASES_URL") or LATEST_RELEASE_URL
     try:
         payload = fetch_latest_release(
             endpoint, current_version=current_version, opener=opener
@@ -140,12 +138,7 @@ def downloadable(info):
     from urllib.parse import urlsplit
     url = urlsplit(info.asset_url)
     github_path = f"/{GITHUB_REPO}/releases/download/v{info.latest}/{INSTALLER_ASSET}"
-    mirror_path = f"/oi-eegqc/releases/v{info.latest}/{INSTALLER_ASSET}"
-    trusted = (
-        url.netloc == "github.com" and url.path == github_path
-    ) or (
-        url.netloc == "pack.kunpeng.blog" and url.path == mirror_path
-    )
+    trusted = url.netloc == "github.com" and url.path == github_path
     return (info.status == "available" and info.asset_name == INSTALLER_ASSET
             and url.scheme == "https" and trusted
             and not url.query and not url.fragment
@@ -161,7 +154,7 @@ def installer_opener():
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             url = urlsplit(newurl)
             if url.scheme != "https" or url.netloc not in {
-                "pack.kunpeng.blog", "github.com", "release-assets.githubusercontent.com",
+                "github.com", "release-assets.githubusercontent.com",
                 "objects.githubusercontent.com"
             }:
                 raise ValueError("更新下载跳转不受信任")

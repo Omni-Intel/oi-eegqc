@@ -5,7 +5,7 @@ import subprocess
 
 
 class TosStorage:
-    def __init__(self, client, bucket="xiekp", prefix="eeg/inbox", url_ttl=3600):
+    def __init__(self, client, bucket="xiekp", prefix="neuro-lm/data/inbox", url_ttl=3600):
         self.client = client
         self.bucket = bucket
         self.prefix = prefix

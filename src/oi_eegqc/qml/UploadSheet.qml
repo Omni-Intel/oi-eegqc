@@ -39,7 +39,7 @@ QuietPopup {
                 width: body.availableWidth
                 spacing: sheet.compact ? 12 : 18
                 Text { text: sheet.info.folderCount + " 个文件夹 · " + sheet.info.count + " 个文件 · " + sheet.info.size; color: "#303941"; Layout.fillWidth: true; wrapMode: Text.Wrap }
-                Text { text: "包含全部文件；自动跳过已上传的相同内容，暂停后可继续"; color: "#89929b"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                Text { text: "上传到 COS 数据收件箱，自动跳过已上传的相同内容，暂停后可继续"; color: "#89929b"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.Wrap }
                 Repeater {
                     objectName: "uploadFolderList"
                     model: sheet.info.folders
@@ -122,7 +122,7 @@ QuietPopup {
             spacing: 16
             Text { text: "重置上传记录"; color: "#303941"; font.pixelSize: 16 }
             ComboBox { id: resetFolder; objectName: "resetFolderChoice"; Layout.fillWidth: true; model: sheet.info.folders; textRole: "path" }
-            Text { text: "只清除当前选中文件夹的本地采集编号、续传状态和历史映射。不删除本地文件或云端数据。重置后下次上传会申请新编号。"; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+            Text { text: "只清除当前选中文件夹的本地采集编号、续传状态和历史映射。不删除本地文件或收件主机上的数据。重置后下次上传会申请新编号。"; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.Wrap }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
                 QuietButton { text: "取消"; onClicked: resetFirst.close() }
@@ -140,7 +140,7 @@ QuietPopup {
             spacing: 16
             Text { text: "再次确认"; color: "#303941"; font.pixelSize: 16 }
             Text { text: resetSecond.targetRoot; textFormat: Text.PlainText; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
-            Text { text: "将清除该文件夹的本地编号、续传状态和历史映射，不能撤销。不会删除本地文件或云端数据；下次上传申请新编号，可能重复保存云端数据。"; color: "#a04f3e"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+            Text { text: "将清除该文件夹的本地编号、续传状态和历史映射，不能撤销。不会删除本地文件或收件主机上的数据；下次上传申请新编号。"; color: "#a04f3e"; Layout.fillWidth: true; wrapMode: Text.Wrap }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
                 QuietButton { text: "取消"; onClicked: resetSecond.close() }

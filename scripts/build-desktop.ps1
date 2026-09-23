@@ -20,6 +20,21 @@ if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Packaged application check failed' }
 Copy-Item docs/desktop.md dist/OI-EEGQC/README.md -Force
 Copy-Item docs/folder-upload.md dist/OI-EEGQC/folder-upload.md -Force
+Copy-Item packaging/portable.txt dist/OI-EEGQC/便携说明.txt -Force
+& ./.venv/Scripts/python.exe -c @"
+from pathlib import Path
+import zipfile
+root = Path('dist/OI-EEGQC')
+archive = Path('dist/OI-EEGQC-Windows-x64.zip')
+if archive.exists():
+    archive.unlink()
+with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+    for path in root.rglob('*'):
+        if path.is_file():
+            zf.write(path, path.relative_to(root.parent).as_posix())
+print('Ready:', archive)
+"@
+if ($LASTEXITCODE -ne 0) { throw 'Portable archive failed' }
 
 $iscc = @(
     $IsccPath,
@@ -35,3 +50,4 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not read package version' }
 & $iscc "/DAppVersion=$version" packaging\oi-eegqc.iss
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
 Write-Host 'Ready: dist/OI-EEGQC-Setup-Windows-x64.exe'
+Write-Host 'Ready: dist/OI-EEGQC-Windows-x64.zip'

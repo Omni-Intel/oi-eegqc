@@ -6,8 +6,11 @@ import os
 import re
 import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+import ipaddress
+
+from .local_backend import LocalInboxStorage
 from .service import (
     INBOX_PREFIX,
     MAX_FILES_PER_REQUEST,
@@ -19,6 +22,14 @@ from .service import (
     normalize_path,
 )
 from .tos_backend import TosStorage
+
+OBJECT_ROUTE = re.compile(r"^/objects/(?P<key>.+)$")
+PRIVATE_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
 
 
 ROUND_ROUTE = re.compile(
@@ -73,7 +84,16 @@ class UploadHandler(BaseHTTPRequestHandler):
             raise ValueError("request body must be an object")
         return value
 
+    def client_allowed(self):
+        try:
+            address = ipaddress.ip_address(self.client_address[0])
+        except ValueError:
+            return False
+        return any(address in network for network in PRIVATE_NETWORKS)
+
     def dispatch(self, method):
+        if not self.client_allowed():
+            raise ValueError("only intranet clients may upload")
         parsed = urlparse(self.path)
         path = parsed.path
         if method == "GET" and path == "/health":
@@ -83,7 +103,8 @@ class UploadHandler(BaseHTTPRequestHandler):
                 "version": 2,
                 "bucket": self.storage.bucket,
                 "prefix": INBOX_PREFIX + "/",
-                "capabilities": ["rounds", "multipart", "round-replacement", "staged-put"],
+                "destination": "local-inbox" if hasattr(self.storage, "root") else ("cos" if self.storage.__class__.__name__=='CosStorage' else "tos"),
+                "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only"],
             }
         if method == "POST" and path == "/v1/uploads/sign":
             return self.legacy_sign()
@@ -184,6 +205,46 @@ class UploadHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.respond("POST")
 
+    def do_PUT(self):
+        try:
+            if not self.client_allowed():
+                raise ValueError("only intranet clients may upload")
+            parsed = urlparse(self.path)
+            match = OBJECT_ROUTE.fullmatch(parsed.path)
+            if not match:
+                raise NotFound("object route not found")
+            key = unquote(match.group("key"))
+            query = parse_qs(parsed.query)
+            self.storage.verify_put(key, query)
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise ValueError("invalid Content-Length") from exc
+            if length < 0:
+                raise ValueError("invalid Content-Length")
+            part = (query.get("partNumber") or [None])[0]
+            upload_id = (query.get("uploadId") or [None])[0]
+            if part:
+                result = self.storage.write_part(key, upload_id, int(part), self.rfile, length)
+                etag = result.get("etag", f'"{length}"')
+            else:
+                etag = self.storage.write_object(key, self.rfile, length)
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except NotFound as exc:
+            self.send_json(404, {"error": str(exc)})
+        except ValueError as exc:
+            self.send_json(400, {"error": str(exc)})
+        except Exception:
+            self.send_json(500, {"error": "upload service failed"})
+            raise
+
     def respond(self, method):
         try:
             self.send_json(200, self.dispatch(method))
@@ -199,25 +260,36 @@ class UploadHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    config = os.environ.get("TOS_CONFIG", "/home/xiekp/.tosutilconfig")
     state = os.environ.get(
-        "UPLOAD_STATE", "/home/xiekp/.local/share/eeg-upload-signer/state.sqlite3"
+        "UPLOAD_STATE", os.path.join(os.environ.get("EEG_INBOX_ROOT", r"D:\EEG_Data\inbox"), "_state", "signer.sqlite3")
     )
-    storage = TosStorage.from_tosutil_config(config)
+    backend = os.environ.get("UPLOAD_BACKEND", "local")
+    if backend == "cos":
+        from .cos_backend import CosStorage
+        storage=CosStorage.from_env()
+    elif backend == "tos":
+        storage = TosStorage.from_tosutil_config(os.environ.get("TOS_CONFIG", "/home/xiekp/.tosutilconfig"))
+    else:
+        inbox = os.environ.get("EEG_INBOX_ROOT", r"D:\EEG_Data\inbox")
+        public_url = os.environ.get("UPLOAD_PUBLIC_URL", "http://172.16.1.249:8443")
+        secret = os.path.join(inbox, "_state", "put.secret")
+        storage = LocalInboxStorage.from_env(inbox, public_url, secret)
     coordinator = UploadCoordinator(state, storage)
-    server = UploadServer(
-        (os.environ.get("LISTEN_HOST", "0.0.0.0"), int(os.environ.get("LISTEN_PORT", "8443"))),
-        coordinator,
-        storage,
-    )
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(
-        certfile=os.environ.get("TLS_CERT", "/home/xiekp/.config/eeg-upload-signer/tls.crt"),
-        keyfile=os.environ.get("TLS_KEY", "/home/xiekp/.config/eeg-upload-signer/tls.key"),
-    )
-    server.socket = context.wrap_socket(server.socket, server_side=True)
-    print(f"listening on https://{server.server_address[0]}:{server.server_address[1]}", flush=True)
+    host = os.environ.get("LISTEN_HOST", "172.16.1.249")
+    port = int(os.environ.get("LISTEN_PORT", "8443"))
+    server = UploadServer((host, port), coordinator, storage)
+    if backend == "tos" or os.environ.get("TLS_CERT"):
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(
+            certfile=os.environ.get("TLS_CERT", "/home/xiekp/.config/eeg-upload-signer/tls.crt"),
+            keyfile=os.environ.get("TLS_KEY", "/home/xiekp/.config/eeg-upload-signer/tls.key"),
+        )
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+    else:
+        scheme = "http"
+    print(f"listening on {scheme}://{server.server_address[0]}:{server.server_address[1]}", flush=True)
     server.serve_forever()
 
 

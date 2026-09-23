@@ -9,8 +9,8 @@ import secrets
 import stat
 from pathlib import Path
 
-BUCKET = "xiekp"
-PREFIX = "eeg/inbox/"
+BUCKET = "neurolm-1442740494"
+from .upload_http import PREFIX
 ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
 EEG_SUFFIXES = {".edf", ".edf+", ".bdf", ".npy"}
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -84,6 +84,7 @@ def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, lab
             if cancelled():
                 raise UploadCancelled()
             plain_path(folder)
+            validate_bids_package(folder, cancelled, hash_cache)
             children = sorted(folder.iterdir(), key=lambda p: p.name)
             if not children:
                 relative = folder.relative_to(root).as_posix()
@@ -112,6 +113,39 @@ def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, lab
                                         directory=False, done=False, **values))
         walk(root)
     return entries
+
+
+def validate_bids_package(folder, cancelled=lambda: False, hash_cache=None):
+    """Capture-owned contract; legacy generic EEG folders remain supported."""
+    marker = folder / 'bids-export.json'
+    meta = folder / 'session.json'
+    expected = False
+    if meta.is_file():
+        try:
+            expected = json.loads(meta.read_text(encoding='utf-8')).get('storage_format') == 'eeg-bids-1'
+        except (ValueError, OSError):
+            pass
+    if not expected and not marker.exists():
+        return
+    try:
+        plain_path(marker)
+        report = json.loads(marker.read_text(encoding='utf-8'))
+        if report.get('schema') != 'oi-bids-export-v1' or report.get('state') != 'ready' or not report.get('files'):
+            raise ValueError('incomplete')
+        for item in report['files']:
+            if cancelled(): raise UploadCancelled()
+            path = folder / item['path']
+            if not path.resolve().is_relative_to(folder.resolve()): raise ValueError('outside')
+            plain_path(path)
+            info = path.stat()
+            if info.st_size != item['bytes'] or info.st_mtime_ns != item['mtime_ns']: raise ValueError('changed')
+            if hash_cache is not None:
+                from .score_cache import CacheCancelled
+                try: checksum, _ = hash_cache.digest(path, cancelled)
+                except CacheCancelled: raise UploadCancelled() from None
+                if checksum != item['sha256']: raise ValueError('checksum')
+    except (KeyError, TypeError, ValueError, OSError):
+        raise UploadError('BIDS 文件尚未整理完成或已变化，请在采集端重试质检后上传') from None
 
 
 class BatchStore:

@@ -1,0 +1,8 @@
+这是便携版，不解压到安装目录以外也可以直接运行。
+
+1. 解压整个 OI-EEGQC 文件夹到 U 盘或本地磁盘。
+2. 双击 OI-EEGQC.exe。不要只拷贝这一个 exe。
+3. 评分缓存在当前用户的 %LOCALAPPDATA%\Omni-Intelligence\EEGQC。
+4. 检查更新走 GitHub Releases。便携版如提示改为安装版，可继续用本文件夹，或改用安装器。
+
+上传仍只发往内网收件主机 172.16.1.249。

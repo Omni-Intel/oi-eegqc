@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: OmniIntel.OIEEGQC
+PackageVersion: 0.6.2
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.0.0
+InstallerType: inno
+Scope: user
+InstallModes:
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: 2026-09-18
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Omni-Intel/oi-eegqc/releases/download/v0.6.2/OI-EEGQC-Setup-Windows-x64.exe
+    InstallerSha256: 304F2A183B7DBAFBB624014CD91ABC867DA54EC5F113608D3B8633DFA047C142
+    AppsAndFeaturesEntries:
+      - DisplayName: 脑电质量评估
+        Publisher: Omni-Intelligence
+        ProductCode: '{8F3C2A91-4B6D-4E17-9C5A-1D8E6F0B2A44}_is1'
+ManifestType: installer
+ManifestVersion: 1.6.0

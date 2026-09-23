@@ -194,6 +194,7 @@ def test_example_sidecar_session_synthetic():
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr

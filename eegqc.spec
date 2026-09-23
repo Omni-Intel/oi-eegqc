@@ -1,21 +1,26 @@
 # Build with: python -m PyInstaller --noconfirm eegqc.spec
 from pathlib import Path
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import copy_metadata, collect_data_files, collect_submodules
 
 root = Path(SPECPATH)
 datas = [(str(root / "LICENSE"), "licenses/oi-eegqc"),
          (str(root / "assets" / "omni-intelli logo" / "OMNI_LOGO_100x100.ico"), "assets/omni-intelli logo")]
 datas += [(str(root / "src" / "oi_eegqc" / "qml"), "oi_eegqc/qml")]
+datas += [(str(root / "packaging" / "quality-api.json"), ".")]
 datas += [(str(root / "src" / "oi_eegqc" / "layouts"), "oi_eegqc/layouts")]
 for package in ("mne", "numpy", "scipy", "PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6"):
     datas += copy_metadata(package)
+datas += collect_data_files("mne", includes=["**/*.pyi"])
+mne_imports = collect_submodules("mne", filter=lambda name: not any(
+    part in name.split('.') for part in ('viz', 'gui', 'commands', 'tests', 'conftest')))
 a = Analysis([str(root / "desktop_entry.py")], pathex=[str(root / "src")],
              binaries=[], datas=datas,
              hiddenimports=["oi_eegqc.config", "oi_eegqc.datasets", "oi_eegqc.io",
                             "oi_eegqc.intake", "oi_eegqc.desktop_service", "oi_eegqc.desktop_update",
+                            "oi_eegqc.segment_service", "oi_eegqc.capture_service", "oi_eegqc.score_cache",
                             "oi_eegqc.layouts", "oi_eegqc.quick", "oi_eegqc.desktop_upload", "oi_eegqc.upload_ui",
                             "oi_eegqc.pipeline", "oi_eegqc.protocol", "oi_eegqc.types"]
-                           + ["mne.io.edf.edf", "mne._fiff.pick"],
+                           + ["mne.io.edf.edf", "mne._fiff.pick"] + mne_imports,
              excludes=["oi_eegqc.legacy", "oi_eegqc.upload_signer", "tkinter", "pytest", "IPython", "notebook", "matplotlib",
                        "PySide6.QtWebEngineCore"],
              noarchive=False)
@@ -63,6 +68,14 @@ def keep_runtime(entry):
     if destination.startswith(unused_qml_roots + unused_control_styles + unused_qtquick_roots):
         return False
     leaf = destination.rsplit("/", 1)[-1]
+    if leaf == "icuuc.dll":
+        # Some Python distributions bundle a version-suffixed ICU. Qt on Windows
+        # imports the OS ICU's unversioned entry points; do not shadow that DLL
+        # with an incompatible copy discovered on the build machine's PATH.
+        import pefile
+        with pefile.PE(str(entry[1])) as pe:
+            if not any(symbol.name == b"ucnv_open" for symbol in pe.DIRECTORY_ENTRY_EXPORT.symbols):
+                return False
     family_leaf = "qt" + leaf[3:] if leaf.startswith("qt6") else leaf
     if destination.startswith("pyside6/") and family_leaf.startswith(unused_qt_families + unused_style_families):
         return False

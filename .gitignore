@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .eggs/
 dist/
+dist-record-link/
 build/
 .pytest_cache/
 .mypy_cache/
@@ -12,6 +13,8 @@ venv/
 *.npy
 *.json
 !configs/**
+!packaging/quality-api.json
+/pytest-*/
 bench_runs/
 *.bdf
 .DS_Store

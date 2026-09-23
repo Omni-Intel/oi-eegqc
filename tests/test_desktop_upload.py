@@ -163,7 +163,7 @@ class FakeClient:
 
     def url(self, key):
         from urllib.parse import quote
-        return "https://xiekp.tos-cn-beijing.volces.com/" + quote(key) + "?signature=do-not-persist"
+        return "http://172.16.1.249:8443/objects/" + quote(key) + "?token=do-not-persist"
 
     def put(self, url, key, source, size, cancelled, progress):
         validate_put_url(url, key)
@@ -226,6 +226,7 @@ def test_offline_first_upload_can_retry_without_recovery(batch, stage):
 
 def test_connect_failure_is_known_but_response_loss_is_uncertain(monkeypatch):
     import oi_eegqc.upload_http as module
+    monkeypatch.setattr(module, "ORIGIN", "http://172.16.1.249:8443")
     sent = []
     class Connection:
         def __init__(self, *args, **kwargs):
@@ -238,7 +239,7 @@ def test_connect_failure_is_known_but_response_loss_is_uncertain(monkeypatch):
             raise TimeoutError()
         def close(self):
             pass
-    monkeypatch.setattr(module.http.client, "HTTPSConnection", Connection)
+    monkeypatch.setattr(module.http.client, "HTTPConnection", Connection)
     client = module.SignClient()
     with pytest.raises(module.NetworkUnavailable):
         client.sign(["a"])
@@ -376,13 +377,17 @@ def test_manifest_registration_is_chunked(batch):
 
 
 @pytest.mark.parametrize("url", [
-    "http://xiekp.tos-cn-beijing.volces.com/eeg/inbox/x/a?q=1",
-    "https://evil.test/eeg/inbox/x/a?q=1",
+    "http://xiekp.tos-cn-beijing.volces.com/neuro-lm/data/inbox/x/a?q=1",
+    "https://evil.test/neuro-lm/data/inbox/x/a?q=1",
     "https://xiekp.tos-cn-beijing.volces.com/eeg-external-2026-09-11/a?q=1",
 ])
 def test_wrong_destination_rejected(url):
     with pytest.raises(ValueError):
-        validate_put_url(url, "eeg/inbox/x/a")
+        validate_put_url(url, "neuro-lm/data/inbox/x/a")
+
+
+def test_intranet_destination_accepted():
+    validate_put_url("http://172.16.1.249:8443/objects/neuro-lm/data/inbox/x/a?token=1", "neuro-lm/data/inbox/x/a")
 
 
 def test_source_changes_block_completion(batch):
@@ -464,22 +469,24 @@ def test_server_id_saved_before_first_put(batch):
 
 
 def test_anonymous_signing_and_put_is_streamed(tmp_path, monkeypatch):
+    monkeypatch.setattr("oi_eegqc.upload_http.ORIGIN", "http://172.16.1.249:8443")
     import io
     import oi_eegqc.upload_http as module
     connections = []
     class Connection:
-        def __init__(self, host, **kwargs):
-            self.host, self.headers, self.blocks = host, {}, []
-            assert kwargs["context"].check_hostname
+        def __init__(self, host, port=None, **kwargs):
+            self.host, self.port, self.headers, self.blocks = host, port, {}, []
+            assert "context" not in kwargs
             connections.append(self)
         def connect(self):
             pass
         def request(self, method, route, body, headers):
             self.headers = headers
-            assert self.host == "eeg-upload.kunpeng.blog"
+            assert self.host == "172.16.1.249"
             assert not any(k.lower() == "authorization" for k in headers)
         def putrequest(self, method, route):
             assert method == "PUT"
+            assert route.startswith("/objects/neuro-lm/data/inbox/")
         def putheader(self, key, value):
             self.headers[key] = value
         def endheaders(self):
@@ -493,7 +500,7 @@ def test_anonymous_signing_and_put_is_streamed(tmp_path, monkeypatch):
             return Response(b"{}")
         def close(self):
             pass
-    monkeypatch.setattr(module.http.client, "HTTPSConnection", Connection)
+    monkeypatch.setattr(module.http.client, "HTTPConnection", Connection)
     client = module.SignClient()
     client.sign(["a"])
     source = tmp_path / "a"

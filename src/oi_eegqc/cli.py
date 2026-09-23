@@ -372,9 +372,9 @@ def cmd_serve(_args: argparse.Namespace) -> int:
     from .serve import run_stdio
 
     try:
-        sys.stdout.reconfigure(line_buffering=True)
-        sys.stdin.reconfigure(line_buffering=True)
-    except (AttributeError, OSError):
+        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+        sys.stdin.reconfigure(encoding="utf-8", line_buffering=True)
+    except (AttributeError, OSError, ValueError):
         pass
     return run_stdio()
 

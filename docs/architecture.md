@@ -21,7 +21,7 @@ Existing subprocess crash recovery, scoring caches and upload-round semantics ar
 
 ## Versioned results
 
-Application v0.6.1, algorithm `oi-eegqc-score-v3`, thresholds `oi-eegqc-v0.6.0`, report `oi-eegqc-report-v3`. The stdio envelope remains `oi-eegqc-protocol-v1`. The algorithm change invalidates old score caches but not upload identities or upload records. Plateau evidence is diagnostic only; missing samples have a separate window cause.
+Application v0.6.2, algorithm `oi-eegqc-score-v3`, thresholds `oi-eegqc-v0.6.0`, report `oi-eegqc-report-v3`. The stdio envelope remains `oi-eegqc-protocol-v1`. The algorithm change invalidates old score caches but not upload identities or upload records. Plateau evidence is diagnostic only; missing samples have a separate window cause.
 
 Reports retain effective configuration, channel names, window rules, algorithm version and window-level causes. Unknown hardware rails remain unknown: extrema plateaus are labelled suspected clipping. See [scoring rules](scoring.md).
 
@@ -29,9 +29,9 @@ Reports retain effective configuration, channel names, window rules, algorithm v
 
 `python scripts/check.py` runs product regression tests and requires GUI/EDF dependencies rather than silently skipping desktop coverage. `--calibrate` also runs the seven existing injected-fault scenarios. Outputs go under local `build/`.
 
-`scripts/build-desktop.ps1` installs dependencies, invokes the same checks, packages the QML app, checks the frozen app's startup and scoring process, and makes the Inno installer. GitHub Actions calls this script. PR/main checks use the same cross-platform check entry point.
+`scripts/build-desktop.ps1` installs dependencies, invokes the same checks, packages the QML app, checks the frozen app's startup and scoring process, then writes the portable zip and Inno installer. GitHub Actions calls this script. PR/main checks use the same cross-platform check entry point.
 
-`scripts/verify-windows.ps1 -BaselineInstaller <old-installer>` uses the current source version for upgrade checks, not fixed historical versions. It refuses to disturb an existing installed copy. Mirror connectivity is an optional `-CheckUpdate` check so offline install validation remains possible.
+`scripts/verify-windows.ps1 -BaselineInstaller <old-installer>` uses the current source version for upgrade checks, not fixed historical versions. It refuses to disturb an existing installed copy. GitHub Releases connectivity is an optional `-CheckUpdate` check so offline install validation remains possible.
 
 ## Validation boundary
 

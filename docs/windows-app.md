@@ -7,13 +7,14 @@ Windows 进程不读波形；评分在本地 Python 里完成，不接云。
 
 ## 交付形态
 
-仅提供 GitHub Releases 安装版：
+GitHub Releases 提供两种形态：
 
 - `OI-EEGQC-Setup-Windows-x64.exe`：Inno Setup 安装器，写入 `%LOCALAPPDATA%\Omni-Intelligence\EEGQC`，不要求管理员。
+- `OI-EEGQC-Windows-x64.zip`：便携目录，解压后直接运行 `OI-EEGQC.exe`。
 
-不做代码签名。设置 → 检查更新会请求 green-hk 上的
-`https://pack.kunpeng.blog/oi-eegqc/latest.json`，
-并从同一固定 HTTPS 镜像下载安装器；采集电脑不直接访问 GitHub。检查不上传脑电。
+不做代码签名。设置 → 检查更新请求
+`https://api.github.com/repos/Omni-Intel/oi-eegqc/releases/latest`，
+安装器从 GitHub Releases 下载。检查不上传脑电。
 
 本地与 CI 的验证入口为 `python scripts/check.py --calibrate`。构建入口 `scripts/build-desktop.ps1` 会执行同一验证，并在打包后验证启动和评分子进程。远程：打 `v*` tag 或手动跑
 `.github/workflows/windows-release.yml`。

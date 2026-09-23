@@ -93,8 +93,9 @@ ApplicationWindow {
                         required property bool chosen
                         required property bool ready
                         width: ListView.view.width; height: 54
-                        color: chosen ? "#eaf0f5" : mouse.containsMouse ? "#f6f8fa" : "transparent"
-                        Behavior on color { ColorAnimation { duration: 90 } }
+                        readonly property bool hovered: rowHover.hovered
+                        HoverHandler { id: rowHover }
+                        color: chosen ? "#eaf0f5" : rowHover.hovered ? "#f6f8fa" : "#ffffff"
                         Rectangle { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; width: 3; height: 20; radius: 1; color: "#6c8296"; visible: row.chosen }
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 18; anchors.rightMargin: 18; spacing: 12
@@ -104,7 +105,7 @@ ApplicationWindow {
                         }
                         Rectangle { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 18; anchors.rightMargin: 18; height: 1; color: "#f0f2f4" }
                         MouseArea {
-                            id: mouse; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            id: mouse; anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton
                             cursorShape: row.ready && !backend.busy ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: function(event) {
                                 list.forceActiveFocus(); list.currentIndex = row.index;
@@ -118,9 +119,7 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        ToolTip.visible: mouse.containsMouse && !backend.busy
-                        ToolTip.delay: 700
-                        ToolTip.text: row.detail
+                        Accessible.description: row.detail
                     }
                     Text {
                         anchors.centerIn: parent

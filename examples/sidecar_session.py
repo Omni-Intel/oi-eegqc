@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from typing import Any, Iterator, TextIO
@@ -57,12 +58,15 @@ class Sidecar:
 
 def spawn() -> Sidecar:
     cmd = [sys.executable, "-m", "oi_eegqc", "serve", "--stdio"]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         bufsize=1,
+        env=env,
     )
     return Sidecar(proc)
 

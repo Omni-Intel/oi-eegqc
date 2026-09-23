@@ -5,9 +5,16 @@
 
 ## 交付
 
-GitHub Releases 仅提供安装器 [Windows 下载](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)。
-安装器装到用户目录，不要求管理员，不签名。
-设置里的「检查更新」只读最新 release，有新版本就打开下载页。
+GitHub Releases 提供安装器 [Windows 下载](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe) 和 [便携 zip](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip)。
+安装器装到用户目录，不要求管理员，不签名。便携版解压后直接运行。
+设置里的「检查更新」读 GitHub Releases API。
+不会用界面更新时，在采集电脑执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1
+```
+
+公开 WinGet 目录不能直接上传安装包，见 [packaging/winget/README.md](../packaging/winget/README.md)。
 
 ## 一个窗口
 

@@ -6,9 +6,9 @@ Qt Quick / QML 桌面界面，复用现有 Python 独立进程评分核心，完
 
 新增「上传文件夹」：已扫描并评分的采集目录可在程序内后台上传、暂停与续传。部署凭据及详细行为见 [上传说明](folder-upload.md)。
 
-下载并运行 [Windows 安装器](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)。
+下载并运行 [Windows 安装器](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)，或解压 [便携 zip](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip) 后直接运行 `OI-EEGQC.exe`。
 安装器写入 `%LOCALAPPDATA%\Omni-Intelligence\EEGQC`，不要求管理员。
-不做代码签名。发布源仍是 GitHub Releases，但正式客户端通过 green-hk 上的固定 HTTPS 镜像检查和下载安装包，避免采集点直接访问 GitHub；见 [Windows 更新镜像](update-mirror.md)。
+不做代码签名。检查更新与安装包都走 GitHub Releases。
 
 多选或拖入 EDF / BDF / NPY 文件，或直接拖入一个或多个文件夹，再点击「评分」。
 文件夹会在后台递归扫描子文件夹，自动筛选支持的文件；扫描期间可取消。
@@ -50,7 +50,7 @@ sidecar 里的阻抗或同步误差若存在会一并读取，缺失时不询问
 右上角「设置」在窗内展开，可改数组排列（默认自动判断）、电网频率（50 或 60 赫兹，默认 50），
 以及是否「全通道」。关闭全通道时，有待评文件就打开通道表，勾选后只对选中导联评分；也可再点「选择通道」改勾选。
 没有待评文件时不弹窗，「选择通道」不可用；之后导入待评文件会自动打开通道表。通道表按待评文件动态构建，不包含已完成文件的通道。修改即时保存。
-也可通过更新镜像检查新版本。有更新时可在程序内「下载更新」，后台显示进度并支持取消；下载失败可重试。
+也可通过 GitHub Releases 检查新版本。有更新时可在程序内「下载更新」，后台显示进度并支持取消；下载失败可重试。
 仅下载固定仓库的安装器，并核对发布资源的大小及 sha256 摘要；缺少可验证信息时仍可打开下载页，不自动执行。
 下载完成后点击「安装并重启」并确认，程序退出并打开安装器，安装成功后启动新版；评分或导入期间禁止安装。
 安装前还会重新校验文件。覆盖升级保留设置和磁盘评分缓存；当前列表不会恢复，重新添加相同文件后会按内容和参数复用缓存结果。
@@ -76,15 +76,15 @@ python -m venv .venv
 powershell -ExecutionPolicy Bypass -File scripts/build-desktop.ps1
 ```
 
-构建脚本要求 Inno Setup 6（验证版本 6.7.3），仅生成中文安装器，缺少编译器时会明确失败。
+构建脚本要求 Inno Setup 6（验证版本 6.7.3），同时生成中文安装器和便携 zip，缺少编译器时会明确失败。
 本地和 CI 共用 `scripts/check.py --calibrate`；构建脚本自动执行测试、故障注入校验和打包后的启动/评分验证。
 非标准路径可传 `-IsccPath`；已安装依赖时可传 `-SkipDependencies`。
 使用 Inno Setup 6.7.3 进行商业分发前应确认其商业许可要求；应用本身不做代码签名。
 打与应用版本一致的 tag `v*` 会发布 GitHub Release；手动运行 `.github/workflows/windows-release.yml` 只上传构建产物，不发布 release。
-资源文件名必须是 `OI-EEGQC-Setup-Windows-x64.exe`，桌面「检查更新」按这个名字认。
+安装器资源名必须是 `OI-EEGQC-Setup-Windows-x64.exe`，便携包是 `OI-EEGQC-Windows-x64.zip`。桌面「检查更新」按安装器名字认。
 
 安装器使用固定应用标识，覆盖升级沿用安装目录，卸载只移除安装器管理的文件，不删除自行放入的数据或用户设置。
-开发验证脚本 `scripts/verify-windows.ps1` 在隔离目录测试旧版安装、新版覆盖、启动和卸载；版本取自当前源码。附加 `-CheckUpdate` 才检查更新镜像。检测到已有安装时拒绝运行，避免影响用户副本。
+开发验证脚本 `scripts/verify-windows.ps1` 在隔离目录测试旧版安装、新版覆盖、启动和卸载；版本取自当前源码。附加 `-CheckUpdate` 才检查 GitHub Releases。检测到已有安装时拒绝运行，避免影响用户副本。
 
 macOS / Linux 可安装相同依赖后运行 `oi-eegqc-desktop`。
 二进制需在目标系统运行 `python -m PyInstaller eegqc.spec` 分别构建；
