@@ -24,15 +24,7 @@ class UploadCancelled(Exception):
     pass
 
 
-def atomic_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+from .local_files import atomic_json
 
 
 def plain_path(path):
@@ -356,7 +348,10 @@ def friendly_error(error):
     if isinstance(error, UploadError):
         return str(error)
     if isinstance(error, PermissionError):
-        return "无法读取本地文件或写入上传状态，请检查权限"
+        name=Path(error.filename).name if error.filename else '本地文件'
+        if getattr(error,'winerror',None) in (32,33):
+            return f'文件暂被占用（{name}），已有数据保留，请稍后重试上传'
+        return f'无法访问或写入 {name}，请检查该文件及所在目录的权限'
     if isinstance(error, FileNotFoundError):
         return "源文件已移动或删除，请恢复原路径后重试"
     if isinstance(error, TimeoutError):

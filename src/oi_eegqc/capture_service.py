@@ -14,12 +14,7 @@ import uuid
 SCHEMA = "oi-eegqc-capture-complete-v1"
 
 
-def atomic_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False), encoding="utf-8")
-    os.replace(temporary, path)
+from .local_files import atomic_json
 
 
 def app_data():
@@ -111,7 +106,9 @@ def main(argv=None):
     except Exception as exc:
         from .desktop_upload import friendly_error
         result = {"schema": SCHEMA, "request_id": request.get("request_id"), "state": "failed",
-                  "error": friendly_error(exc) if not isinstance(exc, ValueError) else str(exc)}
+                  "error": friendly_error(exc) if not isinstance(exc, ValueError) else str(exc),
+                  "error_info": {"type":type(exc).__name__,"errno":getattr(exc,'errno',None),
+                                 "winerror":getattr(exc,'winerror',None),"filename":getattr(exc,'filename',None)}}
         code = 1
     atomic_json(args.capture_complete_output, result)
     return code

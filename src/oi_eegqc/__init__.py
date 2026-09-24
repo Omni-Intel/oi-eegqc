@@ -28,7 +28,7 @@ def __getattr__(name):
 def __dir__():
     return sorted(set(globals()) | set(__all__))
 
-__version__ = "0.6.6"
+__version__ = "0.6.7"
 __all__ = [
     "AvailabilityFlag",
     "BenchConfig",
