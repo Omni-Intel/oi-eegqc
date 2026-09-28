@@ -46,11 +46,12 @@ def test_headless_handoff_scores_then_uses_existing_upload_engine(tmp_path, monk
 
     class Store:
         def __init__(self, path): self.directory = Path(path)
-        def completed_for(self, root):
+        def completed_for(self, root, validate_bids=True):
+            assert not validate_bids
             return {'status': 'completed', 'upload_id': 'cloud-1'} if uploaded else None
         def prepare(self, roots, scored, progress):
             assert roots == [folder]
-            assert recording in scored
+            assert scored is None
             assert (folder / 'file-quality.json').exists()
             called.append('prepare')
             return {'status': 'ready'}
@@ -110,3 +111,31 @@ def test_completed_folder_is_reused_only_when_unchanged(tmp_path):
     recording.write_bytes(b'changed recording')
     with pytest.raises(UploadError, match='不会重复上传'):
         store.completed_for(folder)
+
+
+@pytest.mark.parametrize('error_response', [False, True])
+def test_failed_scoring_and_unfinished_bids_still_upload_raw(tmp_path, monkeypatch, error_response):
+    from oi_eegqc import desktop_upload, intake
+    folder, recording = fixture_round(tmp_path)
+    (folder / 'quality-response.json').unlink()
+    if error_response:
+        (folder / 'quality-response.json').write_text(json.dumps({'schema': 'oi-eegqc-segments-v1', 'request_id': 'segment', 'error': 'invalid EDF'}))
+    meta = json.loads((folder / 'session.json').read_text())
+    meta.update(status='interrupted', quality_summary={'state': 'error', 'reason': '评分未完成'}, bids_error='EDF 记录为空')
+    (folder / 'session.json').write_text(json.dumps(meta))
+    (folder / 'bids-export.json').write_text(json.dumps({'schema': 'oi-bids-export-v1', 'state': 'failed'}))
+    before = recording.read_bytes()
+    monkeypatch.setattr(intake, 'score_file', lambda *args, **kwargs: (_ for _ in ()).throw(ValueError('invalid EDF')))
+    batches = []
+    class Session:
+        def __init__(self, store, batch, data, progress): batches.append(batch)
+        def run(self): return {'status': 'completed', 'upload_id': 'raw-cloud'}
+    monkeypatch.setattr(desktop_upload, 'UploadSession', Session)
+    result = complete({'schema': SCHEMA, 'request_id': 'raw', 'folder': str(folder)}, data_directory=tmp_path / 'app')
+    assert result['state'] == 'completed' and result['score'] is None and result['quality_state'] == 'failed'
+    report = json.loads((folder / 'file-quality.json').read_text(encoding='utf-8'))
+    assert report['reason'] == 'invalid EDF' and report['segment_quality']['state'] == 'error'
+    assert recording.read_bytes() == before
+    assert {Path(e['source']).name for e in batches[0]['entries']} >= {'recording.edf', 'bids-export.json', 'file-quality.json'}
+    with pytest.raises(desktop_upload.UploadError, match='BIDS'):
+        desktop_upload.BatchStore(tmp_path / 'gui').prepare([folder], {})

@@ -60,7 +60,7 @@ def normalize_roots(roots):
 
 
 def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, labels=None,
-                 hash_cache=None):
+                 hash_cache=None, validate_bids=True):
     entries, used = [], set()
     for root in normalize_roots(roots):
         label = (labels or {}).get(str(root), root.name)
@@ -76,7 +76,8 @@ def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, lab
             if cancelled():
                 raise UploadCancelled()
             plain_path(folder)
-            validate_bids_package(folder, cancelled, hash_cache)
+            if validate_bids:
+                validate_bids_package(folder, cancelled, hash_cache)
             children = sorted(folder.iterdir(), key=lambda p: p.name)
             if not children:
                 relative = folder.relative_to(root).as_posix()
@@ -221,7 +222,7 @@ class BatchStore:
             return pointer, record
         return pointer, None
 
-    def completed_for(self, root):
+    def completed_for(self, root, validate_bids=True):
         """Return a previously completed, unchanged folder without allocating a new round."""
         root = normalize_roots([root])[0]
         _, previous = self._folder_record(root)
@@ -232,7 +233,8 @@ class BatchStore:
         from .score_cache import ScoreCache
 
         with ScoreCache(self.directory.parent / "score-cache.sqlite3") as cache:
-            current = scan_sources([root], labels=previous.get("labels"), hash_cache=cache)
+            current = scan_sources([root], labels=previous.get("labels"), hash_cache=cache,
+                                   validate_bids=validate_bids)
         identity = lambda item: (item["source"], item["relative"], item["size"], item["mtime"],
                                  item["directory"], item.get("sha256"))
         if [identity(item) for item in current] != [identity(item) for item in previous["entries"]]:
@@ -241,7 +243,7 @@ class BatchStore:
 
     def prepare(self, roots, scored, cancelled=lambda: False, progress=lambda name: None, new_acquisition=False):
         roots = normalize_roots(roots)
-        scored = {os.path.normcase(str(Path(path).resolve())): value for path, value in scored.items()}
+        scored = {os.path.normcase(str(Path(path).resolve())): value for path, value in scored.items()} if scored is not None else None
         for root in roots:
             if root == self.directory or root in self.directory.absolute().parents:
                 raise UploadError("采集目录不能包含应用上传状态目录")
@@ -249,12 +251,12 @@ class BatchStore:
 
         with ScoreCache(self.directory.parent / "score-cache.sqlite3") as hash_cache:
             entries = scan_sources(
-                roots, cancelled, progress, hash_cache=hash_cache
+                roots, cancelled, progress, hash_cache=hash_cache, validate_bids=scored is not None
             )
         signals = [e for e in entries if not e["directory"] and Path(e["source"]).suffix.lower() in EEG_SUFFIXES]
-        if not signals or any(os.path.normcase(e["source"]) not in scored for e in signals):
+        if scored is not None and (not signals or any(os.path.normcase(e["source"]) not in scored for e in signals)):
             raise UploadError("文件夹中仍有未完成评分的数据，请重新添加并评分")
-        for entry in signals:
+        for entry in signals if scored is not None else []:
             scored_identity = list(scored[os.path.normcase(entry["source"])])
             if scored_identity[:2] != [entry["size"], entry["mtime"]] or (
                 len(scored_identity) > 2 and scored_identity[2] not in (None, entry["sha256"])
