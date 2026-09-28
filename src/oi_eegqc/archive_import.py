@@ -111,7 +111,7 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
     from .scoring_version import SCORING_ALGORITHM_VERSION
     client = ScoringProcess()
     try:
-        for row in rows:
+        for index,row in enumerate(rows,1):
             if cancelled():
                 raise UploadCancelled()
             path = Path(row['recording'])
@@ -119,23 +119,27 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
             row['score_stat'] = (stat.st_size, stat.st_mtime_ns)
             identity = [stat.st_size, stat.st_mtime_ns, line_hz, SCORING_ALGORITHM_VERSION]
             sidecar = Path(row['session_directory'])/'eegqc-report.json'
-            saved = json.loads(sidecar.read_text(encoding='utf-8')) if sidecar.exists() else {}
+            progress(f"评分 {index}/{len(rows)} · {row['source_session_id']}")
+            try:saved = json.loads(sidecar.read_text(encoding='utf-8')) if sidecar.exists() else {}
+            except (ValueError,OSError):saved={}
             report = saved.get('report') if saved.get('source') == identity else None
             if report is None:
                 try:
                     kind, payload = client.score(str(path), dict(inspect_file(path), line_hz=line_hz), cancelled,
-                                                 lambda phase: progress(f"评分 {row['source_session_id']} · {phase}"), DEFAULT_FILE_TIMEOUT_S)
+                                                 lambda phase: progress(f"评分 {index}/{len(rows)} · {phase}"), DEFAULT_FILE_TIMEOUT_S)
                 except (ValueError, OSError) as error:
                     kind, payload = 'error', str(error)
                 if kind == 'cancelled':
                     raise UploadCancelled()
                 if kind == 'result':
                     report = payload
-                    atomic_json(sidecar, dict(source=identity, report=report))
+                    try:atomic_json(sidecar, dict(source=identity, report=report))
+                    except OSError as error:row['grading_error']=str(error)
                 else:
                     row['grading_error'] = str(payload or kind)
             row['signal_qc'] = report
             if report is not None:
+                if row['recorded_duration_s'] is None:row['recorded_duration_s']=report['duration_s']
                 row['final_score'] = float(report['gqi'])
                 row['usable_duration_s'] = (row['recorded_duration_s'] * float(report['usable_ratio'])
                                              if row['final_score'] >= 60 else 0.)

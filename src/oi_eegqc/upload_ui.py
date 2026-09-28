@@ -31,6 +31,7 @@ class UploadWorker(QThread):
         self.session, self.error = None, ""
         self.new_acquisition = new_acquisition
         self.imports = deepcopy(sessions or [])
+        self.sessions_provided = sessions is not None
         self.database_error = ''
         self._last_progress = 0
 
@@ -49,15 +50,26 @@ class UploadWorker(QThread):
     def run(self):
         try:
             if self.roots is not None:
-                from .archive_import import grade_sessions, attach_sessions
+                if self.parent().telemetry:self.parent().telemetry.report('upload_prepare_started',count=len(self.roots))
+                from .archive_import import grade_sessions, attach_sessions, read_sessions
+                self.progress.emit({'stage':'identifying','current':'正在识别被试和采集 Session'})
+                if not self.sessions_provided:
+                    self.imports=[s for root in self.roots if Path(root).is_dir() for s in read_sessions(root)]
+                if any(s['paradigm_code'] and s['paradigm_code']!=self.store.paradigm['code'] for s in self.imports):
+                    raise ValueError('图片采集包请选择 RSVP 图片 EEG 范式')
                 if self.imports:
+                    self.progress.emit({'stage':'scoring','current':f'正在评分 0/{len(self.imports)}'})
+                    if self.parent().telemetry:self.parent().telemetry.report('archive_scoring_started',count=len(self.imports))
                     grade_sessions(self.imports, self.isInterruptionRequested,
                                    lambda name: self.report({'current': name}), getattr(self.parent().parent(), '_mains', 50))
+                    if self.parent().telemetry:self.parent().telemetry.report('archive_scoring_completed',count=len(self.imports))
+                self.progress.emit({'stage':'scanning','current':'正在扫描并核验上传文件'})
                 self.batch = self.store.prepare(self.roots, self.scored, self.isInterruptionRequested,
                                                 lambda name: self.report({"current": name}), self.new_acquisition)
                 if self.imports:
                     attach_sessions(self.batch, self.imports)
                     self.store.save(self.batch)
+                if self.parent().telemetry:self.parent().telemetry.report('upload_prepare_completed',count=len(self.batch['entries']))
             else:
                 if self.batch['status'] != 'completed':
                     self.session = UploadSession(self.store, self.batch, self.data_directory, self.report)
@@ -253,7 +265,7 @@ class UploadController(QObject):
                     speed=f"{self._progress.get('speed', 0) / 1024 / 1024:.1f} 兆字节/秒",
                     current=str(self._progress.get("current", batch.get("current", ""))) if self.active or status != 'completed' else '',
                     error=self._error or (batch.get("error", "") if self._show_batch_error else ""),
-                    status=("正在准备…" if self.active and self.worker.roots is not None else "正在上传…") if self.active else
+                    status=({'identifying':'正在识别 Session…','scoring':'正在评分…','scanning':'正在核验文件…'}.get(self._progress.get('stage'),'正在准备…') if self.active and self.worker.roots is not None else "正在上传…") if self.active else
                     {"ready": "待上传", "paused": "已暂停，可继续", "failed": "上传失败，可重试" if self._show_batch_error else "待继续上传", "completed": "文件已上传，统计待入库" if database_pending(batch) else ("上传和入库完成" if any(p.get('imports') for p in parts) else "上传完成")}.get(status, ""))
 
     def _acquire(self):
@@ -286,18 +298,10 @@ class UploadController(QObject):
             return
         self._show_batch_error = False
         self._error = ""
-        from .archive_import import read_sessions
-        try:
-            sessions = [s for root in roots if Path(root).is_dir() for s in read_sessions(root)]
-        except (ValueError, OSError, KeyError) as error:
-            self._error = '无法识别采集 Session，请检查 session.json 和被试编号'
-            if self.telemetry:
-                self.telemetry.report('archive_metadata_failed', exc=error)
-            self.changed.emit(); return
         if not self._acquire():
             return
         self._selection = (list(roots), dict(scored) if scored is not None else None)
-        if any(s['paradigm_code'] and s['paradigm_code'] != self._paradigms[self._paradigm_index]['code'] for s in sessions):
+        if any(s['paradigm_code'] and s['paradigm_code'] != self._paradigms[self._paradigm_index]['code'] for s in sessions or []):
             self._error = '图片采集包请选择 RSVP 图片 EEG 范式'
             self.lock.unlock(); self.lock = None; self.changed.emit(); return
         self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition, sessions=sessions)

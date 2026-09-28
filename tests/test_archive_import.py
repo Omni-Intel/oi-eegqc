@@ -42,3 +42,43 @@ def test_partial_database_failure_preserves_receipts_and_retries_only_pending():
     client.fail=False
     sync_database(Store(),batch,client,lambda *a:None)
     assert client.seen==['one','two','two'] and not database_pending(batch)
+
+
+def test_cached_edf_score_supplies_duration_and_reports_progress(tmp_path):
+    from oi_eegqc.archive_import import grade_sessions
+    from oi_eegqc.scoring_version import SCORING_ALGORITHM_VERSION
+    path=tmp_path/'eeg.edf';path.write_bytes(b'raw')
+    stat=path.stat()
+    (tmp_path/'eegqc-report.json').write_text(json.dumps({'source':[stat.st_size,stat.st_mtime_ns,50,SCORING_ALGORITHM_VERSION],
+        'report':{'gqi':90,'usable_ratio':.8,'duration_s':100}}))
+    row={'recording':str(path),'session_directory':str(tmp_path),'source_session_id':'one','recorded_duration_s':None}
+    progress=[]
+    grade_sessions([row],lambda:False,progress.append)
+    assert row['recorded_duration_s']==100 and row['usable_duration_s']==80
+    assert progress and '1/1' in progress[0]
+
+
+def test_scoring_timeout_terminates_worker_before_next_file():
+    from unittest.mock import Mock
+    from oi_eegqc.application.scoring_process import ScoringProcess
+    client=ScoringProcess();process=Mock();process.is_alive.return_value=True
+    client.process=process;client.connection=Mock()
+    assert client.score('slow',{},lambda:False,lambda phase:None,0)[0]=='timeout'
+    process.terminate.assert_called_once()
+    assert client.process is None and client.connection is None
+
+
+def test_upload_preparation_reuses_identified_sessions_and_exposes_stages(tmp_path,monkeypatch):
+    from PySide6.QtCore import QObject
+    from unittest.mock import Mock
+    from oi_eegqc import archive_import
+    from oi_eegqc.upload_ui import UploadWorker
+    parent=QObject();parent.telemetry=None
+    store=Mock();store.paradigm={'code':'RSVP-20260924'};store.prepare.return_value={'entries':[]}
+    row={'paradigm_code':'RSVP-20260924','session_directory':str(tmp_path)}
+    monkeypatch.setattr(archive_import,'read_sessions',lambda root:(_ for _ in ()).throw(AssertionError('metadata read twice')))
+    monkeypatch.setattr(archive_import,'grade_sessions',lambda *args:None)
+    worker=UploadWorker(store,tmp_path,roots=[tmp_path],parent=parent,sessions=[row])
+    progress=[];worker.progress.connect(progress.append);worker.run()
+    assert worker.error==''
+    assert [p['stage'] for p in progress if 'stage' in p]==['identifying','scoring','scanning']

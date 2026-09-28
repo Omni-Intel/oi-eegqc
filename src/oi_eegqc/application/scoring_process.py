@@ -45,6 +45,7 @@ class ScoringProcess:
 
     def score(self, path, metadata, cancelled, phase, timeout_s):
         start = time.monotonic()
+        last_update = start
         if self.process is None or not self.process.is_alive():
             self.start()
         try:
@@ -53,9 +54,14 @@ class ScoringProcess:
             self.connection.send({"path": path, "metadata": metadata})
             while True:
                 if cancelled():
+                    self.close()
                     return "cancelled", None
                 if time.monotonic() - start >= timeout_s:
+                    self.close()
                     return "timeout", "评分超时，可重试"
+                if time.monotonic()-last_update>=5:
+                    phase(f"正在计算，已用 {int(time.monotonic()-start)} 秒")
+                    last_update=time.monotonic()
                 if self.connection.poll(0.05):
                     kind, payload = self.connection.recv()
                     if kind == "phase":
@@ -63,8 +69,10 @@ class ScoringProcess:
                     else:
                         return kind, payload
                 elif not self.process.is_alive():
+                    self.close()
                     return "crash", "评分进程异常退出，可重试"
         except (EOFError, BrokenPipeError, OSError):
+            self.close()
             return "crash", "评分进程异常退出，可重试"
 
     def close(self):
