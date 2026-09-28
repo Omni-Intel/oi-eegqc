@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-SUPPORTED = {".edf", ".edf+", ".bdf", ".npy"}
+SUPPORTED = {".edf", ".edf+", ".bdf", ".npy", ".float32"}
 
 
 def discover_files(paths, cancelled=lambda: False):

@@ -167,6 +167,9 @@ def inspect_channel_names(path, extra=None):
     extra = dict(extra or {})
     path = Path(path)
     suffix = path.suffix.lower()
+    if suffix == '.float32':
+        raw = _read_json_object(path.with_suffix('.float32.json'))
+        return list(raw['channel_names'])
     if suffix in EDF_SUFFIXES:
         labels = edf_channel_labels(path)
         if not labels:
@@ -254,6 +257,9 @@ def inspect_file(path):
     suffix = path.suffix.lower()
     if suffix == ".npy":
         return npy_metadata(path)
+    if suffix == '.float32':
+        metadata = _read_json_object(path.with_suffix('.float32.json'))
+        return {'sfreq': float(metadata['sampling_rate_hz']), 'unit': 'uV'}
     if suffix in EDF_SUFFIXES:
         return inspect_edf_header(path)
     return {}
@@ -336,6 +342,9 @@ def score_file(
             device_type=device_type,
             **extras,
         )
+    elif suffix == '.float32':
+        from .io.neuracle import load_neuracle_float32
+        recording = load_neuracle_float32(path)
     elif suffix in EDF_SUFFIXES:
         edf_kwargs = dict(extras)
         if unit:

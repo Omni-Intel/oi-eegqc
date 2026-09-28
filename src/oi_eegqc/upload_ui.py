@@ -4,8 +4,20 @@ from pathlib import Path
 import time
 import re
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot, Property, QLockFile
+from PySide6.QtCore import QObject, QThread, Signal, Slot, Property, QLockFile, QTimer, QUrl
 from .desktop_upload import BatchStore, UploadSession, UploadCancelled, friendly_error
+
+
+class ParadigmWorker(QThread):
+    def run(self):
+        from .upload_http import SignClient
+        self.rows, self.error = [], ''
+        try:
+            self.rows = SignClient().paradigms()
+        except Exception as exc:
+            self.error = '无法读取范式列表，请连接内网后刷新'
+            if self.parent().telemetry:
+                self.parent().telemetry.report('paradigm_fetch_failed', exc=exc)
 
 
 class UploadWorker(QThread):
@@ -45,6 +57,8 @@ class UploadWorker(QThread):
             self.error = "已取消准备"
         except Exception as error:
             self.error = friendly_error(error)
+            if self.parent().telemetry:
+                self.parent().telemetry.report('upload_prepare_failed' if self.roots is not None else 'upload_failed', exc=error)
 
 
 class UploadController(QObject):
@@ -54,6 +68,7 @@ class UploadController(QObject):
     def __init__(self, data_directory, parent=None):
         super().__init__(parent)
         self.data_directory = Path(data_directory)
+        self.telemetry = getattr(parent, 'telemetry', None)
         self.store = BatchStore(self.data_directory / "uploads-cos-beijing")
         self.worker = None
         self.batch = None
@@ -63,17 +78,99 @@ class UploadController(QObject):
         self._folder_cache_key, self._folder_cache = None, []
         self._selection = None
         self.lock = None
+        self._paradigms, self._paradigm_index = [], -1
+        self.registry_worker = None
         try:
             self.batch = self.store.load()
         except Exception as error:
             self._error = friendly_error(error)
+        QTimer.singleShot(0, self.refreshParadigms)
+
+    paradigmNames = Property('QVariantList', lambda self: [f"{p['name']} · {p['code']}" for p in self._paradigms], notify=changed)
+    paradigmIndex = Property(int, lambda self: self._paradigm_index, notify=changed)
+    loadingParadigms = Property(bool, lambda self: self.registry_worker is not None, notify=changed)
+    paradigmName = Property(str, lambda self: self._paradigms[self._paradigm_index]['name'] if self._paradigm_index >= 0 else '选择上传范式', notify=changed)
+
+    @Property(str, notify=changed)
+    def destinationText(self):
+        if self._paradigm_index < 0:
+            return '连接内网后选择上传范式'
+        target = self._paradigms[self._paradigm_index]['destination']
+        return f"cos://{target['bucket']}/{target['prefix'].strip('/')}/"
+
+    @Slot()
+    def refreshParadigms(self):
+        if self.registry_worker is not None:
+            return
+        self.registry_worker = ParadigmWorker(self)
+        self.registry_worker.finished.connect(self._registry_ready)
+        self.registry_worker.start()
+        self.changed.emit()
+
+    @Slot()
+    def _registry_ready(self):
+        worker = self.registry_worker
+        self.registry_worker = None
+        if worker.error:
+            self._error = worker.error
+        else:
+            settings = getattr(self.parent(), 'store', None)
+            saved = settings.value('upload_paradigm', 'AVEEG-20260923') if settings is not None else 'AVEEG-20260923'
+            old = self._paradigms[self._paradigm_index]['code'] if self._paradigm_index >= 0 else (self.batch or {}).get('paradigm_code', saved)
+            self._paradigms = worker.rows
+            index = next((i for i,p in enumerate(self._paradigms) if p['code'] == old), 0)
+            if not self.active and self._paradigms:
+                self.selectParadigm(index)
+            elif not self._paradigms:
+                self._paradigm_index = -1
+                self._error = '数据库中没有启用的范式，请联系管理员配置'
+        worker.deleteLater()
+        self.changed.emit()
+
+    @Slot(int)
+    def selectParadigm(self, index):
+        if self.active or not 0 <= index < len(self._paradigms):
+            return
+        self._paradigm_index = index
+        row = self._paradigms[index]
+        if self.telemetry:
+            self.telemetry.paradigm = row['code']
+        settings = getattr(self.parent(), 'store', None)
+        if settings is not None:
+            settings.setValue('upload_paradigm', row['code'])
+        directory = self.data_directory / 'uploads-cos-beijing'
+        if row['code'] != 'AVEEG-20260923':
+            directory = self.data_directory / 'uploads' / row['code']
+        self.store = BatchStore(directory, row)
+        self._error = ''
+        self._selection = None
+        self._progress = {}
+        self._folder_cache_key = None
+        try:
+            self.batch = self.store.load()
+        except Exception as error:
+            self._error = friendly_error(error)
+        self.changed.emit()
+
+    @Slot('QVariantList')
+    def addUrls(self, urls):
+        roots = [QUrl(value).toLocalFile() for value in urls if QUrl(value).isLocalFile()]
+        if roots:
+            self.prepare(roots, None)
+
+    @Slot()
+    def open(self):
+        self._opened = True
+        if not self.active:
+            self.refreshParadigms()
+        self.changed.emit()
 
     opened = Property(bool, lambda self: self._opened, notify=changed)
     active = Property(bool, lambda self: self.worker is not None, notify=changed)
     canCancel = Property(bool, lambda self: self.active and not (self.worker.session and self.worker.session.committing), notify=changed)
     hasBatch = Property(bool, lambda self: self.batch is not None and self.batch["status"] != "completed", notify=changed)
     hasIssue = Property(bool, lambda self: bool(self._error), notify=changed)
-    canStart = Property(bool, lambda self: not self.active and self.hasBatch and not self._error, notify=changed)
+    canStart = Property(bool, lambda self: self._paradigm_index >= 0 and not self.active and self.hasBatch and not self._error, notify=changed)
 
     @Property("QVariantMap", notify=changed)
     def info(self):
@@ -88,7 +185,7 @@ class UploadController(QObject):
         if cache_key != self._folder_cache_key:
             self._folder_cache = []
             for root in batch.get("roots", []):
-                members = [e for e in entries if not e["directory"] and Path(root) in Path(e.get("source", "")).parents]
+                members = [e for e in entries if not e["directory"] and (Path(root) == Path(e.get("source", "")) or Path(root) in Path(e.get("source", "")).parents)]
                 size = sum(e["size"] for e in members)
                 self._folder_cache.append(dict(name=Path(root).name, path=root, count=len(members),
                                                size=f"{size / 1024 / 1024:.1f} 兆字节"))
@@ -127,6 +224,11 @@ class UploadController(QObject):
         return True
 
     def prepare(self, roots, scored, new_acquisition=False):
+        if self._paradigm_index < 0:
+            self._opened = True
+            self._error = '请先连接内网并选择上传范式'
+            self.changed.emit()
+            return
         if getattr(self,'record_guard',None) and not self.record_guard(roots):
             self._error='该名单包含已移除记录，请重新选择';self.changed.emit();return
         self._opened = True
@@ -137,7 +239,7 @@ class UploadController(QObject):
         self._error = ""
         if not self._acquire():
             return
-        self._selection = (list(roots), dict(scored))
+        self._selection = (list(roots), dict(scored) if scored is not None else None)
         self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition)
         self._launch()
 
@@ -183,7 +285,7 @@ class UploadController(QObject):
             if self._selection:
                 selected,scored=self._selection
                 self._selection=([p for p in selected if not any(contains(r,p) or contains(p,r) for r in roots)],
-                                 {p:v for p,v in scored.items() if not any(contains(r,p) for r in roots)})
+                                 {p:v for p,v in scored.items() if not any(contains(r,p) for r in roots)} if scored is not None else None)
             self.changed.emit();return True
         except Exception as error:
             self._error=friendly_error(error);self.changed.emit();return False
@@ -210,6 +312,8 @@ class UploadController(QObject):
         if worker.batch:
             self.batch = worker.batch
         self._error = worker.error
+        if self.telemetry and not self._error and (self.batch or {}).get('status') == 'completed':
+            self.telemetry.report('upload_completed', count=len(self.batch.get('entries', [])))
         worker.deleteLater()
         self.lock.unlock()
         self.lock = None
@@ -283,6 +387,8 @@ class UploadController(QObject):
             self.lock = None
 
     def shutdown(self):
+        if self.registry_worker:
+            self.registry_worker.wait()
         if self.worker:
             self.worker.cancel()
             self.worker.wait()

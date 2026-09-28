@@ -114,6 +114,8 @@ class BenchConfig:
         "EOG",
         "EMG",
         "TRIG",
+        "TRG",
+        "TRIGGER",
         "STI 014",
     )
     impedance_good_kohm: float = 5.0

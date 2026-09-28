@@ -21,6 +21,8 @@ class UploadSession:
     def __init__(self, store, batch, data_directory, progress, client_factory=SignClient):
         self.store, self.batch, self.data_directory = store, batch, data_directory
         self.progress, self.client_factory = progress, client_factory
+        self.destination = batch.get('destination')
+        self.prefix = (self.destination.get('prefix', PREFIX) if self.destination else PREFIX).rstrip('/') + '/'
         self.stopped = threading.Event()
         self.commit_lock = threading.Lock()
         self.committing = False
@@ -129,7 +131,7 @@ class UploadSession:
         response = client.sign_round(upload_id, round_id, [entry["relative"] for entry in entries])
         if response.get("uploadId") != upload_id or response.get("roundId") != round_id:
             raise UploadError("上传服务返回了不一致的签名目标")
-        if response.get("prefix") != PREFIX + upload_id + "/" or not response.get("expiresAt"):
+        if response.get("prefix") != self.prefix + upload_id + "/" or not response.get("expiresAt"):
             raise UploadError("上传服务返回了无效签名信息")
         objects = response.get("objects")
         if not isinstance(objects, list) or len(objects) != len(entries):
@@ -138,13 +140,13 @@ class UploadSession:
         for item in objects:
             if not isinstance(item, dict) or item.get("path") not in expected or item["path"] in result:
                 raise UploadError("签名文件路径不一致")
-            key = PREFIX + upload_id + "/" + item["path"]
+            key = self.prefix + upload_id + "/" + item["path"]
             if item.get("objectKey") != key:
                 raise UploadError("签名目标不在本轮上传内")
             upload_key = item.get("uploadKey", key)
-            if upload_key not in (key, PREFIX + ".staging/" + upload_id + "/" + round_id + "/" + item["path"]):
+            if upload_key not in (key, self.prefix + ".staging/" + upload_id + "/" + round_id + "/" + item["path"]):
                 raise UploadError("签名暂存目标不在本轮上传内")
-            validate_put_url(item.get("putUrl", ""), upload_key)
+            validate_put_url(item.get("putUrl", ""), upload_key, self.destination)
             result[item["path"]] = (item["putUrl"], upload_key)
         return result
 
@@ -226,7 +228,7 @@ class UploadSession:
         listed = client.list_parts(upload_id, round_id, entry["relative"]).get("parts", [])
         uploaded = {part["partNumber"]: part for part in listed}
         existing = sum(part.get("size", 0) for part in uploaded.values())
-        key = PREFIX + upload_id + "/" + entry["relative"]
+        key = self.prefix + upload_id + "/" + entry["relative"]
         for offset in range(0, part_count, 1000):
             numbers = [
                 number
@@ -324,6 +326,9 @@ class UploadSession:
                 if any(part in ("", ".", "..") for part in entry["relative"].rstrip("/").split("/")) or "\\" in entry["relative"]:
                     raise UploadError("文件相对路径无效")
             client = self.client_factory(self.data_directory)
+            if isinstance(client, SignClient):
+                client.paradigm = self.batch.get('paradigm_code')
+                client.destination = self.destination
             self.client = client
             self.check_cancel()
             client.health()

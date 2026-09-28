@@ -12,7 +12,7 @@ from pathlib import Path
 BUCKET = "neurolm-1442740494"
 from .upload_http import PREFIX
 ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
-EEG_SUFFIXES = {".edf", ".edf+", ".bdf", ".npy"}
+EEG_SUFFIXES = {".edf", ".edf+", ".bdf", ".npy", ".float32"}
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
@@ -52,7 +52,7 @@ def normalize_roots(roots):
     result = []
     for value in sorted({str(Path(p).absolute()) for p in roots}, key=lambda p: (len(Path(p).parts), p)):
         path = plain_path(value).resolve()
-        if not path.is_dir():
+        if not path.exists():
             raise UploadError("源文件夹不存在")
         if not any(path == parent or parent in path.parents for parent in result):
             result.append(path)
@@ -104,7 +104,16 @@ def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, lab
                         values["sha256"] = digest
                     entries.append(dict(source=str(child), relative=label + "/" + child.relative_to(root).as_posix(),
                                         directory=False, done=False, **values))
-        walk(root)
+        if root.is_file():
+            progress(str(root))
+            values = fingerprint(root, cancelled)
+            if hash_cache is not None:
+                values['sha256'], identity = hash_cache.digest(root, cancelled)
+                if identity != (values['size'], values['mtime']):
+                    raise UploadError('文件在准备期间发生变化，请重试')
+            entries.append(dict(source=str(root), relative=label, directory=False, done=False, **values))
+        else:
+            walk(root)
     return entries
 
 
@@ -142,8 +151,9 @@ def validate_bids_package(folder, cancelled=lambda: False, hash_cache=None):
 
 
 class BatchStore:
-    def __init__(self, directory):
+    def __init__(self, directory, paradigm=None):
         self.directory = Path(directory)
+        self.paradigm = paradigm
 
     def save(self, batch):
         for child in batch.get("children", []):
@@ -299,6 +309,8 @@ class BatchStore:
                 child.setdefault("round_id", None)
                 child.setdefault("round_request_id", secrets.token_hex(16))
                 child.setdefault("round_sealed", False)
+            if self.paradigm:
+                child.update(paradigm_code=self.paradigm['code'], destination=dict(self.paradigm['destination']))
             self._write_record(child)
             atomic_json(pointer, {"local_id": child["local_id"]})
             children.append(child)

@@ -38,10 +38,11 @@ ROUND_ROUTE = re.compile(
 
 
 class UploadServer(ThreadingHTTPServer):
-    def __init__(self, address, coordinator, storage):
+    def __init__(self, address, coordinator, storage, registry=None):
         super().__init__(address, UploadHandler)
         self.coordinator = coordinator
         self.storage = storage
+        self.registry = registry
 
 
 class UploadHandler(BaseHTTPRequestHandler):
@@ -49,11 +50,19 @@ class UploadHandler(BaseHTTPRequestHandler):
 
     @property
     def coordinator(self):
-        return self.server.coordinator
+        return self._route()[0]
 
     @property
     def storage(self):
-        return self.server.storage
+        return self._route()[1]
+
+    def _route(self):
+        code = self.headers.get('X-EEG-Paradigm')
+        if code:
+            if self.server.registry is None:
+                raise ValueError('paradigm routing unavailable')
+            return self.server.registry.route(code)
+        return self.server.coordinator, self.server.storage
 
     def log_message(self, fmt, *args):
         print(f"{self.client_address[0]} {fmt % args}", flush=True)
@@ -96,13 +105,17 @@ class UploadHandler(BaseHTTPRequestHandler):
             raise ValueError("only intranet clients may upload")
         parsed = urlparse(self.path)
         path = parsed.path
+        if method == 'GET' and path == '/v1/uploads/paradigms':
+            if self.server.registry is None:
+                raise NotFound('paradigm registry unavailable')
+            return {'paradigms': self.server.registry.list()}
         if method == "GET" and path == "/health":
             return {
                 "status": "ok",
                 "service": "eeg-upload-signer",
                 "version": 2,
                 "bucket": self.storage.bucket,
-                "prefix": INBOX_PREFIX + "/",
+                "prefix": self.storage.prefix + "/",
                 "destination": "local-inbox" if hasattr(self.storage, "root") else ("cos" if self.storage.__class__.__name__=='CosStorage' else "tos"),
                 "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only"],
             }
@@ -144,7 +157,7 @@ class UploadHandler(BaseHTTPRequestHandler):
             return {
                 "uploadId": upload_id,
                 "roundId": round_id,
-                "prefix": f"{INBOX_PREFIX}/{upload_id}/",
+                "prefix": f"{self.storage.prefix}/{upload_id}/",
                 "expiresAt": self.expires_at(),
                 "objects": objects,
             }
@@ -184,19 +197,19 @@ class UploadHandler(BaseHTTPRequestHandler):
             raise ValueError("duplicate file path")
         objects = []
         for path in paths:
-            key = f"{INBOX_PREFIX}/{upload_id}/{path}"
+            key = f"{self.storage.prefix}/{upload_id}/{path}"
             objects.append({"path": path, "objectKey": key, "putUrl": self.storage.sign_put(key)})
         return {
             "uploadId": upload_id,
             "bucket": self.storage.bucket,
-            "prefix": f"{INBOX_PREFIX}/{upload_id}/",
+            "prefix": f"{self.storage.prefix}/{upload_id}/",
             "expiresAt": self.expires_at(),
             "objects": objects,
         }
 
     def legacy_complete(self, upload_id):
         self.coordinator.ensure_legacy_allowed(upload_id)
-        key = f"{INBOX_PREFIX}/{upload_id}/_COMPLETE"
+        key = f"{self.storage.prefix}/{upload_id}/_COMPLETE"
         return {"uploadId": upload_id, "objectKey": key, "putUrl": self.storage.sign_put(key)}
 
     def do_GET(self):
@@ -277,7 +290,11 @@ def main():
     coordinator = UploadCoordinator(state, storage)
     host = os.environ.get("LISTEN_HOST", "172.16.1.249")
     port = int(os.environ.get("LISTEN_PORT", "8443"))
-    server = UploadServer((host, port), coordinator, storage)
+    registry = None
+    if backend == 'cos':
+        from .paradigms import ParadigmRegistry
+        registry = ParadigmRegistry(os.environ.get('PARADIGMS_API_URL', 'https://personnel.intra.omni-intel.cn/v1/capture/paradigms'), state, storage)
+    server = UploadServer((host, port), coordinator, storage, registry)
     if backend == "tos" or os.environ.get("TLS_CERT"):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2

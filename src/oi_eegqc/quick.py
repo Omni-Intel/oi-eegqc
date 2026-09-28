@@ -34,8 +34,9 @@ class DownloadWorker(QThread):
                                            self.isInterruptionRequested)
         except DownloadCancelled:
             self.error = "已取消下载"
-        except Exception:
+        except Exception as exc:
             self.error = "下载或校验失败，请重试"
+            self.parent().telemetry.report('update_download_failed', exc=exc)
 
 
 class InstallWorker(QThread):
@@ -46,8 +47,9 @@ class InstallWorker(QThread):
     def run(self):
         try:
             launch_installer(self.path, self.info)
-        except Exception:
+        except Exception as exc:
             self.error = True
+            self.parent().telemetry.report('update_install_failed', exc=exc)
 
 
 def _as_str_list(value):
@@ -225,9 +227,16 @@ class Controller(QObject):
         self._report_open = False
         self._report = {}
         self.store = settings if settings is not None else QSettings("Omni-Intelligence", "EEGQC")
+        self._automatic_updates = str(self.store.value('automatic_updates', 'true')).lower() not in ('false', '0')
         data_directory = (Path(settings.fileName()).parent / "appdata" if settings is not None else
                           Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)))
         self._data_directory = data_directory
+        from .telemetry import Telemetry
+        self.telemetry = Telemetry(data_directory, enabled=getattr(sys, 'frozen', False) and settings is None,
+                                   install_kind='installed' if (Path(sys.executable).parent / 'unins000.exe').is_file() else 'portable')
+        if self.telemetry.enabled:
+            self.telemetry.install_hooks()
+            self.telemetry.report('app_started')
         self._upload = UploadController(data_directory, self)
         self._upload.idle.connect(self._upload_idle)
         self._folder_roots = []
@@ -240,12 +249,15 @@ class Controller(QObject):
         self.timer = QTimer(self)
         self.timer.setInterval(250)
         self.timer.timeout.connect(self.changed)
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(1500)
+        self.update_timer.timeout.connect(self._apply_automatic_update)
+        self.update_timer.start()
 
     model = Property(QObject, lambda self: self.files, constant=True)
     upload = Property(QObject, lambda self: self._upload, constant=True)
     folderCount = Property(int, lambda self: len(self._folder_roots), notify=changed)
-    canUpload = Property(bool, lambda self: bool(self._folder_roots) and not self._busy and bool(self.files.rows)
-                         and all(r["report"] is not None and r.get("scored_stat") for r in self.files.rows), notify=changed)
+    canUpload = Property(bool, lambda self: bool(self._folder_roots) and not self._busy, notify=changed)
     channelModel = Property(QObject, lambda self: self.channels, constant=True)
     version = Property(str, lambda self: __version__, constant=True)
     busy = Property(bool, lambda self: self._busy, notify=changed)
@@ -268,8 +280,22 @@ class Controller(QObject):
     downloading = Property(bool, lambda self: self.downloader is not None, notify=changed)
     downloadProgress = Property(int, lambda self: self._download_progress, notify=changed)
     updateReady = Property(bool, lambda self: self._installer is not None, notify=changed)
+    automaticUpdates = Property(bool, lambda self: self._automatic_updates, notify=changed)
     canDownload = Property(bool, lambda self: self._update_info is not None and downloadable(self._update_info), notify=changed)
     portable = Property(bool, lambda self: not (Path(sys.executable).parent / "unins000.exe").is_file(), constant=True)
+
+    @Slot(bool)
+    def setAutomaticUpdates(self, enabled):
+        self._automatic_updates = enabled
+        self.store.setValue('automatic_updates', enabled)
+        self.changed.emit()
+
+    def _apply_automatic_update(self):
+        if (getattr(sys, 'frozen', False) and self._automatic_updates and not self._closing
+                and self._installer
+                and not self._busy and not self._importing and not self._upload.active
+                and not self._upload.hasBatch):
+            self.installUpdate()
 
     @Property(str, notify=changed)
     def summary(self):
@@ -306,7 +332,7 @@ class Controller(QObject):
         self._busy = self._importing = True
         self._notice = ""
         self._shared = None
-        self._import_roots = [str(Path(p).absolute()) for p in paths if Path(p).is_dir()]
+        self._import_roots = [str(Path(p).absolute()) for p in paths if Path(p).exists()]
         self.worker = IntakeWorker(paths, set())
         self.worker.finished.connect(self._scanned)
         self.worker.start()
@@ -438,7 +464,7 @@ class Controller(QObject):
         self._anchor = 0
         self._notice = ""
         self._folder_roots = [root for root in self._folder_roots
-                              if any(Path(root) in Path(r["path"]).parents for r in self.files.rows)]
+                              if any(Path(root) == Path(r["path"]) or Path(root) in Path(r["path"]).parents for r in self.files.rows)]
         self.files.names(self._folder_roots)
         self.changed.emit()
 
@@ -448,11 +474,7 @@ class Controller(QObject):
             return
         if getattr(self,'record_bridge',None) and not self.record_bridge.upload_allowed(self._folder_roots):
             self._notice='所选文件夹包含已移除记录，请改选需要上传的记录文件夹';self.changed.emit();return
-        scored = {
-            r["path"]: (*r["scored_stat"], r.get("content_sha256"))
-            for r in self.files.rows
-                  if r["report"] is not None and r.get("scored_stat")}
-        self._upload.prepare(self._folder_roots, scored)
+        self._upload.prepare(self._folder_roots, None)
 
     @Slot()
     def _upload_idle(self):
@@ -723,6 +745,7 @@ class Controller(QObject):
 
     @Slot(int, str)
     def _failed(self, index, message):
+        self.telemetry.report('quality_failed', count=1)
         self.files.patch(index, error=message, state="超时" if "超时" in message else "失败",
                          detail=message.lower(), ready=True)
         self._done += 1
@@ -767,6 +790,10 @@ class Controller(QObject):
         self._update_url = (info.asset_url or info.release_url) if info.status == "available" else ""
         self.changed.emit()
         self.updateCompleted.emit(info)
+        if info.status == 'error':
+            self.telemetry.report('update_check_failed')
+        if self._automatic_updates and getattr(sys, 'frozen', False) and self.canDownload and not self._closing:
+            self.downloadUpdate()
 
     @Slot()
     def openUpdate(self):
@@ -803,7 +830,9 @@ class Controller(QObject):
     def _download_finished(self):
         worker = self.downloader
         self._installer = worker.path
-        self._update_text = worker.error or "已下载并校验"
+        if self._installer:
+            self.telemetry.report('update_download_completed')
+        self._update_text = worker.error or "更新已下载，工作结束后自动重启；也可点击立即更新"
         self.downloader = None
         worker.deleteLater()
         self.changed.emit()
@@ -816,6 +845,8 @@ class Controller(QObject):
             return
         self._busy = True
         self._phase = "准备更新"
+        self.store.setValue('update_restore_paths', list(dict.fromkeys(self._folder_roots + [r['path'] for r in self.files.rows])))
+        self.store.sync()
         self.installer_worker = InstallWorker(self._installer, self._update_info, self)
         self.installer_worker.finished.connect(self._install_started)
         self.installer_worker.start()
@@ -828,7 +859,7 @@ class Controller(QObject):
         self._busy = False
         worker.deleteLater()
         if worker.error:
-            self._update_text = "无法启动安装，请重新下载或打开下载页"
+            self._update_text = "无法启动更新，请重新下载或打开下载页"
             self._installer = None
             self.changed.emit()
             return
@@ -858,6 +889,8 @@ class Controller(QObject):
     def shutdown(self):
         self._closing = True
         self.timer.stop()
+        self.update_timer.stop()
+        self.telemetry.stop.set()
         self._upload.shutdown()
         if self.worker:
             self.worker.requestInterruption()
@@ -910,6 +943,12 @@ def main():
         QTimer.singleShot(0,lambda:show_window(window))
         QTimer.singleShot(0,controller.record_bridge.refresh)
     app.aboutToQuit.connect(controller.shutdown)
+    if bridge_enabled:
+        restored = _as_str_list(controller.store.value('update_restore_paths', []))
+        controller.store.remove('update_restore_paths')
+        if restored:
+            QTimer.singleShot(200, lambda: controller.add_paths([p for p in restored if Path(p).exists()]))
+        QTimer.singleShot(1000, controller.checkUpdate)
     args = sys.argv[1:]
     if args and not bridge_enabled:
         import json

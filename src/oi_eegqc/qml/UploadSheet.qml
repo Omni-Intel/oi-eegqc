@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 QuietPopup {
     id: sheet
@@ -11,20 +12,48 @@ QuietPopup {
     property bool maintenanceOpen: false
     parent: Overlay.overlay
     anchors.centerIn: parent
-    width: Math.min(520, Overlay.overlay.width - 40)
+    width: Math.min(620, Overlay.overlay.width - 40)
     padding: compact ? 20 : 24
     height: Math.min(content.implicitHeight + topPadding + bottomPadding, Overlay.overlay.height - 40)
     modal: true
     visible: backend.upload.opened
     onVisibleChanged: if (!visible) maintenanceOpen = false
     onAboutToHide: if (backend.upload.opened) backend.upload.close()
+    FileDialog { id: uploadFiles; fileMode: FileDialog.OpenFiles; title: "选择上传文件"; onAccepted: sheet.backend.upload.addUrls(selectedFiles) }
+    FolderDialog { id: uploadFolder; title: "选择上传文件夹"; onAccepted: sheet.backend.upload.addUrls([selectedFolder]) }
     contentItem: ColumnLayout {
         id: content
         spacing: sheet.compact ? 12 : 20
         RowLayout {
             Layout.fillWidth: true
-            Text { text: "上传文件夹"; color: "#303941"; font.pixelSize: 17; font.weight: Font.DemiBold; Layout.fillWidth: true }
+            Text { text: "上传数据"; color: "#303941"; font.pixelSize: 17; font.weight: Font.DemiBold; Layout.fillWidth: true }
             Text { text: sheet.info.status; color: sheet.info.failed ? "#a04f3e" : "#7c8791"; font.pixelSize: 12 }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            Text { text: "上传范式"; color: "#303941"; font.weight: Font.DemiBold }
+            QuietCombo { objectName: "uploadParadigm"; Layout.fillWidth: true; model: sheet.backend.upload.paradigmNames; currentIndex: sheet.backend.upload.paradigmIndex; enabled: !sheet.backend.upload.active; onActivated: function(index) { sheet.backend.upload.selectParadigm(index); } }
+            QuietButton { text: sheet.backend.upload.loadingParadigms ? "读取中…" : "刷新目录"; enabled: !sheet.backend.upload.active && !sheet.backend.upload.loadingParadigms; onClicked: sheet.backend.upload.refreshParadigms() }
+        }
+        Rectangle {
+            Layout.fillWidth: true; implicitHeight: targetInfo.implicitHeight + 24
+            radius: 8; color: "#edf2f5"
+            ColumnLayout {
+                id: targetInfo; anchors.fill: parent; anchors.margins: 12; spacing: 6
+                Text { text: "存储位置 · 来自平台数据库"; color: "#526674"; font.pixelSize: 11 }
+                Text { objectName: "uploadDestination"; text: sheet.backend.upload.destinationText; color: "#303941"; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true; implicitHeight: 72; radius: 8; color: uploadDrop.containsDrag ? "#edf1f4" : "#f7f8fa"; border.color: "#e0e4e8"
+            RowLayout {
+                anchors.centerIn: parent
+                Text { text: "拖入文件或文件夹"; color: "#7c8791" }
+                QuietButton { text: "文件"; enabled: !sheet.backend.upload.active && sheet.backend.upload.paradigmIndex >= 0; onClicked: uploadFiles.open() }
+                QuietButton { text: "文件夹"; enabled: !sheet.backend.upload.active && sheet.backend.upload.paradigmIndex >= 0; onClicked: uploadFolder.open() }
+                QuietButton { text: "导入主列表"; visible: sheet.backend.canUpload; enabled: !sheet.backend.upload.active; onClicked: sheet.backend.prepareUpload() }
+            }
+            DropArea { id: uploadDrop; anchors.fill: parent; enabled: !sheet.backend.upload.active && sheet.backend.upload.paradigmIndex >= 0; onDropped: function(event) { if (event.hasUrls) { sheet.backend.upload.addUrls(event.urls); event.acceptProposedAction(); } } }
         }
         ScrollView {
             id: body
@@ -38,7 +67,7 @@ QuietPopup {
                 id: details
                 width: body.availableWidth
                 spacing: sheet.compact ? 12 : 18
-                Text { text: sheet.info.folderCount + " 个文件夹 · " + sheet.info.count + " 个文件 · " + sheet.info.size; color: "#303941"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                Text { text: sheet.info.folderCount + " 个来源 · " + sheet.info.count + " 个文件 · " + sheet.info.size; color: "#303941"; Layout.fillWidth: true; wrapMode: Text.Wrap }
                 Text { text: "上传到 COS 数据收件箱，自动跳过已上传的相同内容，暂停后可继续"; color: "#89929b"; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.Wrap }
                 Repeater {
                     objectName: "uploadFolderList"
@@ -107,7 +136,7 @@ QuietPopup {
                 objectName: "startUpload"
                 text: sheet.info.failed ? "重试" : sheet.info.started ? "继续上传" : "上传"
                 visible: !sheet.backend.upload.active && !sheet.info.completed && !sheet.info.uncertain
-                enabled: sheet.backend.upload.canStart && sheet.backend.canUpload
+                enabled: sheet.backend.upload.canStart
                 primary: true
                 onClicked: sheet.backend.upload.start()
             }

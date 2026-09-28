@@ -25,7 +25,7 @@ ApplicationWindow {
         id: files
         title: "选择文件"
         fileMode: FileDialog.OpenFiles
-        nameFilters: ["脑电文件 (*.edf *.edf+ *.bdf *.npy)"]
+        nameFilters: ["脑电文件 (*.edf *.edf+ *.bdf *.npy *.float32)"]
         onAccepted: backend.addUrls(selectedFiles)
     }
     FolderDialog { id: folders; title: "选择文件夹"; onAccepted: backend.addUrls([selectedFolder]) }
@@ -38,6 +38,12 @@ ApplicationWindow {
             QuietButton { objectName: "chooseFolder"; text: "选择文件夹"; symbol: "folder"; enabled: !backend.busy; onClicked: folders.open() }
             Item { Layout.fillWidth: true }
             QuietButton { objectName: "settingsButton"; text: "设置"; symbol: "settings"; enabled: !backend.busy; onClicked: window.settingsOpen = !window.settingsOpen }
+        }
+        RowLayout {
+            visible: backend.downloading || backend.updateReady
+            Layout.fillWidth: true
+            Text { text: backend.downloading ? "正在后台下载更新 · " + backend.downloadProgress + "%" : backend.updateText; color: "#526674"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+            QuietButton { text: "立即更新"; visible: backend.updateReady; enabled: !backend.busy && !backend.upload.active; onClicked: installConfirm.open() }
         }
         Rectangle {
             id: sheet
@@ -143,7 +149,7 @@ ApplicationWindow {
             Layout.fillWidth: true; spacing: 10
             Text { text: backend.summary; color: "#7c8791"; Layout.fillWidth: true; elide: Text.ElideRight }
             QuietButton { text: "移除 " + backend.selectedCount; visible: backend.selectedCount > 0 && !backend.busy; onClicked: backend.remove(false) }
-            QuietButton { objectName: "uploadFolder"; text: backend.upload.active ? "上传中…" : "上传文件夹"; enabled: backend.canUpload; onClicked: backend.prepareUpload() }
+            QuietButton { objectName: "uploadFolder"; text: backend.upload.active ? "上传中…" : "选择范式并上传"; enabled: !backend.busy; onClicked: backend.upload.open() }
             QuietButton { objectName: "scoreButton"; text: backend.busy ? "取消" : "评分"; primary: !backend.busy; implicitWidth: 94; enabled: backend.busy ? !backend.stopping : backend.canScore; onClicked: backend.scoreOrStop() }
         }
     }
@@ -201,6 +207,7 @@ ApplicationWindow {
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: "#eff1f3"; Layout.topMargin: 6; Layout.bottomMargin: 4 }
             Text { text: "当前版本 " + backend.version; color: "#99a2ab" }
+            CheckBox { text: "自动下载并更新"; checked: backend.automaticUpdates; onClicked: backend.setAutomaticUpdates(checked); palette.windowText: "#303941" }
             QuietButton { objectName: "checkUpdateButton"; text: backend.checking ? "正在检查…" : "检查更新"; enabled: !backend.checking && !backend.downloading; Layout.fillWidth: true; onClicked: backend.checkUpdate() }
             Text { visible: backend.updateText !== "" && !backend.checking; text: backend.updateText; color: "#7c8791"; Layout.fillWidth: true; wrapMode: Text.Wrap }
             QuietProgress { Layout.fillWidth: true; visible: backend.downloading; value: backend.downloadProgress / 100 }
@@ -213,7 +220,7 @@ ApplicationWindow {
             }
             QuietButton {
                 objectName: "installUpdate"
-                text: "安装并重启"; visible: backend.updateReady; enabled: !backend.busy && !backend.upload.active
+                text: "立即更新并重启"; visible: backend.updateReady; enabled: !backend.busy && !backend.upload.active
                 Layout.fillWidth: true
                 onClicked: installConfirm.open()
             }
@@ -251,13 +258,13 @@ ApplicationWindow {
         contentItem: ColumnLayout {
             spacing: 16
             Text {
-                text: backend.portable ? "将退出程序并转为安装版，原便携副本不变。当前列表不会保留。" : "将退出程序并覆盖升级，保留设置。当前列表不会保留。"
+                text: "程序将关闭、更新并重新打开，保留设置、上传队列和当前文件列表。"
                 wrapMode: Text.Wrap; Layout.fillWidth: true; color: "#303941"
             }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
                 QuietButton { text: "取消"; onClicked: installConfirm.close() }
-                QuietButton { objectName: "confirmInstall"; text: "继续安装"; enabled: !backend.busy && !backend.upload.active; onClicked: { installConfirm.close(); backend.installUpdate(); } }
+                QuietButton { objectName: "confirmInstall"; text: "更新并重启"; enabled: !backend.busy && !backend.upload.active; onClicked: { installConfirm.close(); backend.installUpdate(); } }
             }
         }
     }

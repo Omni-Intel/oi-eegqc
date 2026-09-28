@@ -65,6 +65,7 @@ class UploadCoordinator:
 
     def __init__(self, database, storage):
         self.storage = storage
+        self.prefix = getattr(storage, 'prefix', INBOX_PREFIX).strip('/')
         self.lock = threading.RLock()
         Path(database).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(database, check_same_thread=False)
@@ -296,8 +297,8 @@ class UploadCoordinator:
                     raise NotFound("file is not registered")
                 if row["mode"] != "single":
                     raise Conflict("large file requires multipart upload")
-                key = f"{INBOX_PREFIX}/{upload_id}/{path}"
-                upload_key = f"{INBOX_PREFIX}/.staging/{upload_id}/{round_id}/{path}"
+                key = f"{self.prefix}/{upload_id}/{path}"
+                upload_key = f"{self.prefix}/.staging/{upload_id}/{round_id}/{path}"
                 result.append(
                     {"path": path, "objectKey": key, "uploadKey": upload_key,
                      "putUrl": self.storage.sign_put(upload_key)}
@@ -324,8 +325,8 @@ class UploadCoordinator:
                 if row["state"] == "complete":
                     continue
                 self.storage.promote(
-                    f"{INBOX_PREFIX}/.staging/{upload_id}/{round_id}/{path}",
-                    f"{INBOX_PREFIX}/{upload_id}/{path}", etag,
+                    f"{self.prefix}/.staging/{upload_id}/{round_id}/{path}",
+                    f"{self.prefix}/{upload_id}/{path}", etag,
                 )
                 self.db.execute(
                     "UPDATE files SET state = 'complete', etag = ? WHERE round_id = ? AND path = ?",
@@ -336,7 +337,7 @@ class UploadCoordinator:
         for item in files:
             try:
                 self.storage.discard_staged(
-                    f"{INBOX_PREFIX}/.staging/{upload_id}/{round_id}/{normalize_path(item['path'])}"
+                    f"{self.prefix}/.staging/{upload_id}/{round_id}/{normalize_path(item['path'])}"
                 )
             except Exception:
                 logging.getLogger(__name__).warning("Temporary upload cleanup failed")
@@ -367,7 +368,7 @@ class UploadCoordinator:
             part_count = math.ceil(row["size"] / part_size)
             if part_count < 1 or part_count > 10000:
                 raise ValueError("invalid multipart part count")
-            key = f"{INBOX_PREFIX}/{upload_id}/{path}"
+            key = f"{self.prefix}/{upload_id}/{path}"
             multipart_id = self.storage.create_multipart(key)
             self.db.execute(
                 "UPDATE files SET multipart_upload_id = ?, part_size = ?, part_count = ? WHERE round_id = ? AND path = ?",
@@ -381,11 +382,10 @@ class UploadCoordinator:
                 "partCount": part_count,
             }
 
-    @staticmethod
-    def _multipart_result(upload_id, row):
+    def _multipart_result(self, upload_id, row):
         return {
             "path": row["path"],
-            "objectKey": f"{INBOX_PREFIX}/{upload_id}/{row['path']}",
+            "objectKey": f"{self.prefix}/{upload_id}/{row['path']}",
             "multipartUploadId": row["multipart_upload_id"],
             "partSize": row["part_size"],
             "partCount": row["part_count"],
@@ -413,7 +413,7 @@ class UploadCoordinator:
                 numbers.append(number)
             if len(set(numbers)) != len(numbers):
                 raise ValueError("duplicate part number")
-            key = f"{INBOX_PREFIX}/{upload_id}/{row['path']}"
+            key = f"{self.prefix}/{upload_id}/{row['path']}"
             return [
                 {
                     "partNumber": number,
@@ -425,13 +425,13 @@ class UploadCoordinator:
     def list_parts(self, upload_id, round_id, path):
         with self.lock:
             row = self._multipart_file(upload_id, round_id, path)
-            key = f"{INBOX_PREFIX}/{upload_id}/{row['path']}"
+            key = f"{self.prefix}/{upload_id}/{row['path']}"
             return self.storage.list_parts(key, row["multipart_upload_id"])
 
     def complete_multipart(self, upload_id, round_id, path):
         with self.lock:
             row = self._multipart_file(upload_id, round_id, path)
-            key = f"{INBOX_PREFIX}/{upload_id}/{row['path']}"
+            key = f"{self.prefix}/{upload_id}/{row['path']}"
             if row["state"] == "complete":
                 return {"path": row["path"], "objectKey": key, "etag": row["etag"] or ""}
             parts = self.storage.list_parts(key, row["multipart_upload_id"])

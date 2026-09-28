@@ -33,10 +33,13 @@ def _origin():
     return parsed
 
 
-def validate_put_url(url, object_key):
+def validate_put_url(url, object_key, destination=None):
     parsed = urlsplit(url)
-    if parsed.hostname==COS_HOST:
-        if parsed.scheme!='https' or parsed.port not in (None,443) or parsed.username or parsed.password or parsed.fragment or not parsed.query or unquote(parsed.path)!='/'+object_key or not object_key.startswith(PREFIX) or '..' in object_key.split('/'):raise ValueError('invalid COS destination')
+    destination = destination or {}
+    host = f"{destination['bucket']}.cos.{destination['region']}.myqcloud.com" if destination else COS_HOST
+    prefix = destination.get('prefix', PREFIX).rstrip('/') + '/'
+    if parsed.hostname==host:
+        if parsed.scheme!='https' or parsed.port not in (None,443) or parsed.username or parsed.password or parsed.fragment or not parsed.query or unquote(parsed.path)!='/'+object_key or not object_key.startswith(prefix) or '..' in object_key.split('/'):raise ValueError('invalid COS destination')
         return
     expected = "/objects/" + object_key
     if (
@@ -49,8 +52,9 @@ def validate_put_url(url, object_key):
         raise ValueError("invalid signed destination")
 
 
-def _connection(parsed, timeout):
-    if parsed.hostname not in ALLOWED_HOSTS and not (parsed.hostname==COS_HOST and parsed.scheme=='https'):
+def _connection(parsed, timeout, destination=None):
+    host = f"{destination['bucket']}.cos.{destination['region']}.myqcloud.com" if destination else COS_HOST
+    if parsed.hostname not in ALLOWED_HOSTS and not (parsed.hostname==host and parsed.scheme=='https'):
         raise ValueError("upload host is not an allowed intranet address")
     if parsed.scheme == "https":
         return http.client.HTTPSConnection(
@@ -63,6 +67,8 @@ def _connection(parsed, timeout):
 
 class SignClient:
     def __init__(self, data_directory=None):
+        self.paradigm = None
+        self.destination = None
         self.stopped = threading.Event()
         self.connection_lock = threading.Lock()
         self.connection = None
@@ -90,6 +96,9 @@ class SignClient:
             if self.connection is connection:
                 self.connection = None
             connection.close()
+
+    def paradigms(self):
+        return self._request('/v1/uploads/paradigms', method='GET')['paradigms']
 
     def health(self):
         connection = _connection(_origin(), 8)
@@ -128,7 +137,10 @@ class SignClient:
                 raise
             except (OSError, http.client.HTTPException):
                 raise NetworkUnavailable() from None
-            connection.request(method, route, body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+            headers = {'Content-Type': 'application/json', 'Content-Length': str(len(body))}
+            if self.paradigm:
+                headers['X-EEG-Paradigm'] = self.paradigm
+            connection.request(method, route, body=body, headers=headers)
             response = connection.getresponse()
             if response.status != 200:
                 raise ServiceError(response.status)
@@ -216,9 +228,9 @@ class SignClient:
         return self._put_range(url, key, source, offset, size, cancelled, progress)
 
     def _put_range(self, url, key, source, offset, size, cancelled, progress):
-        validate_put_url(url, key)
+        validate_put_url(url, key, self.destination)
         parsed = urlsplit(url)
-        connection = _connection(parsed, 30)
+        connection = _connection(parsed, 30, self.destination)
         self._track(connection)
         stream = None
         try:

@@ -8,12 +8,16 @@ class CosStorage:
     prefix='neuro-lm/data/inbox'
     url_ttl=3600
 
-    def __init__(self,client):self.client=client
+    def __init__(self,client,*,bucket=None,region=None,prefix=None):
+        self.client=client
+        self.bucket=bucket or type(self).bucket
+        self.region=region or type(self).region
+        self.prefix=(prefix or type(self).prefix).strip('/')
 
     @classmethod
-    def from_env(cls):
+    def from_env(cls,*,bucket=None,region=None,prefix=None):
         from qcloud_cos import CosConfig,CosS3Client
-        return cls(CosS3Client(CosConfig(Region=cls.region,SecretId=os.environ['COS_SECRET_ID'],SecretKey=os.environ['COS_SECRET_KEY'],Scheme='https')))
+        return cls(CosS3Client(CosConfig(Region=region or cls.region,SecretId=os.environ['COS_SECRET_ID'],SecretKey=os.environ['COS_SECRET_KEY'],Scheme='https')),bucket=bucket,region=region,prefix=prefix)
 
     def _key(self,key):
         if not key.startswith(self.prefix+'/') or '..' in key.split('/'):raise ValueError('Object is outside the dedicated inbox')

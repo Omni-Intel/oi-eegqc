@@ -6,6 +6,7 @@ root = Path(SPECPATH)
 datas = [(str(root / "LICENSE"), "licenses/oi-eegqc"),
          (str(root / "assets" / "omni-intelli logo" / "OMNI_LOGO_100x100.ico"), "assets/omni-intelli logo")]
 datas += [(str(root / "src" / "oi_eegqc" / "qml"), "oi_eegqc/qml")]
+datas += [(str(root / "src" / "oi_eegqc" / "apply-update.ps1"), "oi_eegqc")]
 datas += [(str(root / "packaging" / "quality-api.json"), ".")]
 datas += [(str(root / "src" / "oi_eegqc" / "layouts"), "oi_eegqc/layouts")]
 for package in ("mne", "numpy", "scipy", "PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6"):
