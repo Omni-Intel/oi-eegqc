@@ -90,6 +90,8 @@ def scan_sources(roots, cancelled=lambda: False, progress=lambda name: None, lab
                 if child.is_dir():
                     walk(child)
                 else:
+                    if child.suffix.lower() == '.zip':
+                        continue
                     progress(str(child))
                     values = fingerprint(child, cancelled)
                     if hash_cache is not None:
@@ -291,7 +293,7 @@ class BatchStore:
             )
             unchanged = previous and [identity(e) for e in members] == [identity(e) for e in previous["entries"]]
             child = dict(previous) if previous else dict(version=2, local_id=secrets.token_hex(16), upload_id=None, allocation_pending=False)
-            resume = unchanged and previous["status"] != "completed"
+            resume = unchanged
             if resume:
                 for current, prior in zip(members, previous["entries"]):
                     current["done"] = prior["done"]

@@ -170,14 +170,21 @@ class FileModel(QAbstractListModel):
 
 
 class IntakeWorker(QThread):
-    def __init__(self, paths, known):
+    progress = Signal(str, int)
+    def __init__(self, paths, known, cache):
         super().__init__()
         self.paths, self.known = paths, known
         self.items, self.errors = [], 0
+        self.cache, self.roots, self.sessions = cache, [], []
 
     def run(self):
         try:
-            paths, self.errors = discover_files(self.paths, self.isInterruptionRequested)
+            from .archive_import import expand_inputs, read_sessions, preferred_recordings
+            self.roots = expand_inputs(self.paths, self.cache, self.isInterruptionRequested,
+                                       lambda name, done, total: self.progress.emit(name, int(done*100/total) if total else 100))
+            self.sessions = [s for root in self.roots if Path(root).is_dir() for s in read_sessions(root)]
+            paths, self.errors = discover_files(self.roots, self.isInterruptionRequested)
+            paths = preferred_recordings(paths)
             for path in paths:
                 if self.isInterruptionRequested():
                     break
@@ -238,9 +245,14 @@ class Controller(QObject):
             self.telemetry.install_hooks()
             self.telemetry.report('app_started')
         self._upload = UploadController(data_directory, self)
+        self._upload.importRequested.connect(self._import_for_upload)
+        self._upload.graded.connect(self._archive_reports)
         self._upload.idle.connect(self._upload_idle)
         self._folder_roots = []
         self._import_roots = []
+        self._import_sessions = []
+        self._upload_after_import = False
+        self._unpack_progress = 0
         order = str(self.store.value("channels_first", "")).lower()
         self._order = 1 if order in ("true", "1") else 2 if order in ("false", "0") else 0
         self._mains = 60 if str(self.store.value("line_hz", 50)) in ("60", "60.0") else 50
@@ -256,6 +268,8 @@ class Controller(QObject):
 
     model = Property(QObject, lambda self: self.files, constant=True)
     upload = Property(QObject, lambda self: self._upload, constant=True)
+    importProgress = Property(int, lambda self: self._unpack_progress, notify=changed)
+    importing = Property(bool, lambda self: self._importing, notify=changed)
     folderCount = Property(int, lambda self: len(self._folder_roots), notify=changed)
     canUpload = Property(bool, lambda self: bool(self._folder_roots) and not self._busy, notify=changed)
     channelModel = Property(QObject, lambda self: self.channels, constant=True)
@@ -302,7 +316,7 @@ class Controller(QObject):
         if self._stopping:
             return "正在取消…"
         if self._importing:
-            return "等待采样参数" if self._parameters else "正在导入…"
+            return "等待采样参数" if self._parameters else self._phase or "正在导入…"
         if self._busy:
             elapsed = max(0, int(time.monotonic() - self._started)) if self._active >= 0 else 0
             return f"{self._phase or '准备'} · {self._done}/{self._total} · {elapsed//60:02}:{elapsed%60:02}"
@@ -333,10 +347,26 @@ class Controller(QObject):
         self._notice = ""
         self._shared = None
         self._import_roots = [str(Path(p).absolute()) for p in paths if Path(p).exists()]
-        self.worker = IntakeWorker(paths, set())
+        self._phase = '正在解析数据'
+        self._unpack_progress = 0
+        self.worker = IntakeWorker(paths, set(), self._data_directory/'imports')
+        self.worker.progress.connect(self._import_progress)
         self.worker.finished.connect(self._scanned)
         self.worker.start()
         self.changed.emit()
+
+    @Slot(str, int)
+    def _import_progress(self, name, percent):
+        self._phase = f'解压 {name} · {percent}%'
+        self._unpack_progress = percent
+        self.changed.emit()
+
+    @Slot('QVariantList')
+    def _import_for_upload(self, urls):
+        if self._busy:
+            return
+        self._upload_after_import = True
+        self.addUrls(urls)
 
     @Slot()
     def _scanned(self):
@@ -345,6 +375,13 @@ class Controller(QObject):
         self._pending, self._errors = worker.items, worker.errors
         self._cursor = 0
         cancelled = worker.isInterruptionRequested()
+        self._import_roots = worker.roots
+        combined = {s['recording']:s for s in self._import_sessions}
+        combined.update({s['recording']:s for s in worker.sessions})
+        self._import_sessions = list(combined.values())
+        codes = {s['paradigm_code'] for s in worker.sessions if s['paradigm_code']}
+        if len(codes) == 1:
+            self._upload.selectCode(next(iter(codes)))
         if not cancelled and not worker.errors:
             self._folder_roots = list(dict.fromkeys(self._folder_roots + self._import_roots))
             roots = sorted(self._folder_roots, key=lambda p: len(Path(p).parts))
@@ -353,6 +390,7 @@ class Controller(QObject):
         worker.deleteLater()
         if cancelled:
             self._pending = []
+            self._upload_after_import = False
         self._consume()
 
     def _consume(self):
@@ -388,6 +426,15 @@ class Controller(QObject):
             self._notice = "未找到支持的文件"
         self._stopping = False
         self.changed.emit()
+        if self._import_sessions and not self._errors:
+            participants = ', '.join(sorted({s['participant_number'] for s in self._import_sessions}))
+            self._notice = f'被试 {participants} · {len(self._import_sessions)} 个采集 Session · 优先评分无损数据'
+            self.changed.emit()
+            self._upload.resolveSubjects(self._import_sessions)
+        if self._upload_after_import:
+            self._upload_after_import = False
+            if not self._errors:
+                self.prepareUpload()
         if self._closing:
             self.closeReady.emit()
         else:
@@ -474,12 +521,21 @@ class Controller(QObject):
             return
         if getattr(self,'record_bridge',None) and not self.record_bridge.upload_allowed(self._folder_roots):
             self._notice='所选文件夹包含已移除记录，请改选需要上传的记录文件夹';self.changed.emit();return
-        self._upload.prepare(self._folder_roots, None)
+        self._upload.prepare(self._folder_roots, None, sessions=self._import_sessions)
 
     @Slot()
     def _upload_idle(self):
         if self._closing:
             self.closeReady.emit()
+
+    @Slot(object)
+    def _archive_reports(self, sessions):
+        from .application.qt_workers import ReportView
+        for session in sessions:
+            index = self.files.path_indices.get(os.path.normcase(session['recording']))
+            if index is not None and session.get('signal_qc'):
+                self.files.rows[index]['score_input_stat'] = session['score_stat']
+                self._scored(index, ReportView(session['signal_qc']))
 
     @Slot(int, int)
     def saveSettings(self, order, mains):

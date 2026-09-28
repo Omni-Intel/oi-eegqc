@@ -100,6 +100,12 @@ class SignClient:
     def paradigms(self):
         return self._request('/v1/uploads/paradigms', method='GET')['paradigms']
 
+    def resolve_subjects(self, numbers):
+        return self._request('/v1/capture/imports/resolve', {'participant_numbers': numbers})['subjects']
+
+    def commit_import(self, payload):
+        return self._request('/v1/capture/imports/commit', payload)
+
     def health(self):
         connection = _connection(_origin(), 8)
         self._track(connection)

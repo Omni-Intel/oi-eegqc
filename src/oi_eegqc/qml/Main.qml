@@ -25,7 +25,7 @@ ApplicationWindow {
         id: files
         title: "选择文件"
         fileMode: FileDialog.OpenFiles
-        nameFilters: ["脑电文件 (*.edf *.edf+ *.bdf *.npy *.float32)"]
+        nameFilters: ["脑电数据与压缩包 (*.edf *.edf+ *.bdf *.npy *.float32 *.zip)"]
         onAccepted: backend.addUrls(selectedFiles)
     }
     FolderDialog { id: folders; title: "选择文件夹"; onAccepted: backend.addUrls([selectedFolder]) }
@@ -34,11 +34,12 @@ ApplicationWindow {
         anchors.fill: parent; anchors.margins: 24; spacing: 18
         RowLayout {
             spacing: 9
-            QuietButton { objectName: "chooseFiles"; text: "选择文件"; symbol: "file"; enabled: !backend.busy; onClicked: files.open() }
+            QuietButton { objectName: "chooseFiles"; text: "文件 / ZIP"; symbol: "file"; enabled: !backend.busy; onClicked: files.open() }
             QuietButton { objectName: "chooseFolder"; text: "选择文件夹"; symbol: "folder"; enabled: !backend.busy; onClicked: folders.open() }
             Item { Layout.fillWidth: true }
             QuietButton { objectName: "settingsButton"; text: "设置"; symbol: "settings"; enabled: !backend.busy; onClicked: window.settingsOpen = !window.settingsOpen }
         }
+        QuietProgress { visible: backend.importing; Layout.fillWidth: true; value: backend.importProgress / 100 }
         RowLayout {
             visible: backend.downloading || backend.updateReady
             Layout.fillWidth: true

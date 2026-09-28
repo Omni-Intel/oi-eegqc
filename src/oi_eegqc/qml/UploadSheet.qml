@@ -44,6 +44,7 @@ QuietPopup {
                 Text { objectName: "uploadDestination"; text: sheet.backend.upload.destinationText; color: "#303941"; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
             }
         }
+        Text { text: sheet.backend.upload.subjectText; visible: text !== ''; color: '#526674'; Layout.fillWidth: true; wrapMode: Text.Wrap }
         Rectangle {
             Layout.fillWidth: true; implicitHeight: 72; radius: 8; color: uploadDrop.containsDrag ? "#edf1f4" : "#f7f8fa"; border.color: "#e0e4e8"
             RowLayout {
@@ -134,7 +135,7 @@ QuietPopup {
             QuietButton { objectName: "cancelUpload"; text: sheet.info.preparing ? "取消准备" : "暂停"; visible: sheet.backend.upload.active; enabled: sheet.backend.upload.canCancel; onClicked: sheet.backend.upload.cancel() }
             QuietButton {
                 objectName: "startUpload"
-                text: sheet.info.failed ? "重试" : sheet.info.started ? "继续上传" : "上传"
+                text: sheet.info.databasePending && sheet.info.progress === 1 ? "重试入库" : sheet.info.failed ? "重试" : sheet.info.started ? "继续上传" : "上传"
                 visible: !sheet.backend.upload.active && !sheet.info.completed && !sheet.info.uncertain
                 enabled: sheet.backend.upload.canStart
                 primary: true

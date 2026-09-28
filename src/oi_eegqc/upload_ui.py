@@ -6,6 +6,7 @@ import re
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Property, QLockFile, QTimer, QUrl
 from .desktop_upload import BatchStore, UploadSession, UploadCancelled, friendly_error
+from .archive_import import database_pending
 
 
 class ParadigmWorker(QThread):
@@ -23,12 +24,14 @@ class ParadigmWorker(QThread):
 class UploadWorker(QThread):
     progress = Signal(object)
 
-    def __init__(self, store, data_directory, batch=None, roots=None, scored=None, parent=None, new_acquisition=False):
+    def __init__(self, store, data_directory, batch=None, roots=None, scored=None, parent=None, new_acquisition=False, sessions=None):
         super().__init__(parent)
         self.store, self.data_directory = store, data_directory
         self.batch, self.roots, self.scored = deepcopy(batch), roots, scored
         self.session, self.error = None, ""
         self.new_acquisition = new_acquisition
+        self.imports = deepcopy(sessions or [])
+        self.database_error = ''
         self._last_progress = 0
 
     def report(self, value):
@@ -46,13 +49,33 @@ class UploadWorker(QThread):
     def run(self):
         try:
             if self.roots is not None:
+                from .archive_import import grade_sessions, attach_sessions
+                if self.imports:
+                    grade_sessions(self.imports, self.isInterruptionRequested,
+                                   lambda name: self.report({'current': name}), getattr(self.parent().parent(), '_mains', 50))
                 self.batch = self.store.prepare(self.roots, self.scored, self.isInterruptionRequested,
                                                 lambda name: self.report({"current": name}), self.new_acquisition)
+                if self.imports:
+                    attach_sessions(self.batch, self.imports)
+                    self.store.save(self.batch)
             else:
-                self.session = UploadSession(self.store, self.batch, self.data_directory, self.report)
-                if self.isInterruptionRequested():
-                    self.session.cancel()
-                self.batch = self.session.run()
+                if self.batch['status'] != 'completed':
+                    self.session = UploadSession(self.store, self.batch, self.data_directory, self.report)
+                    if self.isInterruptionRequested():
+                        self.session.cancel()
+                    self.batch = self.session.run()
+                from .archive_import import sync_database
+                from .upload_http import SignClient
+                client = SignClient()
+                try:
+                    sync_database(self.store, self.batch, client, lambda name:self.report({'current':name}), self.isInterruptionRequested)
+                except Exception as error:
+                    self.database_error = ('文件已上传，平台未找到对应被试。请核对账号后重试入库'
+                                           if getattr(error, 'status_code', None) == 404 else '文件已上传，统计入库失败。请点击“重试入库”')
+                    if self.parent().telemetry:
+                        self.parent().telemetry.report('database_import_failed', exc=error)
+                finally:
+                    client.close()
         except UploadCancelled:
             self.error = "已取消准备"
         except Exception as error:
@@ -64,6 +87,8 @@ class UploadWorker(QThread):
 class UploadController(QObject):
     changed = Signal()
     idle = Signal()
+    importRequested = Signal('QVariantList')
+    graded = Signal(object)
 
     def __init__(self, data_directory, parent=None):
         super().__init__(parent)
@@ -80,6 +105,9 @@ class UploadController(QObject):
         self.lock = None
         self._paradigms, self._paradigm_index = [], -1
         self.registry_worker = None
+        self._wanted_code = None
+        self.subject_worker = None
+        self._subject_text = ''
         try:
             self.batch = self.store.load()
         except Exception as error:
@@ -88,6 +116,7 @@ class UploadController(QObject):
 
     paradigmNames = Property('QVariantList', lambda self: [f"{p['name']} · {p['code']}" for p in self._paradigms], notify=changed)
     paradigmIndex = Property(int, lambda self: self._paradigm_index, notify=changed)
+    subjectText = Property(str, lambda self: self._subject_text, notify=changed)
     loadingParadigms = Property(bool, lambda self: self.registry_worker is not None, notify=changed)
     paradigmName = Property(str, lambda self: self._paradigms[self._paradigm_index]['name'] if self._paradigm_index >= 0 else '选择上传范式', notify=changed)
 
@@ -118,7 +147,7 @@ class UploadController(QObject):
             saved = settings.value('upload_paradigm', 'AVEEG-20260923') if settings is not None else 'AVEEG-20260923'
             old = self._paradigms[self._paradigm_index]['code'] if self._paradigm_index >= 0 else (self.batch or {}).get('paradigm_code', saved)
             self._paradigms = worker.rows
-            index = next((i for i,p in enumerate(self._paradigms) if p['code'] == old), 0)
+            index = next((i for i,p in enumerate(self._paradigms) if p['code'] == (self._wanted_code or old)), 0)
             if not self.active and self._paradigms:
                 self.selectParadigm(index)
             elif not self._paradigms:
@@ -154,9 +183,29 @@ class UploadController(QObject):
 
     @Slot('QVariantList')
     def addUrls(self, urls):
-        roots = [QUrl(value).toLocalFile() for value in urls if QUrl(value).isLocalFile()]
-        if roots:
-            self.prepare(roots, None)
+        self.importRequested.emit(urls)
+
+    def selectCode(self, code):
+        self._wanted_code = code
+        index = next((i for i, p in enumerate(self._paradigms) if p['code'] == code), -1)
+        if index >= 0:
+            self.selectParadigm(index)
+
+    def resolveSubjects(self, sessions):
+        if self.subject_worker:
+            return
+        self.subject_worker = SubjectWorker(sorted({s['participant_number'] for s in sessions}), self)
+        self.subject_worker.finished.connect(self._subjects_ready)
+        self._subject_text = '正在匹配平台被试…'
+        self.subject_worker.start()
+        self.changed.emit()
+
+    def _subjects_ready(self):
+        worker = self.subject_worker
+        self.subject_worker = None
+        self._subject_text = worker.text
+        worker.deleteLater()
+        self.changed.emit()
 
     @Slot()
     def open(self):
@@ -168,7 +217,7 @@ class UploadController(QObject):
     opened = Property(bool, lambda self: self._opened, notify=changed)
     active = Property(bool, lambda self: self.worker is not None, notify=changed)
     canCancel = Property(bool, lambda self: self.active and not (self.worker.session and self.worker.session.committing), notify=changed)
-    hasBatch = Property(bool, lambda self: self.batch is not None and self.batch["status"] != "completed", notify=changed)
+    hasBatch = Property(bool, lambda self: self.batch is not None and (self.batch["status"] != "completed" or database_pending(self.batch)), notify=changed)
     hasIssue = Property(bool, lambda self: bool(self._error), notify=changed)
     canStart = Property(bool, lambda self: self._paradigm_index >= 0 and not self.active and self.hasBatch and not self._error, notify=changed)
 
@@ -197,15 +246,15 @@ class UploadController(QObject):
             folder["uploadId"] = part.get("upload_id") or ""
         return dict(roots="\n".join(batch.get("roots", [])), uploadId=batch.get("upload_id") or "", uncertain=any(p.get("allocation_pending") for p in parts),
                     folders=folders, folderCount=len(folders),
-                    preparing=bool(self.active and self.worker.roots is not None), completed=status == "completed",
+                    preparing=bool(self.active and self.worker.roots is not None), completed=status == "completed" and not database_pending(batch), databasePending=database_pending(batch),
                     started=any(p.get("upload_id") for p in parts), failed=self._show_batch_error and status == "failed",
                     count=sum(not e["directory"] for e in entries), size=f"{total / 1024 / 1024:.1f} 兆字节",
                     progress=min(1., done / total) if total else (1. if status == "completed" else 0.),
                     speed=f"{self._progress.get('speed', 0) / 1024 / 1024:.1f} 兆字节/秒",
-                    current="" if status == "completed" else str(self._progress.get("current", batch.get("current", ""))).lower(),
+                    current=str(self._progress.get("current", batch.get("current", ""))) if self.active or status != 'completed' else '',
                     error=self._error or (batch.get("error", "") if self._show_batch_error else ""),
                     status=("正在准备…" if self.active and self.worker.roots is not None else "正在上传…") if self.active else
-                    {"ready": "待上传", "paused": "已暂停，可继续", "failed": "上传失败，可重试" if self._show_batch_error else "待继续上传", "completed": "上传完成"}.get(status, ""))
+                    {"ready": "待上传", "paused": "已暂停，可继续", "failed": "上传失败，可重试" if self._show_batch_error else "待继续上传", "completed": "文件已上传，统计待入库" if database_pending(batch) else ("上传和入库完成" if any(p.get('imports') for p in parts) else "上传完成")}.get(status, ""))
 
     def _acquire(self):
         try:
@@ -223,7 +272,7 @@ class UploadController(QObject):
         self.lock = lock
         return True
 
-    def prepare(self, roots, scored, new_acquisition=False):
+    def prepare(self, roots, scored, new_acquisition=False, sessions=None):
         if self._paradigm_index < 0:
             self._opened = True
             self._error = '请先连接内网并选择上传范式'
@@ -237,10 +286,21 @@ class UploadController(QObject):
             return
         self._show_batch_error = False
         self._error = ""
+        from .archive_import import read_sessions
+        try:
+            sessions = [s for root in roots if Path(root).is_dir() for s in read_sessions(root)]
+        except (ValueError, OSError, KeyError) as error:
+            self._error = '无法识别采集 Session，请检查 session.json 和被试编号'
+            if self.telemetry:
+                self.telemetry.report('archive_metadata_failed', exc=error)
+            self.changed.emit(); return
         if not self._acquire():
             return
         self._selection = (list(roots), dict(scored) if scored is not None else None)
-        self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition)
+        if any(s['paradigm_code'] and s['paradigm_code'] != self._paradigms[self._paradigm_index]['code'] for s in sessions):
+            self._error = '图片采集包请选择 RSVP 图片 EEG 范式'
+            self.lock.unlock(); self.lock = None; self.changed.emit(); return
+        self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition, sessions=sessions)
         self._launch()
 
     @Slot()
@@ -311,7 +371,21 @@ class UploadController(QObject):
         self.worker = None
         if worker.batch:
             self.batch = worker.batch
+        if worker.imports:
+            self.graded.emit(worker.imports)
         self._error = worker.error
+        if worker.database_error:
+            self._subject_text = worker.database_error
+        elif worker.roots is not None and worker.imports:
+            missing = sum(s.get('signal_qc') is None for s in worker.imports)
+            unmatched = self._subject_text if '平台未找到' in self._subject_text else ''
+            self._subject_text = f"已识别 {len(worker.imports)} 个采集 Session，上传后自动入库" + (f"；{missing} 个评分暂缺，仍会上传原始文件" if missing else '') + (f'；{unmatched}' if unmatched else '')
+            if missing and self.telemetry:
+                self.telemetry.report('archive_score_failed', count=missing)
+        elif (self.batch or {}).get('status') == 'completed' and not database_pending(self.batch):
+            receipts = [r for p in self.batch.get('children') or [self.batch] for r in p.get('imports',[]) if r.get('receipt')]
+            if receipts:
+                self._subject_text = f"{len(receipts)} 个采集 Session 已入库，平台统计自动更新"
         if self.telemetry and not self._error and (self.batch or {}).get('status') == 'completed':
             self.telemetry.report('upload_completed', count=len(self.batch.get('entries', [])))
         worker.deleteLater()
@@ -335,7 +409,7 @@ class UploadController(QObject):
             if getattr(self,'record_guard',None) and self.batch and not self.record_guard(self.batch.get('roots',[])):
                 self._error='上传名单已移除，请重新选择'
                 self.lock.unlock();self.lock=None;self.changed.emit();return
-            if not self.batch or self.batch["status"] == "completed":
+            if not self.batch or (self.batch["status"] == "completed" and not database_pending(self.batch)):
                 self.lock.unlock()
                 self.lock = None
                 self.changed.emit()
@@ -387,6 +461,8 @@ class UploadController(QObject):
             self.lock = None
 
     def shutdown(self):
+        if self.subject_worker:
+            self.subject_worker.wait()
         if self.registry_worker:
             self.registry_worker.wait()
         if self.worker:
@@ -394,3 +470,22 @@ class UploadController(QObject):
             self.worker.wait()
         if self.lock:
             self.lock.unlock()
+
+
+class SubjectWorker(QThread):
+    def __init__(self, numbers, parent):
+        super().__init__(parent)
+        self.numbers, self.text = numbers, ''
+
+    def run(self):
+        from .upload_http import SignClient
+        client = SignClient()
+        try:
+            rows = client.resolve_subjects(self.numbers)
+            self.text = '；'.join(f"被试 {r['participant_number']} · {'平台已匹配' if r['matched'] else '平台未找到，请核对账号'}" for r in rows)
+        except Exception as error:
+            self.text = '平台被试匹配暂时不可用，入库时会重试'
+            if self.parent().telemetry:
+                self.parent().telemetry.report('subject_match_failed', exc=error)
+        finally:
+            client.close()
