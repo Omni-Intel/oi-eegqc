@@ -27,10 +27,10 @@ class UploadWorker(QThread):
     def __init__(self, store, data_directory, batch=None, roots=None, scored=None, parent=None, new_acquisition=False, sessions=None):
         super().__init__(parent)
         self.store, self.data_directory = store, data_directory
-        self.batch, self.roots, self.scored = deepcopy(batch), roots, scored
+        self.batch, self.roots, self.scored = batch, roots, scored
         self.session, self.error = None, ""
         self.new_acquisition = new_acquisition
-        self.imports = deepcopy(sessions or [])
+        self.imports = [dict(s) for s in sessions or []]
         self.sessions_provided = sessions is not None
         self.database_error = ''
         self._last_progress = 0
@@ -71,6 +71,12 @@ class UploadWorker(QThread):
                     self.store.save(self.batch)
                 if self.parent().telemetry:self.parent().telemetry.report('upload_prepare_completed',count=len(self.batch['entries']))
             else:
+                self.batch = self.store.load()
+                from .archive_import import score_summary
+                for part in self.batch.get('children') or [self.batch]:
+                    for row in part.get('imports', []):
+                        if 'signal_qc' in row:
+                            row['signal_qc'] = score_summary(row['signal_qc'])
                 if self.batch['status'] != 'completed':
                     self.session = UploadSession(self.store, self.batch, self.data_directory, self.report)
                     if self.isInterruptionRequested():
@@ -113,7 +119,9 @@ class UploadController(QObject):
         self._show_batch_error = False
         self._progress = {}
         self._folder_cache_key, self._folder_cache = None, []
+        self._byte_cache_key, self._byte_totals = None, (0, 0)
         self._selection = None
+        self._start_after_prepare = False
         self.lock = None
         self._paradigms, self._paradigm_index = [], -1
         self.registry_worker = None
@@ -185,6 +193,7 @@ class UploadController(QObject):
         self.store = BatchStore(directory, row)
         self._error = ''
         self._selection = None
+        self._start_after_prepare = False
         self._progress = {}
         self._folder_cache_key = None
         try:
@@ -232,6 +241,29 @@ class UploadController(QObject):
     hasBatch = Property(bool, lambda self: self.batch is not None and (self.batch["status"] != "completed" or database_pending(self.batch)), notify=changed)
     hasIssue = Property(bool, lambda self: bool(self._error), notify=changed)
     canStart = Property(bool, lambda self: self._paradigm_index >= 0 and not self.active and self.hasBatch and not self._error, notify=changed)
+
+    @Property("QVariantMap", notify=changed)
+    def progressInfo(self):
+        batch = self.batch or {}
+        entries = batch.get('entries', [])
+        key = (id(batch), len(entries), batch.get('status'))
+        if key != self._byte_cache_key:
+            self._byte_cache_key = key
+            self._byte_totals = (sum(e['size'] for e in entries), sum(e['size'] for e in entries if e['done']))
+        total, initial_done = self._byte_totals
+        done = self._progress.get('done', initial_done)
+        status = batch.get('status', '')
+        pending = database_pending(batch)
+        preparing = bool(self.active and self.worker.roots is not None)
+        if self.active:
+            label = {'identifying':'正在识别 Session','scoring':'正在评分','scanning':'正在核验文件'}.get(self._progress.get('stage'), '正在准备') if preparing else '正在上传'
+        else:
+            completion = '上传和入库完成' if any(p.get('imports') for p in batch.get('children') or [batch]) else '上传完成'
+            label = {'ready':'待上传', 'paused':'已暂停，可继续', 'failed':'上传失败，可重试', 'completed':'文件已上传，统计待入库' if pending else completion}.get(status, '')
+        return dict(status=label, current=str(self._progress.get('current', '')) if self.active else '',
+                    progress=1. if status == 'completed' else min(1., done / total) if total else 0.,
+                    preparing=preparing, completed=status == 'completed' and not pending,
+                    databasePending=pending, error=self._error or (batch.get('error', '') if self._show_batch_error else ''))
 
     @Property("QVariantMap", notify=changed)
     def info(self):
@@ -284,7 +316,7 @@ class UploadController(QObject):
         self.lock = lock
         return True
 
-    def prepare(self, roots, scored, new_acquisition=False, sessions=None):
+    def prepare(self, roots, scored, new_acquisition=False, sessions=None, start_upload=False):
         if self._paradigm_index < 0:
             self._opened = True
             self._error = '请先连接内网并选择上传范式'
@@ -292,7 +324,6 @@ class UploadController(QObject):
             return
         if getattr(self,'record_guard',None) and not self.record_guard(roots):
             self._error='该名单包含已移除记录，请重新选择';self.changed.emit();return
-        self._opened = True
         if self.active:
             self.changed.emit()
             return
@@ -305,6 +336,7 @@ class UploadController(QObject):
             self._error = '图片采集包请选择 RSVP 图片 EEG 范式'
             self.lock.unlock(); self.lock = None; self.changed.emit(); return
         self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition, sessions=sessions)
+        self._start_after_prepare = start_upload
         self._launch()
 
     @Slot()
@@ -365,7 +397,7 @@ class UploadController(QObject):
 
     @Slot(object)
     def _on_progress(self, value):
-        self._progress = value
+        self._progress.update(value)
         self.changed.emit()
 
     @Slot()
@@ -396,6 +428,11 @@ class UploadController(QObject):
         self.lock.unlock()
         self.lock = None
         self.changed.emit()
+        if self._start_after_prepare and worker.roots is not None:
+            self._start_after_prepare = False
+            if not self._error and self.hasBatch:
+                self.start()
+                return
         self.idle.emit()
 
     @Slot()
@@ -407,22 +444,6 @@ class UploadController(QObject):
         self._show_batch_error = False
         self._error = ""
         if not self._acquire():
-            return
-        try:
-            self.batch = self.store.load()
-            if getattr(self,'record_guard',None) and self.batch and not self.record_guard(self.batch.get('roots',[])):
-                self._error='上传名单已移除，请重新选择'
-                self.lock.unlock();self.lock=None;self.changed.emit();return
-            if not self.batch or (self.batch["status"] == "completed" and not database_pending(self.batch)):
-                self.lock.unlock()
-                self.lock = None
-                self.changed.emit()
-                return
-        except Exception as error:
-            self._error = friendly_error(error)
-            self.lock.unlock()
-            self.lock = None
-            self.changed.emit()
             return
         self.worker = UploadWorker(self.store, self.data_directory, batch=self.batch, parent=self)
         self._launch()

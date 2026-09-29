@@ -58,6 +58,52 @@ def test_cached_edf_score_supplies_duration_and_reports_progress(tmp_path):
     assert progress and '1/1' in progress[0]
 
 
+def test_main_score_is_reused_only_for_unchanged_recording(tmp_path, monkeypatch):
+    from oi_eegqc.archive_import import grade_sessions
+    from oi_eegqc.application.scoring_process import ScoringProcess
+    path = tmp_path/'eeg.edf'; path.write_bytes(b'raw')
+    stat = path.stat()
+    report = {'gqi':90, 'usable_ratio':.8, 'duration_s':100}
+    row = dict(recording=str(path), session_directory=str(tmp_path), source_session_id='one',
+               recorded_duration_s=None, signal_qc=report, score_stat=(stat.st_size, stat.st_mtime_ns))
+    calls = []
+    monkeypatch.setattr(ScoringProcess, 'score', lambda *args: (calls.append(True) or ('result', dict(report, gqi=80))))
+    grade_sessions([row], lambda:False, lambda value:None)
+    assert calls == [] and row['final_score'] == 90
+    assert json.loads((tmp_path/'eegqc-report.json').read_text())['report'] == report
+    path.write_bytes(b'changed')
+    grade_sessions([row], lambda:False, lambda value:None)
+    assert calls == [True] and row['final_score'] == 80
+
+
+def test_upload_summary_keeps_scores_without_window_evidence():
+    from oi_eegqc.archive_import import score_summary
+    report = dict(gqi=90, usable_ratio=.8, duration_s=100,
+                  window_qa=dict(usable_windows=20, window_evidence=[{'samples':[1]*10000}]),
+                  extras=dict(operator=dict(headline='良好', timeline=[{'samples':[1]*10000}])))
+    summary = score_summary(report)
+    assert summary['gqi'] == 90 and summary['window_qa'] == {'usable_windows':20}
+    assert summary['extras']['operator'] == {'headline':'良好'}
+    assert len(json.dumps(summary)) < 300
+    assert report['window_qa']['window_evidence'] and report['extras']['operator']['timeline']
+
+
+def test_resume_compacts_saved_reports_in_background(tmp_path, monkeypatch):
+    from PySide6.QtCore import QObject
+    from unittest.mock import Mock
+    from oi_eegqc.upload_ui import UploadWorker
+    from oi_eegqc import archive_import
+    parent = QObject(); parent.telemetry = None
+    batch = dict(status='completed', imports=[dict(signal_qc=dict(gqi=90, window_qa=dict(window_evidence=[1]*10000)))])
+    store = Mock(); store.load.return_value = batch
+    monkeypatch.setattr(archive_import, 'sync_database', lambda *args:None)
+    worker = UploadWorker(store, tmp_path, batch=batch, parent=parent)
+    store.load.assert_not_called()
+    worker.run()
+    store.load.assert_called_once()
+    assert worker.error == '' and worker.batch['imports'][0]['signal_qc'] == dict(gqi=90, window_qa={})
+
+
 def test_scoring_timeout_terminates_worker_before_next_file():
     from unittest.mock import Mock
     from oi_eegqc.application.scoring_process import ScoringProcess

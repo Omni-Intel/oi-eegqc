@@ -53,6 +53,42 @@ def recording(path, complete=True, channels=4):
         path.with_suffix(".json").write_text(json.dumps({"sfreq": 250, "unit": "uV"}))
 
 
+def test_upload_uses_main_score_and_main_footer(quick, tmp_path, monkeypatch):
+    from oi_eegqc.application.qt_workers import ReportView
+    app, controller, _, window = quick
+    path = tmp_path/'eeg.edf'; path.write_bytes(b'raw')
+    stat = path.stat()
+    controller._folder_roots = [str(tmp_path)]
+    controller._import_sessions = [dict(recording=str(path), source_session_id='one')]
+    controller.files.rows = [dict(path=str(path), report=ReportView(dict(gqi=90)), scored_stat=(stat.st_size,stat.st_mtime_ns))]
+    controller.files.path_indices = {os.path.normcase(str(path)):0}
+    calls=[]
+    monkeypatch.setattr(controller._upload, 'prepare', lambda *args, **kwargs:calls.append((args,kwargs)))
+    controller.submitUpload()
+    session = calls[0][1]['sessions'][0]
+    assert session['signal_qc']['gqi'] == 90 and session['score_stat'] == (stat.st_size,stat.st_mtime_ns)
+    assert calls[0][1]['start_upload'] is True
+    assert window.findChild(QObject, 'uploadProgress') is not None
+    assert window.findChild(QObject, 'uploadFolderList') is None
+    controller.files.rows = []
+
+
+def test_upload_preparation_continues_to_transfer(quick, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    _, controller, _, _ = quick
+    upload = controller._upload
+    upload._start_after_prepare = True
+    upload.lock = Mock()
+    upload.worker = SimpleNamespace(roots=['folder'], batch=dict(status='ready', entries=[]),
+                                    imports=[], error='', database_error='', deleteLater=Mock())
+    start = Mock()
+    monkeypatch.setattr(upload, 'start', start)
+    upload._finished()
+    start.assert_called_once()
+    assert not upload._start_after_prepare
+
+
 def test_reimport_preserves_unchanged_scores_and_invalidates_changed_files(quick, tmp_path):
     app, controller, _, _ = quick
     first, second = tmp_path / "a.npy", tmp_path / "b.npy"
@@ -452,7 +488,7 @@ def test_multiple_folders_are_grouped_and_all_files_listed(quick, tmp_path):
     assert upload.info["folderCount"] == 2 and upload.info["count"] == 10
     assert {f["path"] for f in upload.info["folders"]} == {str(p) for p in roots}
     assert all(f["count"] == 5 for f in upload.info["folders"])
-    assert window.findChild(QObject, "uploadFolderList").property("count") == 2
+    assert window.findChild(QObject, "uploadFolderList") is None
     QTest.qWait(150)
     assert window.grabWindow().save(str(tmp_path / "folders-upload.png"))
 

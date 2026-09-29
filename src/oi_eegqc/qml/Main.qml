@@ -150,8 +150,23 @@ ApplicationWindow {
             Layout.fillWidth: true; spacing: 10
             Text { text: backend.summary; color: "#7c8791"; Layout.fillWidth: true; elide: Text.ElideRight }
             QuietButton { text: "移除 " + backend.selectedCount; visible: backend.selectedCount > 0 && !backend.busy; onClicked: backend.remove(false) }
-            QuietButton { objectName: "uploadFolder"; text: backend.upload.active ? "上传中…" : "选择范式并上传"; enabled: !backend.busy; onClicked: backend.upload.open() }
+            QuietButton { objectName: "uploadFolder"; text: backend.upload.paradigmName; enabled: !backend.busy && !backend.upload.active; onClicked: backend.upload.open() }
+            QuietButton { objectName: "submitUpload"; text: "上传"; enabled: backend.canUpload && !backend.upload.active; onClicked: backend.upload.paradigmIndex < 0 ? backend.upload.open() : backend.submitUpload() }
             QuietButton { objectName: "scoreButton"; text: backend.busy ? "取消" : "评分"; primary: !backend.busy; implicitWidth: 94; enabled: backend.busy ? !backend.stopping : backend.canScore; onClicked: backend.scoreOrStop() }
+        }
+        ColumnLayout {
+            id: uploadFooter
+            readonly property var state: backend.upload.progressInfo
+            visible: backend.upload.active || state.status !== "" || state.error !== ""
+            Layout.fillWidth: true; spacing: 6
+            RowLayout {
+                Layout.fillWidth: true; spacing: 10
+                Text { text: uploadFooter.state.error || uploadFooter.state.status; color: uploadFooter.state.error ? "#a04f3e" : "#526674"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.maximumWidth: window.width * 0.55 }
+                Text { text: uploadFooter.state.current; color: "#7c8791"; font.pixelSize: 11; textFormat: Text.PlainText; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                QuietButton { objectName: "cancelUpload"; text: uploadFooter.state.preparing ? "取消" : "暂停"; visible: backend.upload.active; enabled: backend.upload.canCancel; onClicked: backend.upload.cancel() }
+                QuietButton { objectName: "startUpload"; text: uploadFooter.state.databasePending && uploadFooter.state.progress === 1 ? "重试入库" : "继续上传"; visible: !backend.upload.active && backend.upload.hasBatch; enabled: !backend.busy; onClicked: backend.upload.start() }
+            }
+            QuietProgress { objectName: "uploadProgress"; Layout.fillWidth: true; implicitHeight: 3; value: uploadFooter.state.progress; indeterminate: backend.upload.active && uploadFooter.state.preparing }
         }
     }
     Rectangle {

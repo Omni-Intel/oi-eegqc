@@ -516,12 +516,25 @@ class Controller(QObject):
         self.changed.emit()
 
     @Slot()
-    def prepareUpload(self):
+    def prepareUpload(self, start_upload=False):
         if not self.canUpload:
             return
         if getattr(self,'record_bridge',None) and not self.record_bridge.upload_allowed(self._folder_roots):
             self._notice='所选文件夹包含已移除记录，请改选需要上传的记录文件夹';self.changed.emit();return
-        self._upload.prepare(self._folder_roots, None, sessions=self._import_sessions)
+        sessions = []
+        for source in self._import_sessions:
+            session = dict(source)
+            index = self.files.path_indices.get(os.path.normcase(session['recording']))
+            if index is not None:
+                row = self.files.rows[index]
+                if row.get('report') is not None and row.get('scored_stat') is not None:
+                    session.update(signal_qc=row['report'].to_dict(), score_stat=row['scored_stat'])
+            sessions.append(session)
+        self._upload.prepare(self._folder_roots, None, sessions=sessions, start_upload=start_upload)
+
+    @Slot()
+    def submitUpload(self):
+        self.prepareUpload(start_upload=True)
 
     @Slot()
     def _upload_idle(self):
@@ -534,6 +547,9 @@ class Controller(QObject):
         for session in sessions:
             index = self.files.path_indices.get(os.path.normcase(session['recording']))
             if index is not None and session.get('signal_qc'):
+                row = self.files.rows[index]
+                if row.get('report') is not None and row.get('scored_stat') == session['score_stat'] and row['report'].to_dict() is session['signal_qc']:
+                    continue
                 self.files.rows[index]['score_input_stat'] = session['score_stat']
                 self._scored(index, ReportView(session['signal_qc']))
 

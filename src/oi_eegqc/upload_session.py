@@ -351,7 +351,6 @@ class UploadSession:
                 urls = self._signed_single(client, upload_id, round_id, group)
                 for entry in group:
                     batch["current"] = entry["relative"]
-                    self.store.save(batch)
                     self._put_single(
                         client,
                         upload_id,

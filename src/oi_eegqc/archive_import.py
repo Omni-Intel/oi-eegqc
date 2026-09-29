@@ -116,13 +116,16 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
                 raise UploadCancelled()
             path = Path(row['recording'])
             stat = path.stat()
+            existing_report = row.get('signal_qc') if row.get('score_stat') == (stat.st_size, stat.st_mtime_ns) else None
+            if existing_report and existing_report.get('extras', {}).get('line_hz', line_hz) != line_hz:
+                existing_report = None
             row['score_stat'] = (stat.st_size, stat.st_mtime_ns)
             identity = [stat.st_size, stat.st_mtime_ns, line_hz, SCORING_ALGORITHM_VERSION]
             sidecar = Path(row['session_directory'])/'eegqc-report.json'
             progress(f"评分 {index}/{len(rows)} · {row['source_session_id']}")
             try:saved = json.loads(sidecar.read_text(encoding='utf-8')) if sidecar.exists() else {}
             except (ValueError,OSError):saved={}
-            report = saved.get('report') if saved.get('source') == identity else None
+            report = existing_report or (saved.get('report') if saved.get('source') == identity else None)
             if report is None:
                 try:
                     kind, payload = client.score(str(path), dict(inspect_file(path), line_hz=line_hz), cancelled,
@@ -137,6 +140,9 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
                     except OSError as error:row['grading_error']=str(error)
                 else:
                     row['grading_error'] = str(payload or kind)
+            elif existing_report is not None and (saved.get('source') != identity or saved.get('report') != report):
+                try:atomic_json(sidecar, dict(source=identity, report=report))
+                except OSError as error:row['grading_error']=str(error)
             row['signal_qc'] = report
             if report is not None:
                 if row['recorded_duration_s'] is None:row['recorded_duration_s']=report['duration_s']
@@ -145,6 +151,20 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
                                              if row['final_score'] >= 60 else 0.)
     finally:
         client.close()
+
+
+def score_summary(report):
+    """Keep aggregate results in the queue; detailed evidence stays in the report file."""
+    if report is None:
+        return None
+    result = dict(report)
+    if 'window_qa' in result:
+        result['window_qa'] = {k:v for k,v in result['window_qa'].items() if k != 'window_evidence'}
+    if 'extras' in result:
+        result['extras'] = dict(result['extras'])
+        if 'operator' in result['extras']:
+            result['extras']['operator'] = {k:v for k,v in result['extras']['operator'].items() if k != 'timeline'}
+    return result
 
 
 def attach_sessions(batch, rows):
@@ -159,6 +179,7 @@ def attach_sessions(batch, rows):
             suffix = Path(entry['source']).relative_to(directory).as_posix()
             relative = entry['relative'][:-len(suffix)].rstrip('/')
             data = {k:v for k,v in row.items() if k not in ('recording','session_directory','grading_error','score_stat')}
+            data['signal_qc'] = score_summary(row.get('signal_qc'))
             data.update(directory=relative, paradigm_code=part['paradigm_code'])
             old = next((r for r in part.get('imports',[]) if {k:v for k,v in r.items() if k!='receipt'} == data), None)
             if old and old.get('receipt'):
@@ -179,6 +200,8 @@ def sync_database(store, batch, client, progress, cancelled=lambda:False):
                 continue
             progress(f"正在入库 {row['participant_number']} · {row['source_session_id']}")
             payload = {k:v for k,v in row.items() if k!='receipt'}
+            if 'signal_qc' in payload:
+                payload['signal_qc'] = score_summary(payload['signal_qc'])
             payload.update(upload_id=part['upload_id'], round_id=part['round_id'])
             row['receipt'] = client.commit_import(payload)
             store.save(batch)
