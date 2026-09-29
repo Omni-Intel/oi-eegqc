@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Iterable
 
 import numpy as np
@@ -19,26 +19,41 @@ from .scoring.explain import build_operator
 from .types import QualityReport, RecordingInput
 
 
-def evaluate_recording(
-    recording: RecordingInput,
-    config: BenchConfig | None = None,
-) -> QualityReport:
-    """Run adaptive QA/QC on one continuous EEG clip."""
-    cfg = config or load_config()
+@dataclass
+class PreparedEEG:
+    raw_uv: np.ndarray
+    filtered_uv: np.ndarray
+    names: list[str]
+    dropped: list[str]
+
+    def crop(self, first: int, last: int) -> PreparedEEG:
+        return PreparedEEG(self.raw_uv[:, first:last], self.filtered_uv[:, first:last],
+                           self.names, self.dropped)
+
+
+def prepare_eeg(recording: RecordingInput, cfg: BenchConfig) -> PreparedEEG:
     data = np.asarray(recording.data, dtype=float)
     if data.ndim != 2:
         raise ValueError(f"data must be 2D (n_channels, n_times), got {data.shape}")
-
     aux = recording.aux_ch_names or list(cfg.default_aux_names)
     eeg, names, dropped = pick_eeg_channels(data, list(recording.ch_names), aux)
+    raw_uv = eeg * recording.to_uv_scale()
+    return PreparedEEG(raw_uv, highpass_channels(raw_uv, recording.sfreq, cfg.highpass_hz),
+                       names, dropped)
 
-    # Everything downstream assumes microvolts: the flat and saturation gates
-    # compare against physical thresholds, so the unit cannot be left implicit.
-    eeg = eeg * recording.to_uv_scale()
 
-    raw_eeg = eeg
+def evaluate_recording(
+    recording: RecordingInput,
+    config: BenchConfig | None = None,
+    *,
+    prepared: PreparedEEG | None = None,
+) -> QualityReport:
+    """Run adaptive QA/QC on one continuous EEG clip."""
+    cfg = config or load_config()
+    signal = prepared if prepared is not None else prepare_eeg(recording, cfg)
+    raw_eeg, eeg = signal.raw_uv, signal.filtered_uv
+    names, dropped = signal.names, signal.dropped
     n_missing = int((~np.isfinite(raw_eeg).any(axis=1)).sum())
-    eeg = highpass_channels(raw_eeg, recording.sfreq, cfg.highpass_hz)
 
     duration_s = recording.resolved_duration_s()
     dur_prof = cfg.select_duration(duration_s)
@@ -129,6 +144,7 @@ def evaluate_recording(
                 "usable_target": dur_prof.usable_target,
             },
             "clipping_method": "window-extrema-plateaus-v2",
+            "filter_context": "continuous_recording" if prepared is not None else "input_recording",
         },
     )
     from .scoring_version import SCORING_ALGORITHM_VERSION

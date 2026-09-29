@@ -9,7 +9,8 @@ SCHEMA='oi-eegqc-segments-v1'
 
 def score_request(request):
     from .io.edf import require_mne
-    from .pipeline import evaluate_recording
+    from .pipeline import evaluate_recording, prepare_eeg
+    from .config import load_config
     from .types import RecordingInput
     from .scoring_version import SCORING_ALGORITHM_VERSION
     if request.get('schema')!=SCHEMA:raise ValueError('Unsupported segment request schema')
@@ -25,6 +26,9 @@ def score_request(request):
     rows=[]
     with reader(path,preload=False,verbose='ERROR') as raw:
         fs=float(raw.info['sfreq']);duration=raw.n_times/fs
+        cfg=load_config()
+        parent=RecordingInput(data=raw.get_data(),sfreq=fs,ch_names=list(raw.ch_names),unit='V')
+        prepared=prepare_eeg(parent,cfg)
         for segment in segments:
             row={'trial_id':segment['trial_id'],'stimulus_id':segment['stimulus_id'],'score':None,'state':'needs_review'}
             try:
@@ -37,11 +41,11 @@ def score_request(request):
                 unit_labels=getattr(raw,'_orig_units',{})
                 if any(str(u).lower() not in ('µv','μv','uv','mv','v') for u in unit_labels.values()):
                     raise ValueError('脑电物理单位未确认，无法按电压评分')
-                recording=RecordingInput(data=raw.get_data(start=first,stop=last),sfreq=fs,
+                recording=RecordingInput(data=parent.data[:,first:last],sfreq=fs,
                     ch_names=list(raw.ch_names),unit='V',clip_id=segment['trial_id'],
                     subject_id=request.get('participant'),session_id=request.get('session_id'),
                     stimulus_duration_s=segment.get('stimulus_duration_s'))
-                report=evaluate_recording(recording)
+                report=evaluate_recording(recording,cfg,prepared=prepared.crop(first,last))
                 score=float(report.gqi)
                 if not math.isfinite(score):raise ValueError('评分结果无效')
                 row.update(score=score,state='retry' if score<threshold else 'passed',

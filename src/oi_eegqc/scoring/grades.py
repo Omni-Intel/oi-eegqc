@@ -140,24 +140,11 @@ def compute_dimension_scores(
             reasons.append(
                 f"median impedance {median_z:.1f} kΩ above ideal {cfg.impedance_good_kohm}"
             )
-    if window_qa.bad_channel_pct >= montage_profile.bad_ch_hard_pct:
-        contact -= 1.0
-        reasons.append(
-            f"bad channels {window_qa.bad_channel_pct:.1f}% >= hard "
-            f"{montage_profile.bad_ch_hard_pct}%"
-        )
-    elif window_qa.bad_channel_pct >= montage_profile.bad_ch_soft_pct:
-        contact -= 0.35
-        reasons.append(
-            f"bad channels {window_qa.bad_channel_pct:.1f}% >= soft "
-            f"{montage_profile.bad_ch_soft_pct}%"
-        )
-    elif window_qa.bad_channel_pct >= montage_profile.bad_ch_caution_pct:
-        contact -= 0.15
-        reasons.append(
-            f"bad channels {window_qa.bad_channel_pct:.1f}% >= caution "
-            f"{montage_profile.bad_ch_caution_pct}%"
-        )
+    # Use contaminated channel-time density, which remains comparable when a
+    # recording is partitioned. Persistent bad-channel labels are diagnostic.
+    contact -= window_qa.bad_cell_ratio
+    if window_qa.bad_channel_pct >= montage_profile.bad_ch_caution_pct:
+        reasons.append(f"persistent abnormal channels {window_qa.bad_channel_pct:.1f}%")
     if window_qa.dead_channels:
         dead_frac = len(window_qa.dead_channels) / max(window_qa.n_channels, 1)
         contact -= min(1.0, 2.0 * dead_frac)

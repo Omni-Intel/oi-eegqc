@@ -91,7 +91,7 @@ class GQIWeights:
 
 @dataclass
 class BenchConfig:
-    threshold_version: str = "oi-eegqc-v0.6.0"
+    threshold_version: str = "oi-eegqc-v0.6.14"
     letter: LetterCutoffs = field(default_factory=LetterCutoffs)
     gqi_weights: GQIWeights = field(default_factory=GQIWeights)
     highpass_hz: float = 1.0
@@ -185,23 +185,23 @@ def default_config() -> BenchConfig:
                 name="ultra_short",
                 min_s=0.0,
                 max_s=8.0,
-                window_s=1.0,
-                hop_s=0.5,
+                window_s=2.0,
+                hop_s=1.0,
                 odq_for_a=95.0,
                 odq_for_b=85.0,
                 odq_for_c=65.0,
-                usable_target=0.90,
+                usable_target=0.85,
             ),
             DurationProfile(
                 name="short",
                 min_s=8.0,
                 max_s=20.0,
-                window_s=1.5,
-                hop_s=0.75,
+                window_s=2.0,
+                hop_s=1.0,
                 odq_for_a=92.0,
                 odq_for_b=82.0,
                 odq_for_c=62.0,
-                usable_target=0.88,
+                usable_target=0.85,
             ),
             DurationProfile(
                 name="medium",
@@ -218,12 +218,12 @@ def default_config() -> BenchConfig:
                 name="long",
                 min_s=45.0,
                 max_s=1e9,
-                window_s=2.5,
-                hop_s=1.25,
+                window_s=2.0,
+                hop_s=1.0,
                 odq_for_a=88.0,
                 odq_for_b=78.0,
                 odq_for_c=58.0,
-                usable_target=0.82,
+                usable_target=0.85,
             ),
         ],
         montage_profiles=[
