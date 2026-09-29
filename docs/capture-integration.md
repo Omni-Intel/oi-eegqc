@@ -14,4 +14,4 @@ AV Capture 0.16.13 将每个选定任务项的 `score`、`algorithm_version`、`
 
 BIDS 逐片段评分表包含 `score` 和 `algorithm_version` 两列，评分表 JSON 保留 `AlgorithmVersion`。原始 EEG 与事件文件保持不变。
 
-历史重评报告 `quality-response-v6.json.gz` 和 `scores.tsv` 保存于 COS `neurolm-1442740494/neuro-lm/data/derivatives/eegqc-v6/{upload_id}/`。完整 JSON 用 gzip 保存；TSV 可直接读取每段分数、版本、时长和状态。`evidence-v6.json` 关联原始 EEG、平台 Session、采集轮次和任务项。数据库沿用 `capture_session_quality.qc_summary`，逐项分数与版本位于 `items`；`regraded_items` 按 `round_id:item_id` 保存已验证的历史尝试，仅供服务端匹配。新尝试不会套用旧尝试的重评分。该索引不随上传回执返回客户端，回执返回选定结果及版本。
+历史重评报告 `quality-response-v6.json.gz` 和 `scores.tsv` 保存于 COS `neurolm-1442740494/neuro-lm/data/derivatives/eegqc-v6/{upload_id}/`。完整 JSON 用 gzip 保存；TSV 可直接读取每段分数、版本、时长和状态。`evidence-v6.json` 关联原始 EEG、平台 Session、采集轮次和任务项。数据库沿用 `capture_session_quality.qc_summary`，逐项分数与版本位于 `items`。服务端按 `round_id`、`item_id`、`trial_id` 匹配当前选定的已验证结果，保留重评分来源；新尝试不会套用旧尝试的分数。完整历史尝试保存在云端，不在数据库统计 JSON 中重复保存。
