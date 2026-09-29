@@ -4,7 +4,7 @@
 
 请求 schema 为 `oi-eegqc-segments-v1`，字段：request_id、session_id、participant、recording（EDF/BDF 绝对路径）、threshold（默认 60）、timing_status、segments。每个 segment 包含唯一 trial_id、stimulus_id、onset、offset（相对于 EEG 文件起点的秒数）、event_valid、stimulus_duration_s。
 
-接口按 `[onset, offset)` 读取片段，在片段内调用与桌面评分一致的 evaluate_recording；不读取整轮到内存。MNE 的电压数据用 V 声明。起止采样点使用向上取整，拒绝越界、非有限时间、未确认物理单位、无效事件和不足 1 秒片段。
+接口对同一份连续记录一次读取、换算和滤波，再按 `[onset, offset)` 截取共享数组调用 evaluate_recording。不拼接不同记录或跨断流补样本。MNE 的电压数据用 V 声明。起止采样点使用向上取整，拒绝越界、非有限时间、未确认物理单位、无效事件和不足 1 秒片段。
 
 响应原样关联 request_id、session_id；每段返回 score、state（passed、retry、needs_review）、完整报告、实际采样点边界。score < threshold 为 retry，等于阈值通过。无法评分时 score 为 null，不能当成通过或低分。summary 为各段统计、算术平均分和最低分，不是包含休息期的整轮 EEG 评分。保存评分算法与阈值版本、短窗证据。异常返回 error 和非零退出码，响应通过临时文件原子替换。
 

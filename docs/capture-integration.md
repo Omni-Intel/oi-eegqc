@@ -7,3 +7,11 @@ EEGQC 独立负责脑电评分、评分缓存、文件校验和 COS 上传。AV 
 重复交接同一采集目录时，EEGQC 先核对已完成的本地上传状态与文件指纹；完全相同时直接返回原上传编号，不再创建云端轮次。若已上传的目录后来发生变化，自动上传会停止并提示人工核查，以免同一实验被重复入库。未完成的上传仍使用原状态续传。
 
 服务先验证真实采集的 Session、逐视频质检和 BIDS 状态，再使用与窗口完全相同的 `ScoreCache`、`BatchStore`、`UploadSession` 和上传锁。中断后再次调用会复用缓存和续传状态，源文件保留。云端凭据只由原有签名服务掌握。协议变更使用新的 schema，不能悄悄改变现有字段含义。
+
+## 评分来源与历史重评
+
+AV Capture 0.16.13 将每个选定任务项的 `score`、`algorithm_version`、`trial_id`、`round_id` 和 `duration_s` 提交到人员平台。尚未评分的分数为 `null`，真实零分保持为 `0`。Session 的 `qc.version` 列出参与最终分计算的算法版本；在进行中的实验可以跨版本继续，旧结果保留各自来源。
+
+BIDS 逐片段评分表包含 `score` 和 `algorithm_version` 两列，评分表 JSON 保留 `AlgorithmVersion`。原始 EEG 与事件文件保持不变。
+
+历史重评报告和 `scores.tsv` 保存于 COS `neurolm-1442740494/neuro-lm/data/derivatives/eegqc-v6/{upload_id}/`。`evidence-v6.json` 关联原始 EEG、平台 Session、采集轮次和任务项。数据库沿用 `capture_session_quality.qc_summary`，逐项分数与版本位于 `items`；`regraded_items` 按 `round_id:item_id` 保存已验证的历史尝试，仅供服务端匹配。新尝试不会套用旧尝试的重评分。该索引不随上传回执返回客户端，回执返回选定结果及版本。
