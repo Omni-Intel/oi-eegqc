@@ -84,7 +84,8 @@ def test_check_update_uses_opener_and_maps_errors():
         requested.append(request.full_url)
         return io.BytesIO(json.dumps(payload).encode("utf-8"))
     check_update("0.3.0", opener=mirror)
-    assert requested == [LATEST_RELEASE_URL]
+    from oi_eegqc.desktop_update import INTRANET_RELEASE_URL
+    assert requested == [INTRANET_RELEASE_URL]
 
 
 def installer_info(data=b"installer"):

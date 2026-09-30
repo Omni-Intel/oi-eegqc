@@ -10,30 +10,8 @@ RSVP = 'RSVP-20260924'
 
 
 def read_sessions(root):
-    rows = []
-    for path in Path(root).rglob('session.json'):
-        session = json.loads(path.read_text(encoding='utf-8-sig'))
-        participant = re.fullmatch(r'(?:sub-)?(\d{8})', str(session.get('participant_id', '')))
-        if not participant:
-            continue
-        named = re.search(r'sub-(\d{8})', str(path.parent))
-        if named and named[1] != participant[1]:
-            raise ValueError('目录与 Session 内的被试编号不一致')
-        eeg = path.parent / 'eeg'
-        recordings = sorted(eeg.glob('*.float32')) or sorted(eeg.glob('*.edf'))
-        if not recordings:
-            continue
-        raw = recordings[0]
-        metadata = json.loads(raw.with_suffix('.float32.json').read_text(encoding='utf-8-sig')) if raw.suffix == '.float32' else {}
-        quality_path = path.parent/'qc_summary.json'
-        quality = json.loads(quality_path.read_text(encoding='utf-8-sig')) if quality_path.exists() else {}
-        rows.append(dict(participant_number=participant[1], source_session_id=session['session_id'],
-                         paradigm_code=RSVP if '_task-things_' in raw.name else None,
-                         started_at=session.get('started_at'), ended_at=session.get('ended_at'),
-                         recorded_duration_s=metadata['shape'][0]/metadata['sampling_rate_hz'] if metadata else None,
-                         recording=str(raw), session_directory=str(path.parent),
-                         presentation=quality, final_score=None, usable_duration_s=None))
-    return rows
+    from .recording_manifest import discover_sessions
+    return discover_sessions(root)
 
 
 def expand_inputs(paths, cache, cancelled=lambda: False, progress=lambda *args: None):
@@ -114,6 +92,9 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
         for index,row in enumerate(rows,1):
             if cancelled():
                 raise UploadCancelled()
+            if row.get('recordings'):
+                grade_recordings(row, cancelled, progress, line_hz)
+                continue
             path = Path(row['recording'])
             stat = path.stat()
             existing_report = row.get('signal_qc') if row.get('score_stat') == (stat.st_size, stat.st_mtime_ns) else None
@@ -121,7 +102,7 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
                 existing_report = None
             row['score_stat'] = (stat.st_size, stat.st_mtime_ns)
             identity = [stat.st_size, stat.st_mtime_ns, line_hz, SCORING_ALGORITHM_VERSION]
-            sidecar = Path(row['session_directory'])/'eegqc-report.json'
+            sidecar = Path(row.get('report_path') or Path(row['session_directory'])/'eegqc-report.json')
             progress(f"评分 {index}/{len(rows)} · {row['source_session_id']}")
             try:saved = json.loads(sidecar.read_text(encoding='utf-8')) if sidecar.exists() else {}
             except (ValueError,OSError):saved={}
@@ -144,13 +125,64 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
                 try:atomic_json(sidecar, dict(source=identity, report=report))
                 except OSError as error:row['grading_error']=str(error)
             row['signal_qc'] = report
+            row['final_score'] = row['usable_duration_s'] = None
             if report is not None:
                 if row['recorded_duration_s'] is None:row['recorded_duration_s']=report['duration_s']
                 row['final_score'] = float(report['gqi'])
                 row['usable_duration_s'] = (row['recorded_duration_s'] * float(report['usable_ratio'])
                                              if row['final_score'] >= 60 else 0.)
+            complete_recording_metadata(row)
     finally:
         client.close()
+
+
+def complete_recording_metadata(row):
+    """Recover real duration even when scoring fails; never infer wall time from mtime."""
+    from datetime import datetime, timedelta
+    if row.get('recorded_duration_s') is None:
+        from .recording_manifest import recording_duration
+        row['recorded_duration_s'] = recording_duration(Path(row['recording']))
+    if row.get('started_at') and not row.get('ended_at') and row.get('recorded_duration_s'):
+        try:
+            start = datetime.fromisoformat(row['started_at'].replace('Z', '+00:00'))
+        except ValueError:
+            return
+        if start.tzinfo is not None:
+            row['ended_at'] = (start + timedelta(seconds=row['recorded_duration_s'])).isoformat()
+
+
+def grade_recordings(row, cancelled, progress, line_hz):
+    """Score every run and aggregate duration once for the source Session."""
+    from .local_files import atomic_json
+    from .scoring_version import SCORING_ALGORITHM_VERSION
+    from datetime import datetime
+    children = row['recordings']
+    for child in children:
+        child.update(session_directory=row['session_directory'], source_session_id=row['source_session_id'],
+                     report_path=str(Path(child['recording']).with_name(Path(child['recording']).stem+'.eegqc-report.json')))
+    grade_sessions(children, cancelled, progress, line_hz)
+    durations = [r.get('recorded_duration_s') for r in children]
+    total = sum(durations) if all(v is not None for v in durations) else None
+    scored = all(r.get('final_score') is not None for r in children)
+    row['recorded_duration_s'] = total
+    row['final_score'] = sum(r['final_score']*r['recorded_duration_s'] for r in children)/total if scored and total else None
+    row['usable_duration_s'] = sum(r['usable_duration_s'] for r in children) if scored and total else None
+    # A Session span may include gaps. Only actual samples contribute to recorded time.
+    if not row.get('started_at') and all(r.get('started_at') for r in children):
+        row['started_at'] = min((r['started_at'] for r in children), key=lambda s: datetime.fromisoformat(s.replace('Z', '+00:00')))
+    if not row.get('ended_at') and all(r.get('ended_at') for r in children):
+        row['ended_at'] = max((r['ended_at'] for r in children), key=lambda s: datetime.fromisoformat(s.replace('Z', '+00:00')))
+    row['signal_qc'] = dict(aggregation='duration_weighted_runs', scoring_algorithm_version=SCORING_ALGORITHM_VERSION,
+                            recording_count=len(children), duration_s=total, gqi=row['final_score'],
+                            usable_duration_s=row['usable_duration_s'],
+                            recordings=[dict(file=Path(r['recording']).relative_to(row['session_directory']).as_posix(),
+                                             duration_s=r.get('recorded_duration_s'), final_score=r.get('final_score'),
+                                             usable_duration_s=r.get('usable_duration_s'),
+                                             report=score_summary(r.get('signal_qc')), error=r.get('grading_error')) for r in children])
+    try:
+        atomic_json(Path(row['session_directory'])/'eegqc-session-report.json', row['signal_qc'])
+    except OSError as error:
+        row['grading_error'] = str(error)
 
 
 def score_summary(report):
@@ -178,7 +210,7 @@ def attach_sessions(batch, rows):
             entry = members[0]
             suffix = Path(entry['source']).relative_to(directory).as_posix()
             relative = entry['relative'][:-len(suffix)].rstrip('/')
-            data = {k:v for k,v in row.items() if k not in ('recording','session_directory','grading_error','score_stat')}
+            data = {k:v for k,v in row.items() if k in ('participant_number','source_session_id','paradigm_code','started_at','ended_at','recorded_duration_s','presentation','final_score','usable_duration_s')}
             data['signal_qc'] = score_summary(row.get('signal_qc'))
             data.update(directory=relative, paradigm_code=part['paradigm_code'])
             old = next((r for r in part.get('imports',[]) if {k:v for k,v in r.items() if k!='receipt'} == data), None)
@@ -198,6 +230,18 @@ def sync_database(store, batch, client, progress, cancelled=lambda:False):
                 return
             if row.get('receipt'):
                 continue
+            from datetime import datetime
+            for field in ('started_at', 'ended_at'):
+                try:
+                    stamp = datetime.fromisoformat(str(row.get(field) or '').replace('Z', '+00:00'))
+                    if stamp.tzinfo is None:
+                        raise ValueError()
+                except ValueError:
+                    raise ValueError(f'采集元数据缺少带时区的 {field}，请补齐后重新导入') from None
+            if not row.get('recorded_duration_s') or row['recorded_duration_s'] <= 0:
+                raise ValueError('无法确定实际采集时长，请核对原始文件后重新导入')
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', row['source_session_id']):
+                raise ValueError('采集编号需为 1–128 位字母、数字、下划线或连字符')
             progress(f"正在入库 {row['participant_number']} · {row['source_session_id']}")
             payload = {k:v for k,v in row.items() if k!='receipt'}
             if 'signal_qc' in payload:

@@ -1,7 +1,4 @@
-"""Check GitHub Releases for a newer Windows build.
-
-The app never uploads recordings.
-"""
+"""Release discovery and Windows updates through the company channel or GitHub."""
 from __future__ import annotations
 
 import json
@@ -16,7 +13,8 @@ LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/lates
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
 INSTALLER_ASSET = "OI-EEGQC-Setup-Windows-x64.exe"
 ZIP_ASSET = "OI-EEGQC-Windows-x64.zip"
-INTRANET_CHANNEL = "https://personnel.intra.omni-intel.cn/updates/av-capture/"
+LEGACY_CHANNEL = "https://personnel.intra.omni-intel.cn/updates/av-capture/"
+INTRANET_CHANNEL = "https://personnel.intra.omni-intel.cn/updates/eegqc/"
 INTRANET_RELEASE_URL = INTRANET_CHANNEL + "eegqc-stable.json"
 TIMEOUT_S = 8
 
@@ -125,19 +123,20 @@ def check_update(
     url: str | None = None,
     opener: Callable[..., Any] | None = None,
 ) -> UpdateInfo:
-    endpoint = url or os.environ.get("OI_EEGQC_RELEASES_URL") or (LATEST_RELEASE_URL if opener else INTRANET_RELEASE_URL)
-    try:
-        payload = fetch_latest_release(
-            endpoint, current_version=current_version, opener=opener
-        )
-        import sys
-        from pathlib import Path
-        portable = getattr(sys, 'frozen', False) and not (Path(sys.executable).parent / 'unins000.exe').is_file()
-        return interpret_release(payload, current_version, prefer_portable=portable)
-    except (HTTPError, URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError):
-        if endpoint == INTRANET_RELEASE_URL:
-            return check_update(current_version, url=LATEST_RELEASE_URL, opener=opener)
-        return UpdateInfo(status="error", current=current_version)
+    configured = url or os.environ.get("OI_EEGQC_RELEASES_URL")
+    endpoints = [configured] if configured else [INTRANET_RELEASE_URL, LEGACY_CHANNEL+'eegqc-stable.json', LATEST_RELEASE_URL]
+    import sys
+    from pathlib import Path
+    portable = getattr(sys, 'frozen', False) and not (Path(sys.executable).parent / 'unins000.exe').is_file()
+    for endpoint in endpoints:
+        try:
+            payload = fetch_latest_release(endpoint, current_version=current_version, opener=opener)
+            info = interpret_release(payload, current_version, prefer_portable=portable)
+            if info.status == 'current' or (info.status == 'available' and info.asset_url):
+                return info
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError, TypeError, json.JSONDecodeError):
+            continue
+    return UpdateInfo(status="error", current=current_version)
 
 
 def downloadable(info):
@@ -147,7 +146,12 @@ def downloadable(info):
     github_path = f"/{GITHUB_REPO}/releases/download/v{info.latest}/{info.asset_name}"
     trusted = url.netloc == "github.com" and url.path == github_path
     internal_file = f"eegqc-{info.latest}.zip" if info.asset_name == ZIP_ASSET else f"eegqc-{info.latest}-setup.exe"
-    trusted = trusted or info.asset_url == INTRANET_CHANNEL + internal_file
+    trusted = trusted or any(info.asset_url == base + internal_file for base in (INTRANET_CHANNEL, LEGACY_CHANNEL))
+    configured = os.environ.get('OI_EEGQC_RELEASES_URL')
+    if configured:
+        source = urlsplit(configured)
+        trusted = trusted or (source.scheme == 'https' and url.netloc == source.netloc
+                              and url.path == source.path.rsplit('/', 1)[0] + '/' + internal_file)
     return (info.status == "available" and info.asset_name in (INSTALLER_ASSET, ZIP_ASSET)
             and url.scheme == "https" and trusted
             and not url.query and not url.fragment
@@ -162,9 +166,11 @@ def installer_opener():
     class SafeRedirect(HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             url = urlsplit(newurl)
+            configured = urlsplit(os.environ.get('OI_EEGQC_RELEASES_URL', ''))
             if url.scheme != "https" or url.netloc not in {
                 "github.com", "release-assets.githubusercontent.com",
-                "objects.githubusercontent.com", "personnel.intra.omni-intel.cn"
+                "objects.githubusercontent.com", "personnel.intra.omni-intel.cn",
+                configured.netloc if configured.scheme == 'https' else ''
             }:
                 raise ValueError("更新下载跳转不受信任")
             return super().redirect_request(req, fp, code, msg, headers, newurl)

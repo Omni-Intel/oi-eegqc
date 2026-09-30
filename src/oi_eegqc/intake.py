@@ -131,10 +131,14 @@ def session_stamp_metadata(path):
 def npy_metadata(path):
     """Same-stem JSON, then recognised session metadata.json. Sidecar wins."""
     path = Path(path)
-    sidecar = {}
-    stem = path.with_suffix(".json")
-    if stem.is_file():
-        sidecar = _parse_sidecar_fields(_read_json_object(stem))
+    from .bids_metadata import eeg_metadata, channel_rows
+    sidecar = _parse_sidecar_fields(eeg_metadata(path))
+    channels = channel_rows(path)
+    if channels:
+        sidecar.setdefault('channel_names', [r['name'] for r in channels])
+        units = {r['units'] for r in channels if r.get('type', '').upper() == 'EEG'}
+        if len(units) == 1 and 'unit' not in sidecar:
+            sidecar.update(_parse_sidecar_fields({'unit': next(iter(units))}))
     session = session_stamp_metadata(path)
     if not session:
         return sidecar
@@ -353,6 +357,13 @@ def score_file(
     else:
         raise ValueError("请选择脑电或数组文件。")
     progress("检查")
+    if keep_channels is None:
+        from .bids_metadata import channel_rows
+        channels = channel_rows(path)
+        if channels:
+            keep_channels = [r['name'] for r in channels if r.get('type', '').upper() == 'EEG']
+            if not keep_channels:
+                raise ValueError('通道表没有 EEG 通道')
     if recording.data.ndim != 2 or min(recording.data.shape) == 0:
         raise ValueError("文件没有有效的脑电数据。")
     if not np.isfinite(recording.sfreq) or recording.sfreq <= 0:

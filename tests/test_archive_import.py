@@ -36,7 +36,7 @@ def test_partial_database_failure_preserves_receipts_and_retries_only_pending():
             if self.fail and p['source_session_id']=='two':raise ServiceError(503)
             return {'session_id':p['source_session_id']}
     client=Client()
-    for r in batch['imports']:r['participant_number']='13467638'
+    for r in batch['imports']:r.update(participant_number='13467638',started_at='2026-09-30T09:00:00+08:00',ended_at='2026-09-30T09:01:00+08:00',recorded_duration_s=60)
     with pytest.raises(ServiceError):sync_database(Store(),batch,client,lambda *a:None)
     assert batch['status']=='completed' and database_pending(batch)
     client.fail=False

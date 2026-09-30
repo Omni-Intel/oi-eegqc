@@ -56,7 +56,7 @@ class UploadWorker(QThread):
                 if not self.sessions_provided:
                     self.imports=[s for root in self.roots if Path(root).is_dir() for s in read_sessions(root)]
                 if any(s['paradigm_code'] and s['paradigm_code']!=self.store.paradigm['code'] for s in self.imports):
-                    raise ValueError('图片采集包请选择 RSVP 图片 EEG 范式')
+                    raise ValueError('所选范式与采集元数据不一致，请按记录中的范式分别上传')
                 if self.imports:
                     self.progress.emit({'stage':'scoring','current':f'正在评分 0/{len(self.imports)}'})
                     if self.parent().telemetry:self.parent().telemetry.report('archive_scoring_started',count=len(self.imports))
@@ -88,7 +88,8 @@ class UploadWorker(QThread):
                 try:
                     sync_database(self.store, self.batch, client, lambda name:self.report({'current':name}), self.isInterruptionRequested)
                 except Exception as error:
-                    self.database_error = ('文件已上传，平台未找到对应被试。请核对账号后重试入库'
+                    self.database_error = ('文件已上传，' + str(error) if isinstance(error, ValueError) else
+                                           '文件已上传，平台未找到对应被试。请核对账号后重试入库'
                                            if getattr(error, 'status_code', None) == 404 else '文件已上传，统计入库失败。请点击“重试入库”')
                     if self.parent().telemetry:
                         self.parent().telemetry.report('database_import_failed', exc=error)
@@ -333,7 +334,7 @@ class UploadController(QObject):
             return
         self._selection = (list(roots), dict(scored) if scored is not None else None)
         if any(s['paradigm_code'] and s['paradigm_code'] != self._paradigms[self._paradigm_index]['code'] for s in sessions or []):
-            self._error = '图片采集包请选择 RSVP 图片 EEG 范式'
+            self._error = '所选范式与采集元数据不一致，请按记录中的范式分别上传'
             self.lock.unlock(); self.lock = None; self.changed.emit(); return
         self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition, sessions=sessions)
         self._start_after_prepare = start_upload

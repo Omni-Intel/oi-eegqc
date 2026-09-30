@@ -12,6 +12,10 @@ INTRANET_PORT = 8443
 ALLOWED_HOSTS = {INTRANET_HOST, "172.16.1.249", "127.0.0.1", "localhost"}
 COS_HOST = "neurolm-1442740494.cos.ap-beijing.myqcloud.com"
 ORIGIN = os.environ.get("OI_EEGQC_UPLOAD_ORIGIN", f"https://{INTRANET_HOST}")
+if os.environ.get("OI_EEGQC_UPLOAD_ORIGIN"):
+    configured_origin = urlsplit(ORIGIN)
+    if configured_origin.scheme == 'https' and configured_origin.hostname:
+        ALLOWED_HOSTS.add(configured_origin.hostname)
 PREFIX = "neuro-lm/data/inbox/"
 MAX_SINGLE_PUT = 5 * 1024**3
 PART_SIZE = 64 * 1024**2

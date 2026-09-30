@@ -1,5 +1,7 @@
 # OI-EEGQC 统一评分与上传软件
 
+外部采集程序对接请阅读[存储与入库规范](docs/external-acquisition.zh-CN.md)，并使用[视频与 RSVP 元数据模板](examples/external-acquisition)。
+
 [English](README.md) · [下载已发布 Windows 安装包](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)
 
 OI-EEGQC 是面向 EEG 采集质控与数据入库的本地优先工具。Windows 桌面端和命令行共用同一套评分引擎、输入规范化流程和版本化报告格式。一个采集文件夹可以同时包含 EEG 记录、采集元数据、阻抗截图、佩戴定位照片、视频和其他辅助文件。

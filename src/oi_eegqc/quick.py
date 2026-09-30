@@ -524,11 +524,14 @@ class Controller(QObject):
         sessions = []
         for source in self._import_sessions:
             session = dict(source)
-            index = self.files.path_indices.get(os.path.normcase(session['recording']))
-            if index is not None:
-                row = self.files.rows[index]
-                if row.get('report') is not None and row.get('scored_stat') is not None:
-                    session.update(signal_qc=row['report'].to_dict(), score_stat=row['scored_stat'])
+            if source.get('recordings'):
+                session['recordings'] = [dict(r) for r in source['recordings']]
+            for recording in session.get('recordings') or [session]:
+                index = self.files.path_indices.get(os.path.normcase(recording['recording']))
+                if index is not None:
+                    row = self.files.rows[index]
+                    if row.get('report') is not None and row.get('scored_stat') is not None:
+                        recording.update(signal_qc=row['report'].to_dict(), score_stat=row['scored_stat'])
             sessions.append(session)
         self._upload.prepare(self._folder_roots, None, sessions=sessions, start_upload=start_upload)
 
@@ -544,7 +547,7 @@ class Controller(QObject):
     @Slot(object)
     def _archive_reports(self, sessions):
         from .application.qt_workers import ReportView
-        for session in sessions:
+        for session in [r for s in sessions for r in (s.get('recordings') or [s])]:
             index = self.files.path_indices.get(os.path.normcase(session['recording']))
             if index is not None and session.get('signal_qc'):
                 row = self.files.rows[index]

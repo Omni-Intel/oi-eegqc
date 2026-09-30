@@ -1,0 +1,23 @@
+{
+  "trial_type": {
+    "Description": "刺激类型：image、video、rest"
+  },
+  "stimulus_id": {
+    "Description": "素材库稳定编号；示例编号须替换"
+  },
+  "trial_id": {
+    "Description": "每次呈现的唯一编号"
+  },
+  "sample_index": {
+    "Description": "相对于本 EEG 文件首个样本，从 0 开始；未知 n/a"
+  },
+  "trigger_value": {
+    "Description": "实际发送 Trigger 数值；未知 n/a"
+  },
+  "completed": {
+    "Description": "1=完整呈现，0=中断"
+  },
+  "timing_source": {
+    "Description": "hardware_trigger 或 software_timestamp"
+  }
+}

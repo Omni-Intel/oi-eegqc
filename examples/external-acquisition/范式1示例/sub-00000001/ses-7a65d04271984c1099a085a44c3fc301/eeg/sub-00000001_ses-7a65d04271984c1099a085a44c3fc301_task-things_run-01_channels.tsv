@@ -1,0 +1,5 @@
+name	type	units
+Fz	EEG	uV
+Cz	EEG	uV
+Pz	EEG	uV
+Oz	EEG	uV

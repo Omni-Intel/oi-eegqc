@@ -1,5 +1,7 @@
 # OI-EEGQC
 
+External acquisition developers: see the [storage and import contract](docs/external-acquisition.md) and [metadata templates](examples/external-acquisition).
+
 [简体中文](README.zh-CN.md) · [Windows installer](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)
 
 OI-EEGQC is a local-first quality-control and collection-ingest tool for EEG acquisition. The Windows application and command-line interface use the same scoring engine, input normalization and versioned report schema. A selected collection can contain EEG recordings, acquisition metadata, impedance screenshots, positioning photographs, videos and other supporting files.

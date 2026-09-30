@@ -14,6 +14,7 @@ venv/
 *.json
 !configs/**
 !packaging/quality-api.json
+!examples/external-acquisition/**/*.json
 /pytest-*/
 bench_runs/
 *.bdf

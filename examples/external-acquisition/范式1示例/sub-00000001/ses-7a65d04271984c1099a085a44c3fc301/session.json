@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "participant_id": "00000001",
+  "session_id": "7a65d04271984c1099a085a44c3fc301",
+  "paradigm_code": "RSVP-20260924",
+  "started_at": "2026-09-30T09:00:00+08:00",
+  "ended_at": "2026-09-30T09:01:00+08:00",
+  "recording_status": "complete",
+  "stop_reason": "operator_stop",
+  "acquisition_software": {
+    "name": "PartnerCapture",
+    "version": "1.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "TaskName": "av",
+  "SamplingFrequency": 1000,
+  "PowerLineFrequency": 50,
+  "EEGReference": "n/a",
+  "SoftwareFilters": "n/a",
+  "RecordingType": "continuous",
+  "RecordingDuration": 60,
+  "EEGChannelCount": 4,
+  "EOGChannelCount": 0,
+  "ECGChannelCount": 0,
+  "EMGChannelCount": 0,
+  "MiscChannelCount": 0,
+  "TriggerChannelCount": 0
+}

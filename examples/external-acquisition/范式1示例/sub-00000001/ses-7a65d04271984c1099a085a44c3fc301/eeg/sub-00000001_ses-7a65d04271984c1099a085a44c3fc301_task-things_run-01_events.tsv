@@ -1,0 +1,2 @@
+onset	duration	trial_type	stimulus_id	trial_id	sample_index	trigger_value	completed	timing_source
+1.000	1.200	image	things:example001	trial001	1000	n/a	1	software_timestamp
