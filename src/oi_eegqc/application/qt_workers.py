@@ -67,6 +67,7 @@ class BatchWorker(QThread):
     def run(self):
         client = self.process_factory()
         caches = {}
+        from ..score_reports import read_report, write_report
         try:
             for job in self.jobs:
                 index, path, metadata = job[:3]
@@ -74,6 +75,17 @@ class BatchWorker(QThread):
                 if self.isInterruptionRequested():
                     break
                 self.started_file.emit(index)
+                identity = saved = None
+                try:
+                    stat = Path(path).stat()
+                    identity = (stat.st_size, stat.st_mtime_ns)
+                    saved = read_report(path, metadata, identity)
+                except OSError:
+                    pass
+                if saved is not None:
+                    self.phase_changed.emit(index, '复用评分')
+                    self.scored.emit(index, ReportView(saved))
+                    continue
                 digest = source_stat = cache = None
                 if cache_path:
                     try:
@@ -84,6 +96,7 @@ class BatchWorker(QThread):
                         digest, source_stat = cache.digest(path, self.isInterruptionRequested)
                         cached = cache.lookup(digest, metadata)
                         if cached is not None:
+                            write_report(path, metadata, cached, source_stat)
                             report = ReportView(cached)
                             report.content_sha256 = digest
                             self.scored.emit(index, report)
@@ -102,6 +115,7 @@ class BatchWorker(QThread):
                         self.cancelled_file.emit(index)
                         break
                     if kind == "result":
+                        if identity is not None:write_report(path, metadata, payload, identity)
                         if cache is not None and digest is not None:
                             try:
                                 current = Path(path).stat()

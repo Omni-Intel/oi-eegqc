@@ -87,43 +87,64 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
     from .intake import inspect_file
     from .desktop_upload import UploadCancelled
     from .scoring_version import SCORING_ALGORITHM_VERSION
+    from .score_reports import read_report, write_report
     client = ScoringProcess()
+    counts = dict(scored=0, reused=0, failed=0)
     try:
         for index,row in enumerate(rows,1):
             if cancelled():
                 raise UploadCancelled()
             if row.get('recordings'):
-                grade_recordings(row, cancelled, progress, line_hz)
+                result = grade_recordings(row, cancelled, progress, line_hz)
+                for key in counts:
+                    counts[key] += result[key]
                 continue
             path = Path(row['recording'])
             stat = path.stat()
             existing_report = row.get('signal_qc') if row.get('score_stat') == (stat.st_size, stat.st_mtime_ns) else None
             if existing_report and existing_report.get('extras', {}).get('line_hz', line_hz) != line_hz:
                 existing_report = None
+            if not existing_report and row.get('grading_error') and row.get('failed_stat') == (stat.st_size, stat.st_mtime_ns):
+                counts['failed'] += 1
+                row.update(signal_qc=None, final_score=None, usable_duration_s=None)
+                complete_recording_metadata(row)
+                continue
+            metadata = dict(inspect_file(path), line_hz=line_hz)
             row['score_stat'] = (stat.st_size, stat.st_mtime_ns)
             identity = [stat.st_size, stat.st_mtime_ns, line_hz, SCORING_ALGORITHM_VERSION]
             sidecar = Path(row.get('report_path') or Path(row['session_directory'])/'eegqc-report.json')
-            progress(f"评分 {index}/{len(rows)} · {row['source_session_id']}")
             try:saved = json.loads(sidecar.read_text(encoding='utf-8')) if sidecar.exists() else {}
             except (ValueError,OSError):saved={}
-            report = existing_report or (saved.get('report') if saved.get('source') == identity else None)
+            report = existing_report or read_report(path, metadata, row['score_stat'])
+            if report is None and saved.get('source') == identity and saved.get('parameters', metadata) == metadata:
+                report = saved.get('report')
+            reused = report is not None
             if report is None:
+                progress(f"评分 {index}/{len(rows)} · {row['source_session_id']}")
                 try:
-                    kind, payload = client.score(str(path), dict(inspect_file(path), line_hz=line_hz), cancelled,
+                    kind, payload = client.score(str(path), metadata, cancelled,
                                                  lambda phase: progress(f"评分 {index}/{len(rows)} · {phase}"), DEFAULT_FILE_TIMEOUT_S)
                 except (ValueError, OSError) as error:
                     kind, payload = 'error', str(error)
                 if kind == 'cancelled':
                     raise UploadCancelled()
                 if kind == 'result':
+                    counts['scored'] += 1
                     report = payload
-                    try:atomic_json(sidecar, dict(source=identity, report=report))
+                    try:
+                        write_report(path, metadata, report, row['score_stat'])
+                        if sidecar != path.with_name(path.stem+'.eegqc-report.json'):
+                            atomic_json(sidecar, dict(source=identity, parameters=metadata, report=report))
                     except OSError as error:row['grading_error']=str(error)
                 else:
+                    counts['failed'] += 1
                     row['grading_error'] = str(payload or kind)
             elif existing_report is not None and (saved.get('source') != identity or saved.get('report') != report):
                 try:atomic_json(sidecar, dict(source=identity, report=report))
                 except OSError as error:row['grading_error']=str(error)
+            if reused:
+                counts['reused'] += 1
+                progress(f"复用评分 {index}/{len(rows)} · {row['source_session_id']}")
             row['signal_qc'] = report
             row['final_score'] = row['usable_duration_s'] = None
             if report is not None:
@@ -134,6 +155,7 @@ def grade_sessions(rows, cancelled, progress, line_hz=50):
             complete_recording_metadata(row)
     finally:
         client.close()
+    return counts
 
 
 def complete_recording_metadata(row):
@@ -160,7 +182,7 @@ def grade_recordings(row, cancelled, progress, line_hz):
     for child in children:
         child.update(session_directory=row['session_directory'], source_session_id=row['source_session_id'],
                      report_path=str(Path(child['recording']).with_name(Path(child['recording']).stem+'.eegqc-report.json')))
-    grade_sessions(children, cancelled, progress, line_hz)
+    counts = grade_sessions(children, cancelled, progress, line_hz)
     durations = [r.get('recorded_duration_s') for r in children]
     total = sum(durations) if all(v is not None for v in durations) else None
     scored = all(r.get('final_score') is not None for r in children)
@@ -180,9 +202,13 @@ def grade_recordings(row, cancelled, progress, line_hz):
                                              usable_duration_s=r.get('usable_duration_s'),
                                              report=score_summary(r.get('signal_qc')), error=r.get('grading_error')) for r in children])
     try:
-        atomic_json(Path(row['session_directory'])/'eegqc-session-report.json', row['signal_qc'])
-    except OSError as error:
+        summary = Path(row['session_directory'])/'eegqc-session-report.json'
+        saved = json.loads(summary.read_text(encoding='utf-8')) if summary.exists() else None
+        if saved != row['signal_qc']:
+            atomic_json(summary, row['signal_qc'])
+    except (OSError, ValueError) as error:
         row['grading_error'] = str(error)
+    return counts
 
 
 def score_summary(report):
@@ -217,6 +243,8 @@ def attach_sessions(batch, rows):
             if old and old.get('receipt'):
                 data['receipt'] = old['receipt']
             imports.append(data)
+        if not imports:
+            continue
         part['imports'] = imports
         part['database_status'] = ('complete' if all(r.get('receipt') for r in imports) else 'pending') if imports else 'not_required'
 

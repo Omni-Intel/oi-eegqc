@@ -110,6 +110,9 @@ class SignClient:
     def commit_import(self, payload):
         return self._request('/v1/capture/imports/commit', payload)
 
+    def resolve_collection(self, files):
+        return self._request('/v1/uploads/resolve', {'files':files})
+
     def health(self):
         connection = _connection(_origin(), 8)
         self._track(connection)

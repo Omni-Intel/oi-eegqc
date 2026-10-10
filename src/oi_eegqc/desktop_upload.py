@@ -156,6 +156,7 @@ class BatchStore:
     def __init__(self, directory, paradigm=None):
         self.directory = Path(directory)
         self.paradigm = paradigm
+        self._legacy_records = None
 
     def save(self, batch):
         for child in batch.get("children", []):
@@ -218,8 +219,10 @@ class BatchStore:
                 raise UploadError("文件夹上传记录不匹配，请联系管理员")
             return pointer, record
         # Adopt pre-index records without abandoning an already allocated cloud ID.
-        for path in sorted(self.directory.glob("*/state.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True):
-            record = json.loads(path.read_text(encoding="utf-8"))
+        if self._legacy_records is None:
+            self._legacy_records = [json.loads(p.read_text(encoding="utf-8")) for p in
+                                    sorted(self.directory.glob("*/state.json"), key=lambda p:p.stat().st_mtime_ns, reverse=True)]
+        for record in self._legacy_records:
             if record.get("version") == 1 and os.path.normcase(str(root)) in [os.path.normcase(p) for p in record.get("roots", [])] and any(e.get("done") for e in record.get("entries", [])):
                 raise UploadError("旧认证批次已传过文件，请联系管理员迁移；旧状态已保留")
             if record.get("version") != 2 or record.get("children"):
@@ -253,7 +256,18 @@ class BatchStore:
             raise UploadError("这轮数据已上传，但本地文件后来发生变化；不会重复上传，请联系维护人员核查")
         return previous
 
-    def prepare(self, roots, scored, cancelled=lambda: False, progress=lambda name: None, new_acquisition=False):
+    def unchanged_completed(self, root, cancelled=lambda: False):
+        root = normalize_roots([root])[0]
+        _, previous = self._folder_record(root)
+        if not previous or previous.get('status') != 'completed':
+            return None
+        if any(row.get('final_score') is None for row in previous.get('imports', [])):
+            return None
+        current = scan_sources([root], cancelled, labels=previous.get('labels'), validate_bids=False)
+        identity = lambda e: (e['source'], e['relative'], e['size'], e['mtime'], e['directory'])
+        return previous if [identity(e) for e in current] == [identity(e) for e in previous['entries']] else None
+
+    def prepare(self, roots, scored, cancelled=lambda: False, progress=lambda name: None, new_acquisition=False, completed=None):
         roots = normalize_roots(roots)
         scored = {os.path.normcase(str(Path(path).resolve())): value for path, value in scored.items()} if scored is not None else None
         for root in roots:
@@ -261,9 +275,10 @@ class BatchStore:
                 raise UploadError("采集目录不能包含应用上传状态目录")
         from .score_cache import ScoreCache
 
+        completed = completed or {}
         with ScoreCache(self.directory.parent / "score-cache.sqlite3") as hash_cache:
             entries = scan_sources(
-                roots, cancelled, progress, hash_cache=hash_cache, validate_bids=scored is not None
+                [root for root in roots if str(root) not in completed], cancelled, progress, hash_cache=hash_cache, validate_bids=scored is not None
             )
         signals = [e for e in entries if not e["directory"] and Path(e["source"]).suffix.lower() in EEG_SUFFIXES]
         if scored is not None and (not signals or any(os.path.normcase(e["source"]) not in scored for e in signals)):
@@ -276,6 +291,9 @@ class BatchStore:
                 raise UploadError("评分后数据已变化，请重新评分")
         children = []
         for root in roots:
+            if str(root) in completed:
+                children.append(completed[str(root)])
+                continue
             pointer, previous = self._folder_record(root)
             if new_acquisition:
                 previous = None
@@ -294,11 +312,18 @@ class BatchStore:
             unchanged = previous and [identity(e) for e in members] == [identity(e) for e in previous["entries"]]
             child = dict(previous) if previous else dict(version=2, local_id=secrets.token_hex(16), upload_id=None, allocation_pending=False)
             resume = unchanged
-            if resume:
-                for current, prior in zip(members, previous["entries"]):
-                    current["done"] = prior["done"]
+            if previous:
+                prior_files = {e["relative"]: e for e in previous["entries"]}
+                for current in members:
+                    prior = prior_files.get(current["relative"])
+                    if prior and prior["done"] and current.get("sha256") and (
+                        current["size"], current["directory"], current["sha256"]
+                    ) == (prior["size"], prior["directory"], prior.get("sha256")):
+                        current["done"] = True
             child.update(roots=[str(root)], labels={str(root): label}, entries=members,
                          status=previous["status"] if resume else "ready", error=previous.get("error", "") if resume else "", current="")
+            if new_acquisition:
+                child["force_new_collection"] = True
             if not resume:
                 # Keep unresolved allocations too: a lost response must not create a new collection.
                 predecessors = list(child.get("superseded_requests", []))
@@ -325,6 +350,7 @@ class BatchStore:
 
     def reset_folder(self, root):
         """Remove only this folder's local associations, including legacy history."""
+        self._legacy_records = None
         root = str(plain_path(root).resolve())
         matches = lambda value: os.path.normcase(value) == os.path.normcase(root)
 

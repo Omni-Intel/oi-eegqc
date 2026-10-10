@@ -20,8 +20,10 @@ def record_id(producer, source_id):
 
 
 def contains(root, path):
-    root,path=Path(root).resolve(),Path(path).resolve()
-    return path==root or root in path.parents
+    root = os.path.normcase(os.path.abspath(root))
+    path = os.path.normcase(os.path.abspath(path))
+    try:return os.path.commonpath((root, path)) == root
+    except ValueError:return False
 
 
 class RecordHub:

@@ -33,26 +33,29 @@ def test_npy_scoring_units_axes_and_invalid_inputs(tmp_path):
         score_file(path, sfreq=250)
 
 
-def write_edf(path, sfreq=250):
+def write_edf(path, sfreq=250, signal=None):
     """Small valid EDF fixture; avoids requiring an EDF export dependency."""
     def field(value, size):
         return str(value).encode("ascii").ljust(size)
-    n = 4
+    n = 4 if signal is None else len(signal)
+    duration = 5 if signal is None else signal.shape[1] // sfreq
+    labels = ["Fp1", "Fp2", "C3", "C4"] if n == 4 else [f"C{i}" for i in range(n)]
     bdf = path.suffix.lower() == ".bdf"
     rail = 8388607 if bdf else 32767
     header = b"".join(field(v, s) for v, s in [
         ("0", 8), ("X", 80), ("X", 80), ("01.01.24", 8), ("00.00.00", 8),
-        (256 + n * 256, 8), ("", 44), (5, 8), (1, 8), (n, 4)])
-    for values, size in [(["Fp1", "Fp2", "C3", "C4"], 16), ([""]*n, 80),
+        (256 + n * 256, 8), ("", 44), (duration, 8), (1, 8), (n, 4)])
+    for values, size in [(labels, 16), ([""]*n, 80),
                          (["uV"]*n, 8), ([-200]*n, 8), ([200]*n, 8),
                          ([-rail-1]*n, 8), ([rail]*n, 8), ([""]*n, 80),
                          ([sfreq]*n, 8), ([""]*n, 32)]:
         header += b"".join(field(v, size) for v in values)
-    data = np.clip(synth_clean(n, sfreq, 5) / 200 * rail, -rail-1, rail).astype("<i4" if bdf else "<i2")
+    signal = synth_clean(n, sfreq, duration) if signal is None else signal
+    data = np.clip(signal / 200 * rail, -rail-1, rail).astype("<i4" if bdf else "<i2")
     if bdf:
         header = b"\xffBIOSEMI" + header[8:]
     records = []
-    for i in range(5):
+    for i in range(duration):
         chunk = data[:, i*sfreq:(i+1)*sfreq].copy()
         records.append(chunk.view(np.uint8).reshape(-1, 4)[:, :3].tobytes() if bdf else chunk.tobytes())
     path.write_bytes(header + b"".join(records))
@@ -372,7 +375,8 @@ def test_dynamic_sample_rates(tmp_path, sfreq, suffix):
         report = score_file(path, sfreq=250)
     assert report.extras["sfreq_hz"] == sfreq
     assert report.duration_s == 5
-    assert report.window_qa.n_windows == 9
+    assert report.window_qa.n_windows == 4
+    assert report.window_qa.window_evidence[-1]['end_s'] == 5
     assert np.isfinite(report.gqi)
     assert report.extras["frequency_coverage"]["noise_band_complete"] == (sfreq >= 192)
 

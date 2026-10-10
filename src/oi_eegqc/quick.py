@@ -171,17 +171,21 @@ class FileModel(QAbstractListModel):
 
 class IntakeWorker(QThread):
     progress = Signal(str, int)
-    def __init__(self, paths, known, cache):
+    def __init__(self, paths, known, cache, mains=50, order=0, keep=None):
         super().__init__()
         self.paths, self.known = paths, known
         self.items, self.errors = [], 0
         self.cache, self.roots, self.sessions = cache, [], []
+        self.mains, self.order, self.keep = mains, order, keep
+        self.reports = {}
+        self.has_folders=False
 
     def run(self):
         try:
             from .archive_import import expand_inputs, read_sessions, preferred_recordings
             self.roots = expand_inputs(self.paths, self.cache, self.isInterruptionRequested,
                                        lambda name, done, total: self.progress.emit(name, int(done*100/total) if total else 100))
+            self.has_folders=any(Path(root).is_dir() for root in self.roots)
             self.sessions = [s for root in self.roots if Path(root).is_dir() for s in read_sessions(root)]
             paths, self.errors = discover_files(self.roots, self.isInterruptionRequested)
             paths = preferred_recordings(paths)
@@ -194,7 +198,17 @@ class IntakeWorker(QThread):
                     continue
                 self.known.add(key)
                 try:
-                    self.items.append((path, inspect_file(path)))
+                    metadata = inspect_file(path)
+                    self.items.append((path, metadata))
+                    from .score_reports import read_report
+                    parameters = dict(metadata, line_hz=self.mains)
+                    if 'channels_first' not in parameters and self.order:
+                        parameters['channels_first'] = self.order == 1
+                    if self.keep:
+                        parameters['keep_channels'] = self.keep
+                    report = read_report(path, parameters) if self.keep != [] else None
+                    if report is not None:
+                        self.reports[path] = report
                 except (ValueError, OSError):
                     self.errors += 1
         except Exception:
@@ -220,6 +234,8 @@ class Controller(QObject):
         self._busy = self._importing = self._stopping = self._closing = False
         self._notice = self._update_text = self._update_url = ""
         self._pending = []
+        self._intake_reports = {}
+        self._folder_intake = False
         self._cursor = 0
         self._shared = None
         self._parameters = {}
@@ -252,6 +268,7 @@ class Controller(QObject):
         self._import_roots = []
         self._import_sessions = []
         self._upload_after_import = False
+        self._prepare_after_score = self._upload_after_score = False
         self._unpack_progress = 0
         order = str(self.store.value("channels_first", "")).lower()
         self._order = 1 if order in ("true", "1") else 2 if order in ("false", "0") else 0
@@ -307,8 +324,7 @@ class Controller(QObject):
     def _apply_automatic_update(self):
         if (getattr(sys, 'frozen', False) and self._automatic_updates and not self._closing
                 and self._installer
-                and not self._busy and not self._importing and not self._upload.active
-                and not self._upload.hasBatch):
+                and not self._busy and not self._importing and not self._upload.active):
             self.installUpdate()
 
     @Property(str, notify=changed)
@@ -349,7 +365,8 @@ class Controller(QObject):
         self._import_roots = [str(Path(p).absolute()) for p in paths if Path(p).exists()]
         self._phase = '正在解析数据'
         self._unpack_progress = 0
-        self.worker = IntakeWorker(paths, set(), self._data_directory/'imports')
+        self.worker = IntakeWorker(paths, set(), self._data_directory/'imports', self._mains, self._order,
+                                   None if self._all_channels else list(self._selected_channels))
         self.worker.progress.connect(self._import_progress)
         self.worker.finished.connect(self._scanned)
         self.worker.start()
@@ -373,6 +390,8 @@ class Controller(QObject):
         worker = self.worker
         self.worker = None
         self._pending, self._errors = worker.items, worker.errors
+        self._intake_reports = worker.reports
+        self._folder_intake = worker.has_folders
         self._cursor = 0
         cancelled = worker.isInterruptionRequested()
         self._import_roots = worker.roots
@@ -409,6 +428,13 @@ class Controller(QObject):
                 self.changed.emit()
                 return
             self.files.append(path, params)
+            if path in self._intake_reports:
+                from .application.qt_workers import ReportView
+                index = self.files.path_indices[os.path.normcase(path)]
+                row = self.files.rows[index]
+                if row['report'] is None:
+                    row['score_input_stat'] = row['import_stat']
+                    self._scored(index, ReportView(self._intake_reports[path]), notify=False)
             self._cursor += 1
             budget -= 1
             if not budget:
@@ -431,16 +457,24 @@ class Controller(QObject):
             self._notice = f'被试 {participants} · {len(self._import_sessions)} 个采集 Session · 优先评分无损数据'
             self.changed.emit()
             self._upload.resolveSubjects(self._import_sessions)
+        auto_score = False
         if self._upload_after_import:
             self._upload_after_import = False
             if not self._errors:
-                self.prepareUpload()
+                self.prepareUpload(start_upload=True)
+        elif self._folder_intake and self.canScore and self._all_channels and not self._errors:
+            auto_score = True
         if self._closing:
             self.closeReady.emit()
         else:
             self.imported.emit()
             if not self._all_channels and self.canScore and not self._busy:
                 QTimer.singleShot(0, self.openChannelSheet)
+            if auto_score:self._auto_score()
+
+    def _auto_score(self):
+        if not self._busy and self.canScore and not self._upload.active and not self._closing:
+            self.scoreOrStop()
 
     @Slot(str, int, bool, result=bool)
     def acceptParameters(self, rate, unit, reuse):
@@ -521,6 +555,10 @@ class Controller(QObject):
             return
         if getattr(self,'record_bridge',None) and not self.record_bridge.upload_allowed(self._folder_roots):
             self._notice='所选文件夹包含已移除记录，请改选需要上传的记录文件夹';self.changed.emit();return
+        if any(r["report"] is None and not r.get("error") for r in self.files.rows):
+            self._prepare_after_score, self._upload_after_score = True, start_upload
+            self.scoreOrStop()
+            return
         sessions = []
         for source in self._import_sessions:
             session = dict(source)
@@ -532,6 +570,8 @@ class Controller(QObject):
                     row = self.files.rows[index]
                     if row.get('report') is not None and row.get('scored_stat') is not None:
                         recording.update(signal_qc=row['report'].to_dict(), score_stat=row['scored_stat'])
+                    elif row.get('error'):
+                        recording.update(grading_error=row['error'], failed_stat=row.get('score_input_stat'))
             sessions.append(session)
         self._upload.prepare(self._folder_roots, None, sessions=sessions, start_upload=start_upload)
 
@@ -556,10 +596,17 @@ class Controller(QObject):
                 self.files.rows[index]['score_input_stat'] = session['score_stat']
                 self._scored(index, ReportView(session['signal_qc']))
 
+    def _invalidate_scores(self):
+        for index,row in enumerate(self.files.rows):
+            if row['report'] is not None:
+                self.files.patch(index, report=None, scored_stat=None, content_sha256=None,
+                                 score='—', state='待评分', ready=False, error='')
+
     @Slot(int, int)
     def saveSettings(self, order, mains):
         if self._busy or order not in (0, 1, 2) or mains not in (50, 60):
             return
+        if (self._order,self._mains)!=(order,mains):self._invalidate_scores()
         self._order, self._mains = order, mains
         self.store.setValue("channels_first", ("", "true", "false")[order])
         self.store.setValue("line_hz", mains)
@@ -616,6 +663,7 @@ class Controller(QObject):
     def setAllChannels(self, enabled):
         if self._busy:
             return
+        if self._all_channels!=enabled:self._invalidate_scores()
         if enabled:
             self._all_channels = True
             self._channels_open = False
@@ -789,7 +837,7 @@ class Controller(QObject):
         self.changed.emit()
 
     @Slot(int, object)
-    def _scored(self, index, report):
+    def _scored(self, index, report, notify=True):
         try:
             current_stat = Path(self.files.rows[index]["path"]).stat()
             after = (current_stat.st_size, current_stat.st_mtime_ns)
@@ -802,7 +850,7 @@ class Controller(QObject):
                              detail="评分期间文件已变化，请停止采集后重新评分",
                              content_sha256=None)
             self._done += 1
-            self.changed.emit()
+            if notify:self.changed.emit()
             return
         extras = getattr(report, "extras", None) or {}
         detail = f"{extras['sfreq_hz']:g} 赫兹 · {report.duration_s:g} 秒"
@@ -816,7 +864,7 @@ class Controller(QObject):
                          detail=detail, ready=True,
                          content_sha256=getattr(report, "content_sha256", None))
         self._done += 1
-        self.changed.emit()
+        if notify:self.changed.emit()
 
     @Slot(int, str)
     def _failed(self, index, message):
@@ -834,10 +882,16 @@ class Controller(QObject):
     def _finished(self):
         self.worker.deleteLater()
         self.worker = None
+        cancelled = self._stopping
         self._busy = self._stopping = False
         self._active = -1
         self.timer.stop()
         self.changed.emit()
+        if self._prepare_after_score:
+            start_upload = self._upload_after_score
+            self._prepare_after_score = self._upload_after_score = False
+            if not cancelled:
+                QTimer.singleShot(0, lambda:self.prepareUpload(start_upload=start_upload))
         if self._closing:
             self.closeReady.emit()
 
@@ -966,6 +1020,8 @@ class Controller(QObject):
         self.timer.stop()
         self.update_timer.stop()
         self.telemetry.stop.set()
+        if getattr(self, "record_bridge", None):
+            self.record_bridge.shutdown()
         self._upload.shutdown()
         if self.worker:
             self.worker.requestInterruption()

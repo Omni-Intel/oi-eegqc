@@ -47,3 +47,35 @@ def test_old_algorithm_report_is_not_reused_after_clipping_fix(tmp_path, monkeyp
         old.setattr(module, "SCORING_ALGORITHM_VERSION", "oi-eegqc-score-v1")
         cache.store("a" * 64, {}, report(0))
     assert cache.lookup("a" * 64, {}) is None
+
+
+def test_recording_report_reuses_score_without_reading_signal_or_directory(tmp_path,monkeypatch):
+    from oi_eegqc.score_reports import write_report,read_report,report_path
+    source=tmp_path/'run.npy';source.write_bytes(b'eeg')
+    stat=source.stat();identity=(stat.st_size,stat.st_mtime_ns)
+    meta=dict(sfreq=250,unit='uV',line_hz=50)
+    write_report(source,meta,report(),identity)
+    assert report_path(source).is_file()
+    monkeypatch.setattr(type(source),'iterdir',lambda *a:(_ for _ in ()).throw(AssertionError('directory rescan')))
+    assert read_report(source,meta)['gqi']==90
+    assert read_report(source,dict(meta,sfreq=500)) is None
+    source.write_bytes(b'changed')
+    assert read_report(source,meta) is None
+
+
+def test_intake_respects_current_channel_parameters(tmp_path):
+    import numpy as np
+    import json
+    from oi_eegqc.quick import IntakeWorker
+    from oi_eegqc.score_reports import write_report
+    from oi_eegqc.intake import inspect_file
+    path=tmp_path/'data.npy';np.save(path,np.zeros((2,1000)))
+    path.with_suffix('.json').write_text(json.dumps(dict(sfreq=250,unit='uV')))
+    stat=path.stat();metadata=dict(inspect_file(path),line_hz=50)
+    write_report(path,metadata,dict(gqi=90),(stat.st_size,stat.st_mtime_ns))
+    worker=IntakeWorker([path],set(),tmp_path/'imports',keep=['Ch1'])
+    worker.run()
+    assert worker.items and not worker.reports
+    worker=IntakeWorker([path],set(),tmp_path/'imports')
+    worker.run()
+    assert worker.reports[str(path)]['gqi']==90

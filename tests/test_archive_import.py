@@ -53,9 +53,10 @@ def test_cached_edf_score_supplies_duration_and_reports_progress(tmp_path):
         'report':{'gqi':90,'usable_ratio':.8,'duration_s':100}}))
     row={'recording':str(path),'session_directory':str(tmp_path),'source_session_id':'one','recorded_duration_s':None}
     progress=[]
-    grade_sessions([row],lambda:False,progress.append)
+    counts = grade_sessions([row],lambda:False,progress.append)
+    assert counts == dict(scored=0, reused=1, failed=0)
     assert row['recorded_duration_s']==100 and row['usable_duration_s']==80
-    assert progress and '1/1' in progress[0]
+    assert progress[0].startswith('复用评分 1/1')
 
 
 def test_main_score_is_reused_only_for_unchanged_recording(tmp_path, monkeypatch):
@@ -68,11 +69,11 @@ def test_main_score_is_reused_only_for_unchanged_recording(tmp_path, monkeypatch
                recorded_duration_s=None, signal_qc=report, score_stat=(stat.st_size, stat.st_mtime_ns))
     calls = []
     monkeypatch.setattr(ScoringProcess, 'score', lambda *args: (calls.append(True) or ('result', dict(report, gqi=80))))
-    grade_sessions([row], lambda:False, lambda value:None)
+    assert grade_sessions([row], lambda:False, lambda value:None) == dict(scored=0, reused=1, failed=0)
     assert calls == [] and row['final_score'] == 90
     assert json.loads((tmp_path/'eegqc-report.json').read_text())['report'] == report
     path.write_bytes(b'changed')
-    grade_sessions([row], lambda:False, lambda value:None)
+    assert grade_sessions([row], lambda:False, lambda value:None) == dict(scored=1, reused=0, failed=0)
     assert calls == [True] and row['final_score'] == 80
 
 
@@ -119,12 +120,26 @@ def test_upload_preparation_reuses_identified_sessions_and_exposes_stages(tmp_pa
     from unittest.mock import Mock
     from oi_eegqc import archive_import
     from oi_eegqc.upload_ui import UploadWorker
-    parent=QObject();parent.telemetry=None
-    store=Mock();store.paradigm={'code':'RSVP-20260924'};store.prepare.return_value={'entries':[]}
+    parent=QObject();parent.telemetry=Mock()
+    store=Mock();store.paradigm={'code':'RSVP-20260924'};store.prepare.return_value={'entries':[]};store.unchanged_completed.return_value=None
     row={'paradigm_code':'RSVP-20260924','session_directory':str(tmp_path)}
     monkeypatch.setattr(archive_import,'read_sessions',lambda root:(_ for _ in ()).throw(AssertionError('metadata read twice')))
-    monkeypatch.setattr(archive_import,'grade_sessions',lambda *args:None)
+    monkeypatch.setattr(archive_import,'grade_sessions',lambda *args:dict(scored=0, reused=2, failed=0))
     worker=UploadWorker(store,tmp_path,roots=[tmp_path],parent=parent,sessions=[row])
     progress=[];worker.progress.connect(progress.append);worker.run()
     assert worker.error==''
-    assert [p['stage'] for p in progress if 'stage' in p]==['identifying','scoring','scanning']
+    assert [p['stage'] for p in progress if 'stage' in p]==['identifying','checking_scores','scanning']
+    parent.telemetry.report.assert_any_call('archive_scores_reused', count=2)
+    parent.telemetry.report.assert_any_call('archive_scoring_completed', count=0)
+
+
+def test_failed_main_score_is_not_repeated_during_raw_upload(tmp_path, monkeypatch):
+    from oi_eegqc.archive_import import grade_sessions
+    from oi_eegqc.application.scoring_process import ScoringProcess
+    path=tmp_path/'eeg.edf';path.write_bytes(b'raw')
+    stat=path.stat()
+    row=dict(recording=str(path), session_directory=str(tmp_path), source_session_id='one',
+             recorded_duration_s=None, grading_error='invalid signal', failed_stat=(stat.st_size,stat.st_mtime_ns))
+    monkeypatch.setattr(ScoringProcess,'score',lambda *args:(_ for _ in ()).throw(AssertionError('repeated failed score')))
+    assert grade_sessions([row],lambda:False,lambda message:None)==dict(scored=0,reused=0,failed=1)
+    assert row['final_score'] is None and row['usable_duration_s'] is None

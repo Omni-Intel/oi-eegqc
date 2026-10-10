@@ -164,8 +164,9 @@ ApplicationWindow {
                 Text { text: uploadFooter.state.error || uploadFooter.state.status; color: uploadFooter.state.error ? "#a04f3e" : "#526674"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.maximumWidth: window.width * 0.55 }
                 Text { text: uploadFooter.state.current; color: "#7c8791"; font.pixelSize: 11; textFormat: Text.PlainText; elide: Text.ElideMiddle; Layout.fillWidth: true }
                 QuietButton { objectName: "cancelUpload"; text: uploadFooter.state.preparing ? "取消" : "暂停"; visible: backend.upload.active; enabled: backend.upload.canCancel; onClicked: backend.upload.cancel() }
-                QuietButton { objectName: "startUpload"; text: uploadFooter.state.databasePending && uploadFooter.state.progress === 1 ? "重试入库" : "继续上传"; visible: !backend.upload.active && backend.upload.hasBatch; enabled: !backend.busy; onClicked: backend.upload.start() }
+                QuietButton { objectName: "startUpload"; text: uploadFooter.state.databasePending && uploadFooter.state.progress === 1 ? "重试入库" : uploadFooter.state.failed ? "重试" : "继续上传"; visible: !backend.upload.active && backend.upload.hasBatch && !uploadFooter.state.uncertain; enabled: !backend.busy; onClicked: backend.upload.start() }
             }
+            Text { objectName: "uploadTransferSummary"; text: uploadFooter.state.summary; visible: text !== ""; color: "#7c8791"; font.pixelSize: 11; textFormat: Text.PlainText; Layout.fillWidth: true }
             QuietProgress { objectName: "uploadProgress"; Layout.fillWidth: true; implicitHeight: 3; value: uploadFooter.state.progress; indeterminate: backend.upload.active && uploadFooter.state.preparing }
         }
     }

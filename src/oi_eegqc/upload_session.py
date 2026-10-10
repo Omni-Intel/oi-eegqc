@@ -28,6 +28,8 @@ class UploadSession:
         self.committing = False
         self.child = None
         self.client = None
+        self.transferred_files = 0
+        self.reused_files = 0
 
     def cancel(self):
         with self.commit_lock:
@@ -68,6 +70,15 @@ class UploadSession:
                 batch["upload_id"] = recovered_id
                 self.store.save(batch)
                 predecessor = prior_request
+            if not batch.get("upload_id") and not batch.get("force_new_collection"):
+                anchors = [dict(path=e['relative'], size=e['size'], sha256=e['sha256']) for e in entries
+                           if not e['directory'] and e['relative'].lower().endswith(('.npy','.edf','.bdf','.float32'))]
+                if anchors:
+                    known = client.resolve_collection(anchors)
+                    if known.get('uploadId'):
+                        batch['upload_id'] = known['uploadId']
+                        predecessor = known.get('replacesRequestId')
+                        self.store.save(batch)
             response = (client.start_round(batch.get("upload_id"), request_id, predecessor)
                         if predecessor else client.start_round(batch.get("upload_id"), request_id))
             upload_id, round_id = response.get("uploadId"), response.get("roundId")
@@ -122,6 +133,7 @@ class UploadSession:
             if item.get("multipartUploadId"):
                 entry["multipart_upload_id"] = item["multipartUploadId"]
                 entry["part_size"] = item.get("partSize")
+        self.reused_files = sum(e["done"] and not e["directory"] for e in entries)
         self.store.save(self.batch)
         return status.get("state")
 
@@ -195,11 +207,7 @@ class UploadSession:
             key: entry[key] for key in ("size", "mtime")
         }:
             raise UploadError("上传期间文件发生变化，不会确认文件完成")
-        client.complete_files(
-            upload_id,
-            round_id,
-            [{"path": entry["relative"], "size": entry["size"], "etag": etag or ""}],
-        )
+        return {"path": entry["relative"], "size": entry["size"], "etag": etag or ""}
 
     @staticmethod
     def _part_size(size):
@@ -346,30 +354,50 @@ class UploadSession:
                 for entry in batch["entries"]
                 if not entry["done"] and (entry["directory"] or entry["size"] <= MAX_SINGLE_PUT)
             ]
+            confirmations, uploaded = [], []
+
+            def confirm():
+                nonlocal done
+                if not confirmations:return
+                self.check_cancel()
+                self.progress({'current':'后台确认文件完成','done':done,'total':total,'speed':0})
+                client.complete_files(upload_id, round_id, confirmations)
+                for entry in uploaded:
+                    entry['done']=True
+                    self.transferred_files += not entry['directory']
+                    done += entry['size']
+                self.store.save(batch)
+                confirmations.clear();uploaded.clear()
+
             for offset in range(0, len(pending_single), 5000):
                 group = pending_single[offset : offset + 5000]
                 urls = self._signed_single(client, upload_id, round_id, group)
                 for entry in group:
                     batch["current"] = entry["relative"]
-                    self._put_single(
-                        client,
-                        upload_id,
-                        round_id,
-                        entry,
-                        urls[entry["relative"]],
-                        done,
-                        total,
-                        started,
-                        transferred,
-                    )
+                    try:
+                        receipt = self._put_single(
+                            client,
+                            upload_id,
+                            round_id,
+                            entry,
+                            urls[entry["relative"]],
+                            done + sum(item["size"] for item in uploaded),
+                            total,
+                            started,
+                            transferred,
+                        )
+                    except Exception:
+                        if not self.stopped.is_set():confirm()
+                        raise
                     self.check_cancel()
                     if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set) != {
                         key: entry[key] for key in ("size", "mtime")
                     }:
                         raise UploadError("上传期间文件发生变化，不会完成本轮上传")
-                    entry["done"] = True
-                    done += entry["size"]
-                    self.store.save(batch)
+                    confirmations.append(receipt);uploaded.append(entry)
+                    if len(confirmations)>=16 or sum(item['size'] for item in confirmations)>=32*1024*1024:
+                        confirm()
+            confirm()
             for entry in [
                 item
                 for item in batch["entries"]
@@ -386,6 +414,7 @@ class UploadSession:
                 }:
                     raise UploadError("上传期间文件发生变化，不会完成本轮上传")
                 entry["done"] = True
+                self.transferred_files += 1
                 done += entry["size"]
                 self.store.save(batch)
             self.check_cancel()
@@ -432,6 +461,7 @@ class UploadSession:
         total = sum(entry["size"] for entry in batch["entries"])
         completed = 0
         batch.update(status="uploading", error="")
+        self.store.save(batch)
         groups = {}
         for index, part in enumerate(batch["children"]):
             groups.setdefault(part.get("upload_id") or part["local_id"], []).append(index)
@@ -451,6 +481,7 @@ class UploadSession:
                 )
                 size = sum(entry["size"] for entry in child["entries"])
                 if all(part["status"] == "completed" for part in parts):
+                    self.reused_files += sum(not e["directory"] for e in child["entries"])
                     completed += size
                     continue
 
@@ -480,10 +511,10 @@ class UploadSession:
                                 if root == Path(entry["source"])
                                 or root in Path(entry["source"]).parents
                             ]
+                            outer.store._write_record(part)
                         batch["entries"] = [
                             entry for part in batch["children"] for entry in part["entries"]
                         ]
-                        outer.store.save(batch)
 
                 def progress(value):
                     self.committing = self.child.committing
@@ -495,6 +526,8 @@ class UploadSession:
                 if self.stopped.is_set():
                     self.child.cancel()
                 result = self.child.run()
+                self.transferred_files += self.child.transferred_files
+                self.reused_files += self.child.reused_files
                 self.child, self.committing = None, False
                 if result["status"] != "completed":
                     batch.update(status=result["status"], error=result.get("error", ""))

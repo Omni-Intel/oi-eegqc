@@ -117,8 +117,10 @@ class UploadHandler(BaseHTTPRequestHandler):
                 "bucket": self.storage.bucket,
                 "prefix": self.storage.prefix + "/",
                 "destination": "local-inbox" if hasattr(self.storage, "root") else ("cos" if self.storage.__class__.__name__=='CosStorage' else "tos"),
-                "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only"],
+                "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only", "collection-resolution", "batch-confirmation"],
             }
+        if method == "POST" and path == "/v1/uploads/resolve":
+            return self.coordinator.resolve_collection(self.read_json().get("files"))
         if method == "POST" and path == "/v1/uploads/sign":
             return self.legacy_sign()
         if method == "POST" and path == "/v1/uploads/rounds":

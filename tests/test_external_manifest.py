@@ -48,7 +48,7 @@ def test_multi_run_grade_is_weighted_and_payload_has_no_local_paths(tmp_path,mon
         return 'result',dict(gqi=90 if 'run1' in path else 50, usable_ratio=.8, duration_s=10 if 'run1' in path else 30)
     monkeypatch.setattr(ScoringProcess,'score',score)
     row=read_sessions(tmp_path)[0]
-    grade_sessions([row],lambda:False,lambda message:None)
+    assert grade_sessions([row],lambda:False,lambda message:None) == dict(scored=2, reused=0, failed=0)
     assert len(calls)==2
     assert row['recorded_duration_s']==40
     assert row['final_score']==60
@@ -59,7 +59,7 @@ def test_multi_run_grade_is_weighted_and_payload_has_no_local_paths(tmp_path,mon
     assert len(batch['imports'])==1 and 'recordings' not in payload
     assert payload['signal_qc']['recording_count']==2
     assert str(tmp_path) not in json.dumps(payload)
-    grade_sessions([row],lambda:False,lambda message:None)
+    assert grade_sessions([row],lambda:False,lambda message:None) == dict(scored=0, reused=2, failed=0)
     assert len(calls)==2
 
 

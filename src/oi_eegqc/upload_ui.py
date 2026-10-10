@@ -57,19 +57,31 @@ class UploadWorker(QThread):
                     self.imports=[s for root in self.roots if Path(root).is_dir() for s in read_sessions(root)]
                 if any(s['paradigm_code'] and s['paradigm_code']!=self.store.paradigm['code'] for s in self.imports):
                     raise ValueError('所选范式与采集元数据不一致，请按记录中的范式分别上传')
-                if self.imports:
-                    self.progress.emit({'stage':'scoring','current':f'正在评分 0/{len(self.imports)}'})
-                    if self.parent().telemetry:self.parent().telemetry.report('archive_scoring_started',count=len(self.imports))
-                    grade_sessions(self.imports, self.isInterruptionRequested,
-                                   lambda name: self.report({'current': name}), getattr(self.parent().parent(), '_mains', 50))
-                    if self.parent().telemetry:self.parent().telemetry.report('archive_scoring_completed',count=len(self.imports))
+                completed = {}
+                if not self.new_acquisition:
+                    for root in self.roots:
+                        saved = self.store.unchanged_completed(root, self.isInterruptionRequested)
+                        if saved:
+                            completed[str(Path(root).resolve())] = saved
+                pending_imports = [s for s in self.imports if not any(Path(root) == Path(s['session_directory']) or Path(root) in Path(s['session_directory']).parents for root in completed)]
+                if pending_imports:
+                    self.progress.emit({'stage':'checking_scores','current':'正在核查已有评分'})
+                    if self.parent().telemetry:self.parent().telemetry.report('archive_score_check_started', count=len(pending_imports))
+                    counts = grade_sessions(pending_imports, self.isInterruptionRequested,
+                                            lambda name: self.report({'current': name}), getattr(self.parent().parent(), '_mains', 50))
+                    if self.parent().telemetry:
+                        self.parent().telemetry.report('archive_scores_reused', count=counts['reused'])
+                        self.parent().telemetry.report('archive_scoring_completed', count=counts['scored'])
+                        self.parent().telemetry.report('archive_scoring_failed', count=counts['failed'])
                 self.progress.emit({'stage':'scanning','current':'正在扫描并核验上传文件'})
                 self.batch = self.store.prepare(self.roots, self.scored, self.isInterruptionRequested,
-                                                lambda name: self.report({"current": name}), self.new_acquisition)
+                                                lambda name: self.report({"current": name}), self.new_acquisition, completed=completed)
                 if self.imports:
-                    attach_sessions(self.batch, self.imports)
+                    attach_sessions(self.batch, pending_imports)
                     self.store.save(self.batch)
-                if self.parent().telemetry:self.parent().telemetry.report('upload_prepare_completed',count=len(self.batch['entries']))
+                self.imports = pending_imports
+                if self.parent().telemetry:self.parent().telemetry.report('upload_folders_skipped', count=len(completed))
+                if self.parent().telemetry:self.parent().telemetry.report('upload_inventory_prepared',count=sum(not e['directory'] for e in self.batch['entries']))
             else:
                 self.batch = self.store.load()
                 from .archive_import import score_summary
@@ -82,6 +94,7 @@ class UploadWorker(QThread):
                     if self.isInterruptionRequested():
                         self.session.cancel()
                     self.batch = self.session.run()
+                    self.progress.emit(dict(transferred_files=self.session.transferred_files, reused_files=self.session.reused_files))
                 from .archive_import import sync_database
                 from .upload_http import SignClient
                 client = SignClient()
@@ -115,12 +128,13 @@ class UploadController(QObject):
         self.telemetry = getattr(parent, 'telemetry', None)
         self.store = BatchStore(self.data_directory / "uploads-cos-beijing")
         self.worker = None
+        self._closing = False
         self.batch = None
         self._opened, self._error = False, ""
         self._show_batch_error = False
         self._progress = {}
         self._folder_cache_key, self._folder_cache = None, []
-        self._byte_cache_key, self._byte_totals = None, (0, 0)
+        self._byte_cache_key, self._byte_totals = None, (0, 0, 0, 0)
         self._selection = None
         self._start_after_prepare = False
         self.lock = None
@@ -150,7 +164,7 @@ class UploadController(QObject):
 
     @Slot()
     def refreshParadigms(self):
-        if self.registry_worker is not None:
+        if self._closing or self.registry_worker is not None:
             return
         self.registry_worker = ParadigmWorker(self)
         self.registry_worker.finished.connect(self._registry_ready)
@@ -188,6 +202,10 @@ class UploadController(QObject):
         settings = getattr(self.parent(), 'store', None)
         if settings is not None:
             settings.setValue('upload_paradigm', row['code'])
+        if self.store.paradigm and self.store.paradigm['code'] == row['code']:
+            self.store.paradigm = row
+            self.changed.emit()
+            return
         directory = self.data_directory / 'uploads-cos-beijing'
         if row['code'] != 'AVEEG-20260923':
             directory = self.data_directory / 'uploads' / row['code']
@@ -250,20 +268,29 @@ class UploadController(QObject):
         key = (id(batch), len(entries), batch.get('status'))
         if key != self._byte_cache_key:
             self._byte_cache_key = key
-            self._byte_totals = (sum(e['size'] for e in entries), sum(e['size'] for e in entries if e['done']))
-        total, initial_done = self._byte_totals
+            self._byte_totals = (sum(e['size'] for e in entries), sum(e['size'] for e in entries if e['done']),
+                                 sum(not e['directory'] for e in entries), sum(e['done'] and not e['directory'] for e in entries))
+        total, initial_done, file_count, done_files = self._byte_totals
         done = self._progress.get('done', initial_done)
         status = batch.get('status', '')
         pending = database_pending(batch)
         preparing = bool(self.active and self.worker.roots is not None)
         if self.active:
-            label = {'identifying':'正在识别 Session','scoring':'正在评分','scanning':'正在核验文件'}.get(self._progress.get('stage'), '正在准备') if preparing else '正在上传'
+            label = {'identifying':'正在识别 Session','checking_scores':'正在核查评分','scoring':'正在评分','scanning':'正在核验文件'}.get(self._progress.get('stage'), '正在准备') if preparing else '正在增量上传'
         else:
             completion = '上传和入库完成' if any(p.get('imports') for p in batch.get('children') or [batch]) else '上传完成'
             label = {'ready':'待上传', 'paused':'已暂停，可继续', 'failed':'上传失败，可重试', 'completed':'文件已上传，统计待入库' if pending else completion}.get(status, '')
-        return dict(status=label, current=str(self._progress.get('current', '')) if self.active else '',
+        if 'transferred_files' in self._progress:
+            summary = f"本轮上传 {self._progress['transferred_files']} 个文件 · 复用已上传 {self._progress['reused_files']} 个"
+        elif self.active:
+            summary = f'文件清单 {file_count} 个' if not preparing else ''
+        else:
+            summary = f'已上传 {done_files} 个文件 · 待传 {file_count - done_files} 个' if file_count else ''
+        return dict(status=label, summary=summary, current=str(self._progress.get('current', '')) if self.active else '',
                     progress=1. if status == 'completed' else min(1., done / total) if total else 0.,
                     preparing=preparing, completed=status == 'completed' and not pending,
+                    failed=self._show_batch_error and status == 'failed',
+                    uncertain=any(p.get('allocation_pending') for p in batch.get('children') or [batch]),
                     databasePending=pending, error=self._error or (batch.get('error', '') if self._show_batch_error else ''))
 
     @Property("QVariantMap", notify=changed)
@@ -279,7 +306,9 @@ class UploadController(QObject):
         if cache_key != self._folder_cache_key:
             self._folder_cache = []
             for root in batch.get("roots", []):
-                members = [e for e in entries if not e["directory"] and (Path(root) == Path(e.get("source", "")) or Path(root) in Path(e.get("source", "")).parents)]
+                part = next((p for p in batch.get('children') or [batch] if root in p.get('roots', [])), {})
+                members = [e for e in part.get('entries', []) if not e['directory'] and
+                           (len(part.get('roots', []))==1 or Path(root)==Path(e.get('source','')) or Path(root) in Path(e.get('source','')).parents)]
                 size = sum(e["size"] for e in members)
                 self._folder_cache.append(dict(name=Path(root).name, path=root, count=len(members),
                                                size=f"{size / 1024 / 1024:.1f} 兆字节"))
@@ -298,7 +327,7 @@ class UploadController(QObject):
                     speed=f"{self._progress.get('speed', 0) / 1024 / 1024:.1f} 兆字节/秒",
                     current=str(self._progress.get("current", batch.get("current", ""))) if self.active or status != 'completed' else '',
                     error=self._error or (batch.get("error", "") if self._show_batch_error else ""),
-                    status=({'identifying':'正在识别 Session…','scoring':'正在评分…','scanning':'正在核验文件…'}.get(self._progress.get('stage'),'正在准备…') if self.active and self.worker.roots is not None else "正在上传…") if self.active else
+                    status=({'identifying':'正在识别 Session…','checking_scores':'正在核查评分…','scoring':'正在评分…','scanning':'正在核验文件…'}.get(self._progress.get('stage'),'正在准备…') if self.active and self.worker.roots is not None else "正在上传…") if self.active else
                     {"ready": "待上传", "paused": "已暂停，可继续", "failed": "上传失败，可重试" if self._show_batch_error else "待继续上传", "completed": "文件已上传，统计待入库" if database_pending(batch) else ("上传和入库完成" if any(p.get('imports') for p in parts) else "上传完成")}.get(status, ""))
 
     def _acquire(self):
@@ -423,8 +452,9 @@ class UploadController(QObject):
             receipts = [r for p in self.batch.get('children') or [self.batch] for r in p.get('imports',[]) if r.get('receipt')]
             if receipts:
                 self._subject_text = f"{len(receipts)} 个采集 Session 已入库，平台统计自动更新"
-        if self.telemetry and not self._error and (self.batch or {}).get('status') == 'completed':
-            self.telemetry.report('upload_completed', count=len(self.batch.get('entries', [])))
+        if self.telemetry and worker.roots is None and not self._error and (self.batch or {}).get('status') == 'completed':
+            self.telemetry.report('upload_completed', count=self._progress.get('transferred_files', 0))
+            self.telemetry.report('upload_files_reused', count=self._progress.get('reused_files', 0))
         worker.deleteLater()
         self.lock.unlock()
         self.lock = None
@@ -487,6 +517,8 @@ class UploadController(QObject):
             self.lock = None
 
     def shutdown(self):
+        self._closing = True
+        self._start_after_prepare = False
         if self.subject_worker:
             self.subject_worker.wait()
         if self.registry_worker:

@@ -21,6 +21,16 @@ class FakeClient:
         self.multipart, self.parts = {}, {}
         self.inventory = {}
 
+    def resolve_collection(self, files):
+        matches = {}
+        import re
+        for (uid,path),(size,digest) in self.inventory.items():
+            if not re.search(r'(?:^|/)sub-[A-Za-z0-9]+/ses-[^/]+/|(?:^|/)\d{8}/session_\d+/\d{8}_\d{6}/',path):continue
+            for item in files:
+                if (path,size,digest)==(item['path'],item['size'],item['sha256']):
+                    matches[uid]=matches.get(uid,0)+1
+        return {'uploadId':max(matches,key=matches.get) if matches else None}
+
     def health(self):
         pass
 
@@ -541,7 +551,7 @@ def test_same_folder_next_day_overwrites_and_appends_after_restart(batch):
     assert client.allocations == 1
     third = BatchStore(store.directory).prepare([root], scored_files(root))
     assert third["upload_id"] == upload_id
-    assert not any(e["done"] for e in third["entries"])
+    assert all(e["done"] for e in third["entries"] if not e["directory"])
 
 
 def test_next_round_uploads_only_new_or_changed_files(batch):
@@ -551,7 +561,10 @@ def test_next_round_uploads_only_new_or_changed_files(batch):
     original_calls = list(client.calls)
     (root / "new.txt").write_text("new")
     second = BatchStore(store.directory).prepare([root], scored_files(root))
-    assert run(store, second, client)["status"] == "completed"
+    assert all(e["done"] for e in second["entries"] if not e["directory"] and not e["relative"].endswith("new.txt"))
+    session = UploadSession(store, second, store.directory.parent, lambda v:None, lambda p:client)
+    assert session.run()["status"] == "completed"
+    assert session.transferred_files == 1 and session.reused_files == 2
     assert client.calls[: len(original_calls)] == original_calls
     assert client.calls[len(original_calls) :] == [PREFIX + state["upload_id"] + "/source/new.txt"]
 
@@ -664,6 +677,7 @@ def test_multiple_folders_keep_independent_ids_when_uploaded_separately(tmp_path
     progress = []
     session = UploadSession(store, state, store.directory.parent, progress.append, lambda p: client)
     assert session.run()["status"] == "completed"
+    assert session.transferred_files == 2 and session.reused_files == 0
     ids = [p["upload_id"] for p in state["children"]]
     assert len(set(ids)) == 2
     assert progress[-1]["done"] == progress[-1]["total"] == 6
@@ -672,6 +686,13 @@ def test_multiple_folders_keep_independent_ids_when_uploaded_separately(tmp_path
     assert run(store, separate, client)["status"] == "completed"
     together = BatchStore(store.directory).prepare(roots, scored_files(*roots))
     assert [p["upload_id"] for p in together["children"]] == ids
+    original_calls = list(client.calls)
+    (roots[1] / 'new.txt').write_bytes(b'new')
+    updated = store.prepare(roots, scored_files(*roots))
+    session = UploadSession(store, updated, store.directory.parent, progress.append, lambda p:client)
+    assert session.run()['status'] == 'completed'
+    assert session.transferred_files == 1 and session.reused_files == 2
+    assert client.calls[len(original_calls):] == [PREFIX + ids[1] + '/collection/new.txt']
 
 
 def test_failed_folder_resumes_after_restart_without_new_id(batch):
@@ -748,3 +769,31 @@ def test_windows_path_case_reuses_id_and_object_names(batch):
     assert run(store, again, client)["status"] == "completed"
     assert client.allocations == 1
     assert all("/SOURCE/" not in key for key in client.objects)
+
+
+def test_completed_folder_fast_path_avoids_content_reads(batch,monkeypatch):
+    from oi_eegqc.score_cache import ScoreCache
+    store,state,root=batch
+    assert run(store,state,FakeClient())['status']=='completed'
+    monkeypatch.setattr(ScoreCache,'digest',lambda *a:(_ for _ in ()).throw(AssertionError('content read')))
+    saved=store.unchanged_completed(root)
+    assert saved['status']=='completed'
+    again=store.prepare([root],None,completed={str(root):saved})
+    assert again['status']=='completed' and again['upload_id']==saved['upload_id']
+    (root/'new.txt').write_text('new')
+    assert store.unchanged_completed(root) is None
+
+
+@pytest.mark.parametrize("participant", ["13467638", "8e425f9d7ac6"])
+def test_moved_bids_folder_reuses_server_collection(tmp_path, participant):
+    root=tmp_path/'old'/f'sub-{participant}';source=root/'ses-one'/'eeg'/'run1_eeg.npy'
+    source.parent.mkdir(parents=True);source.write_bytes(b'eeg')
+    store=BatchStore(tmp_path/'state');client=FakeClient()
+    first=store.prepare([root],scored_files(root))
+    assert run(store,first,client)['status']=='completed'
+    new=tmp_path/'new'/f'sub-{participant}';new.parent.mkdir()
+    root.rename(new)
+    again=store.prepare([new],scored_files(new))
+    calls=list(client.calls)
+    assert run(store,again,client)['status']=='completed'
+    assert again['upload_id']==first['upload_id'] and client.calls==calls and client.allocations==1

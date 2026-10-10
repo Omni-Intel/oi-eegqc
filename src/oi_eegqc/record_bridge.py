@@ -3,12 +3,32 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from PySide6.QtCore import QObject,QTimer,QModelIndex
+from PySide6.QtCore import QObject,QTimer,QModelIndex,QThread
 from PySide6.QtNetwork import QLocalServer,QLocalSocket
 from .record_link import RecordHub,contains,record_id
 
 
 from .window_activation import server_name,notify_existing,show_window
+
+
+class RecordWorker(QThread):
+    def __init__(self, hub, jobs, parent, revision=None):
+        super().__init__(parent)
+        self.hub, self.jobs = hub, jobs
+        self.rows, self.error = None, None
+        self.revision = revision
+
+    def run(self):
+        try:
+            for kind, args in self.jobs:
+                getattr(self.hub, kind)(*args)
+            stat=self.hub.path.stat()
+            revision=(stat.st_size,stat.st_mtime_ns)
+            if revision!=self.revision:
+                self.rows=self.hub.rows()
+                self.revision=revision
+        except Exception as error:
+            self.error = error
 
 
 class SharedRecordView(QObject):
@@ -17,6 +37,8 @@ class SharedRecordView(QObject):
         self.c=controller;self.window=window;self.hub=hub or RecordHub()
         self.attempted=set();self.hidden=set();self.timer=QTimer(self);self.timer.setInterval(800)
         self.timer.timeout.connect(self.refresh);self.server=None
+        self.records=[];self.jobs=[];self.worker=None;self.signatures={};self.revision=None
+        QTimer.singleShot(0,self.refresh)
         controller.imported.connect(self.imported)
         controller._upload.record_guard=self.upload_allowed
         self.timer.start()
@@ -46,12 +68,12 @@ class SharedRecordView(QObject):
         return [r for r in self.c.files.rows if contains(record['root'],r['path'])]
 
     def score_settings(self):
-        from . import __version__
-        return [__version__,self.c._order,self.c._mains,self.c._all_channels,self.c._selected_channels]
+        from .scoring_version import SCORING_ALGORITHM_VERSION
+        return [SCORING_ALGORITHM_VERSION,self.c._order,self.c._mains,self.c._all_channels,self.c._selected_channels]
 
     def imported(self):
         # Manual EEGQC imports participate in the same protocol, too.
-        records=self.hub.rows()
+        records=self.records
         from .application.qt_workers import ReportView
         for record in records:
             if record['removed']:continue
@@ -66,27 +88,53 @@ class SharedRecordView(QObject):
                         scored_stat=tuple(prior['stat']),content_sha256=prior.get('sha256'))
         for root in self.c._folder_roots or [r['path'] for r in self.c.files.rows]:
             if any(contains(r['root'],root) or contains(root,r['root']) for r in records):continue
-            identifier=self.hub.publish(record_id('eegqc',os.path.normcase(root)),root,'eegqc',
-                {'participant':Path(root).name,'mode':'external','status':'imported','count':0})
+            self.jobs.append(('publish',(record_id('eegqc',os.path.normcase(root)),root,'eegqc',
+                {'participant':Path(root).name,'mode':'external','status':'imported','count':0})))
         self.refresh()
 
     def remove_paths(self,paths):
-        for r in self.hub.rows():
+        for r in self.records:
             if any(contains(r['root'],p) for p in paths):self.hub.remove(r['id'])
 
     def upload_allowed(self,roots):
-        return not any(r['removed'] and any(contains(root,r['root']) or contains(r['root'],root) for root in roots) for r in self.hub.rows())
+        return not any(r['removed'] and any(contains(root,r['root']) or contains(r['root'],root) for root in roots) for r in self.records)
 
     def refresh(self):
-        try:self._refresh()
-        except Exception:
-            logging.exception('Shared record view failed')
+        if self.c._closing or self.worker is not None:return
+        jobs,self.jobs=self.jobs,[]
+        self.worker=RecordWorker(self.hub,jobs,self,self.revision)
+        self.worker.finished.connect(self._ready)
+        self.worker.start()
+
+    def _ready(self):
+        worker,self.worker=self.worker,None
+        if worker.error:
+            self.jobs=worker.jobs+self.jobs
+            self.signatures.clear()
+            logging.error('Shared record view failed',exc_info=(type(worker.error),worker.error,worker.error.__traceback__))
             self.c._notice='无法读取公共名单，请检查 AppData 目录权限';self.c.changed.emit()
+        else:
+            if worker.rows is not None:self.records=worker.rows
+            self.revision=worker.revision
+            self._refresh()
+        worker.deleteLater()
+        if self.jobs:QTimer.singleShot(0,self.refresh)
+
+    def status(self, identifier, kind, value):
+        self.jobs.append(('status',(identifier,kind,value)))
+
+    def shutdown(self):
+        self.timer.stop()
+        if self.worker:self.worker.wait()
+        if self.jobs:
+            worker=RecordWorker(self.hub,self.jobs,self)
+            worker.start();worker.wait()
+            self.jobs=[]
 
     def _refresh(self):
         c=self.c
         if c._closing:return
-        records=self.hub.rows()
+        records=self.records
         self.hidden.intersection_update(r['id'] for r in records if r['removed'])
         removed=[r for r in records if r['removed'] and (r['id'] not in self.hidden or self.matching(r))]
         if removed:
@@ -108,17 +156,25 @@ class SharedRecordView(QObject):
             if r['removed']:continue
             members=self.matching(r)
             if members:
-                self.hub.status(r['id'],'qc',{'state':'scored' if all(x['report'] is not None for x in members) else 'loaded','settings':self.score_settings(),
-                    'files':[{'name':Path(x['path']).name,'path':x['path'],'score':x['score'],'state':x['state'],
-                              'stat':x.get('scored_stat'),'sha256':x.get('content_sha256'),
-                              'report':x['report'].to_dict() if x['report'] else None} for x in members]})
+                signature=(tuple(self.score_settings()[:-1]),tuple(self.c._selected_channels),
+                           tuple((x['path'],x['state'],x.get('scored_stat'),id(x['report'])) for x in members))
+                if self.signatures.get((r['id'],'qc'))!=signature:
+                    from .archive_import import score_summary
+                    self.status(r['id'],'qc',{'state':'scored' if all(x['report'] is not None for x in members) else 'loaded','settings':self.score_settings(),
+                        'files':[{'name':Path(x['path']).name,'path':x['path'],'score':x['score'],'state':x['state'],
+                                  'stat':x.get('scored_stat'),'sha256':x.get('content_sha256'),
+                                  'report':score_summary(x['report'].to_dict()) if x['report'] else None} for x in members]})
+                    self.signatures[(r['id'],'qc')]=signature
+                self.attempted.add(r['id'])
             batch=c._upload.batch or {}
             for part in batch.get('children') or [batch]:
                 if any(contains(root,r['root']) or contains(r['root'],root) for root in part.get('roots',[])):
-                    self.hub.status(r['id'],'upload',{'state':part.get('status',''),'upload_id':part.get('upload_id'),'round_id':part.get('round_id')})
+                    value={'state':part.get('status',''),'upload_id':part.get('upload_id'),'round_id':part.get('round_id')}
+                    if self.signatures.get((r['id'],'upload'))!=value:
+                        self.status(r['id'],'upload',value);self.signatures[(r['id'],'upload')]=value
             if r['id'] not in self.attempted:
                 self.attempted.add(r['id'])
                 if not Path(r['root']).exists():
-                    self.hub.status(r['id'],'qc',{'state':'missing'});continue
-                self.hub.status(r['id'],'qc',{**r['qc'],'state':'loading'})
+                    self.status(r['id'],'qc',{'state':'missing'});continue
+                self.status(r['id'],'qc',{**r['qc'],'state':'loading'})
                 c.add_paths([r['root']]);return

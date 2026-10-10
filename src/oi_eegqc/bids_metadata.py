@@ -7,6 +7,7 @@ from pathlib import Path
 
 def eeg_metadata(path):
     path = Path(path)
+    from .intake import _read_json_object
     entities = dict(re.findall(r'(?:^|_)([a-z]+)-([A-Za-z0-9]+)', path.stem))
     directories = []
     for parent in path.parents:
@@ -24,10 +25,10 @@ def eeg_metadata(path):
                 if all(entities.get(k) == v for k,v in tags.items()):
                     candidates.append((len(tags), candidate))
             for _,candidate in sorted(candidates):
-                result.update(json.loads(candidate.read_text(encoding='utf-8-sig')))
+                result.update(_read_json_object(candidate))
     sidecar = path.with_suffix('.json')
     if sidecar.is_file():
-        result.update(json.loads(sidecar.read_text(encoding='utf-8-sig')))
+        result.update(_read_json_object(sidecar))
     return result
 
 

@@ -116,7 +116,7 @@ SCENARIOS = [
     {
         "name": "broadband_noise_uv",
         "fn": deg_broadband_noise,
-        "levels": [0.0, 2.0, 4.0, 6.0, 8.0, 12.0, 20.0, 40.0],
+        "levels": [0.0, 2.0, 4.0, 6.0, 7.0, 8.0, 12.0, 20.0, 40.0],
         "fail_from": 8.0,
         "kind": "graded",
     },

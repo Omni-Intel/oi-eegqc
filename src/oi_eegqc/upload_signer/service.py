@@ -113,7 +113,31 @@ class UploadCoordinator:
             );
             """
         )
+        self.db.execute("CREATE INDEX IF NOT EXISTS collection_content ON collection_files(path,size,content_hash)")
         self.db.commit()
+
+    def resolve_collection(self, files):
+        if not isinstance(files,list) or not 1 <= len(files) <= MAX_FILES_PER_REQUEST:
+            raise ValueError('invalid source recording list')
+        matches = {}
+        with self.lock:
+            for item in files:
+                path=normalize_path(item.get('path'))
+                size,content_hash=item.get('size'),item.get('sha256')
+                if not isinstance(size,int) or size<0 or not isinstance(content_hash,str) or not SHA256_RE.fullmatch(content_hash):
+                    raise ValueError('invalid source recording identity')
+                if not path.lower().endswith(('.npy','.edf','.bdf','.float32')):
+                    raise ValueError('source must be an EEG recording')
+                if not re.search(r'(?:^|/)sub-[A-Za-z0-9]+/ses-[^/]+/|(?:^|/)\d{8}/session_\d+/\d{8}_\d{6}/', path):
+                    continue
+                for row in self.db.execute('SELECT upload_id FROM collection_files WHERE path=? AND size=? AND content_hash=?', (path,size,content_hash)):
+                    matches[row['upload_id']] = matches.get(row['upload_id'],0)+1
+            best=max(matches.values(),default=0)
+            candidates=[key for key,value in matches.items() if value==best]
+            # Duplicate historical copies share the source identity; use the latest collection.
+            identifier=max(candidates) if candidates else None
+            row=self.db.execute('SELECT r.request_id FROM collections c JOIN rounds r ON r.round_id=c.current_round_id WHERE c.upload_id=?',(identifier,)).fetchone()
+            return {'uploadId':identifier,'matchedRecordings':best,'replacesRequestId':row['request_id'] if row else None}
 
     def _round(self, upload_id, round_id):
         if not UPLOAD_ID_RE.fullmatch(upload_id) or not ROUND_ID_RE.fullmatch(round_id):
@@ -308,8 +332,10 @@ class UploadCoordinator:
     def mark_single_complete(self, upload_id, round_id, files):
         if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES_PER_REQUEST:
             raise ValueError("invalid completed file list")
+        from concurrent.futures import ThreadPoolExecutor
         with self.lock, self.db:
             self._active_round(upload_id, round_id)
+            pending=[]
             for item in files:
                 if not isinstance(item, dict):
                     raise ValueError("completed file entry must be an object")
@@ -324,15 +350,16 @@ class UploadCoordinator:
                     raise Conflict("completed file does not match manifest")
                 if row["state"] == "complete":
                     continue
-                self.storage.promote(
-                    f"{self.prefix}/.staging/{upload_id}/{round_id}/{path}",
-                    f"{self.prefix}/{upload_id}/{path}", etag,
-                )
-                self.db.execute(
-                    "UPDATE files SET state = 'complete', etag = ? WHERE round_id = ? AND path = ?",
-                    (etag, round_id, path),
-                )
-                self._remember_file(upload_id, row)
+                pending.append((row,etag))
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                work=[pool.submit(self.storage.promote,
+                                  f"{self.prefix}/.staging/{upload_id}/{round_id}/{row['path']}",
+                                  f"{self.prefix}/{upload_id}/{row['path']}",etag) for row,etag in pending]
+                for (row,etag),future in zip(pending,work):
+                    future.result()
+                    self.db.execute("UPDATE files SET state = 'complete', etag = ? WHERE round_id = ? AND path = ?",
+                                    (etag,round_id,row['path']))
+                    self._remember_file(upload_id,row)
         # Publish and commit first; a temporary-object cleanup failure must not undo success.
         for item in files:
             try:

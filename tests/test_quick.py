@@ -19,15 +19,19 @@ except ImportError as exc:
 
 def wait(app, predicate, timeout=15):
     deadline = time.monotonic() + timeout
-    while not predicate() and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
         app.processEvents()
+        if predicate():return
         time.sleep(0.01)
-    app.processEvents()
     assert predicate()
 
 
 @pytest.fixture
-def quick(tmp_path):
+def quick(tmp_path, monkeypatch):
+    from oi_eegqc.upload_http import SignClient
+    monkeypatch.setattr(SignClient, 'paradigms', lambda self:[dict(
+        code='AVEEG-20260923', name='自然视听 EEG',
+        destination=dict(bucket='neurolm-1442740494', region='ap-beijing', prefix='neuro-lm/data/inbox/'))])
     app = QApplication.instance() or QApplication([])
     from PySide6.QtGui import QFontDatabase
     font_path = Path("C:/Windows/Fonts/msyh.ttc")
@@ -38,7 +42,7 @@ def quick(tmp_path):
     engine = create_engine(controller)
     assert engine.rootObjects()
     window = engine.rootObjects()[0]
-    app.processEvents()
+    wait(app,lambda:controller._upload.paradigmIndex>=0 and not controller._upload.loadingParadigms)
     yield app, controller, engine, window
     controller.shutdown()
     engine.deleteLater()
@@ -106,8 +110,10 @@ def test_reimport_preserves_unchanged_scores_and_invalidates_changed_files(quick
     assert controller.count == 2
     rows = {row["path"]: row for row in controller.files.rows}
     assert rows[str(first)]["report"] is reports[str(first)]
-    assert rows[str(second)]["report"] is None
-    assert not controller.canUpload
+    assert rows[str(second)]["report"] is not None
+    stat=second.stat()
+    assert rows[str(second)]["scored_stat"]==(stat.st_size,stat.st_mtime_ns)
+    assert controller.canUpload
 
 
 def test_qml_load_text_selection_and_settings(quick, tmp_path):
@@ -130,7 +136,7 @@ def test_qml_load_text_selection_and_settings(quick, tmp_path):
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
     wait(app, lambda: window.property("settingsOpen"))
     texts = [o.property("text") for o in window.findChildren(QObject)]
-    assert not any(re.search("[A-Z]", text) for text in texts if isinstance(text, str))
+    assert not any(re.search(r"\b(?:GQI|ODQ|SNR|P95)\b", text) for text in texts if isinstance(text, str))
     controller.saveSettings(2, 60)
     assert controller.orderIndex == 2 and controller.mains == 60
     controller.remove(False)
@@ -421,7 +427,7 @@ def test_qml_folder_upload_gate_preview_and_resume(quick, tmp_path, monkeypatch)
     from oi_eegqc.upload_ui import UploadController
     app, controller, engine, window = quick
     button = window.findChild(QObject, "uploadFolder")
-    assert not button.property("enabled")
+    assert button.property("enabled")
     score = window.findChild(QObject, "scoreButton")
     upload_point = button.mapToScene(button.boundingRect().center())
     score_point = score.mapToScene(score.boundingRect().center())
@@ -433,16 +439,17 @@ def test_qml_folder_upload_gate_preview_and_resume(quick, tmp_path, monkeypatch)
     (folder / "notes.txt").write_text("keep me")
     controller.add_paths([folder])
     wait(app, lambda: not controller.busy)
-    assert not controller.canUpload and not button.property("enabled")
+    assert controller.canUpload and button.property("enabled")
     controller.scoreOrStop()
     wait(app, lambda: not controller.busy)
     assert controller.canUpload and button.property("enabled")
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      button.mapToScene(button.boundingRect().center()).toPoint())
     upload = controller._upload
+    controller.prepareUpload()
     wait(app, lambda: not upload.active and upload.hasBatch)
     assert window.findChild(QObject, "uploadSheet").property("visible")
-    assert upload.info["count"] == 3
+    assert upload.info["count"] == 4
     assert upload.batch["status"] == "ready"
     batch_id = upload.batch["local_id"]
     # A fresh controller restores the exact pending batch without EEG rows.
@@ -454,11 +461,14 @@ def test_qml_folder_upload_gate_preview_and_resume(quick, tmp_path, monkeypatch)
         kwargs["client_factory"] = lambda data: client
         original(self, *args, **kwargs)
     monkeypatch.setattr(service.UploadSession, "__init__", init)
+    upload.close()
+    QTest.qWait(100)
     start = window.findChild(QObject, "startUpload")
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      start.mapToScene(start.boundingRect().center()).toPoint())
-    wait(app, lambda: not upload.active and upload.batch["status"] == "completed")
-    assert len(client.objects) == 4
+    wait(app, lambda: not upload.active)
+    assert upload.batch["status"] == "completed", upload.info["error"]
+    assert len(client.objects) == 5
     assert upload.batch["local_id"] == batch_id
     restored.shutdown()
 
@@ -485,9 +495,9 @@ def test_multiple_folders_are_grouped_and_all_files_listed(quick, tmp_path):
     controller.prepareUpload()
     upload = controller._upload
     wait(app, lambda: not upload.active)
-    assert upload.info["folderCount"] == 2 and upload.info["count"] == 10
+    assert upload.info["folderCount"] == 2 and upload.info["count"] == 12
     assert {f["path"] for f in upload.info["folders"]} == {str(p) for p in roots}
-    assert all(f["count"] == 5 for f in upload.info["folders"])
+    assert all(f["count"] == 6 for f in upload.info["folders"])
     assert window.findChild(QObject, "uploadFolderList") is None
     QTest.qWait(150)
     assert window.grabWindow().save(str(tmp_path / "folders-upload.png"))
@@ -546,8 +556,13 @@ def test_new_acquisition_requires_confirmation(quick, tmp_path):
     upload.store.save(upload.batch)
     upload.changed.emit()
     app.processEvents()
+    upload.open()
+    wait(app,lambda:window.findChild(QObject,"uploadSheet").property("visible"))
     button = window.findChild(QObject, "newAcquisition")
     assert not button.property("visible")
+    upload.open()
+    wait(app,lambda:window.findChild(QObject,"uploadSheet").property("visible"))
+    QTest.qWait(100)
     more = window.findChild(QObject, "uploadMaintenance")
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      more.mapToScene(more.boundingRect().center()).toPoint())
@@ -612,6 +627,9 @@ def test_reset_requires_two_confirmations_and_offline_only_retries(quick, tmp_pa
     upload.changed.emit()
     app.processEvents()
     assert not window.findChild(QObject, "startUpload").property("visible")
+    upload.open()
+    wait(app,lambda:window.findChild(QObject,"uploadSheet").property("visible"))
+    QTest.qWait(100)
     more = window.findChild(QObject, "uploadMaintenance")
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      more.mapToScene(more.boundingRect().center()).toPoint())
@@ -712,33 +730,49 @@ def test_upload_sheet_layout(quick, tmp_path, width, height, phase):
         upload.worker = None
 
 
-def test_pending_upload_cannot_bypass_scoring_gate(quick, tmp_path, monkeypatch):
-    app, controller, engine, window = quick
-    button = window.findChild(QObject, "uploadFolder")
-    controller._upload.batch = {"status": "ready"}
-    controller._upload._error = "历史上传错误"
-    controller._upload.changed.emit()
+def test_pending_upload_scores_new_files_before_preparation(quick, tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    app,controller,_,window=quick
+    folder=tmp_path/'collection';folder.mkdir();recording(folder/'data.npy')
+    controller.add_paths([folder]);wait(app,lambda:not controller.busy)
+    prepare=Mock();monkeypatch.setattr(controller._upload,'prepare',prepare)
+    controller.prepareUpload()
+    wait(app,lambda:prepare.called)
+    assert all(r['report'] is not None for r in controller.files.rows)
+    assert (folder/'data.eegqc-report.json').is_file()
+
+
+def test_upload_summary_distinguishes_inventory_and_transfers(quick):
+    app, controller, _, window = quick
+    upload = controller._upload
+    upload.batch = dict(status='ready', entries=[dict(size=100, done=True, directory=False),
+                                               dict(size=50, done=False, directory=False)])
+    upload.changed.emit()
     app.processEvents()
-    calls = []
-    monkeypatch.setattr(controller._upload, "prepare", lambda *args: calls.append(args))
-    assert not button.property("enabled")
-    controller.prepareUpload()
-    assert not calls
-    folder = tmp_path / "collection"
-    folder.mkdir()
-    recording(folder / "data.npy")
-    controller.add_paths([folder])
-    wait(app, lambda: not controller.busy)
-    assert not button.property("enabled")
-    controller.prepareUpload()
-    assert not calls
-    controller.scoreOrStop()
-    assert not button.property("enabled")
-    wait(app, lambda: not controller.busy)
-    assert button.property("enabled")
-    controller.prepareUpload()
-    assert len(calls) == 1
-    controller.files.rows[0]["scored_stat"] = None
-    controller.changed.emit()
+    assert upload.progressInfo['summary'] == '已上传 1 个文件 · 待传 1 个'
+    upload._progress.update(transferred_files=1, reused_files=1)
+    upload.batch['status'] = 'completed'
+    upload.changed.emit()
     app.processEvents()
-    assert not button.property("enabled")
+    assert window.findChild(QObject, 'uploadTransferSummary').property('text') == '本轮上传 1 个文件 · 复用已上传 1 个'
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    upload.telemetry = Mock()
+    upload.lock = Mock()
+    upload.worker = SimpleNamespace(roots=None, batch=upload.batch, imports=[], error='',
+                                    database_error='', deleteLater=Mock())
+    upload._finished()
+    upload.telemetry.report.assert_any_call('upload_completed', count=1)
+    upload.telemetry.report.assert_any_call('upload_files_reused', count=1)
+
+
+def test_closed_upload_controller_does_not_launch_deferred_registry(quick, tmp_path, monkeypatch):
+    from oi_eegqc.upload_ui import UploadController
+    from oi_eegqc.upload_http import SignClient
+    app,controller,_,_=quick
+    calls=[]
+    monkeypatch.setattr(SignClient,'paradigms',lambda self:calls.append(True) or [])
+    upload=UploadController(tmp_path/'closed')
+    upload.shutdown()
+    QTest.qWait(20)
+    assert calls==[] and upload.registry_worker is None

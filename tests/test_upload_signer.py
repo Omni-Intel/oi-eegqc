@@ -244,3 +244,36 @@ def test_staging_cleanup_failure_does_not_lose_completed_file(coordinator, monke
     service.mark_single_complete(uid, rid, [{"path": "a.bin", "size": 3}])
     assert service.round_status(uid, rid)["files"][0]["state"] == "complete"
     service.mark_single_complete(uid, rid, [{"path": "a.bin", "size": 3}])
+
+
+@pytest.mark.parametrize("participant", ["13467638", "8e425f9d7ac6"])
+def test_resolve_existing_source_after_local_state_is_lost(coordinator, participant):
+    service,_=coordinator
+    uid,rid=start(service)
+    path=f'sub-{participant}/ses-20260926/eeg/run1_eeg.float32'
+    files=[dict(path=path,size=3,directory=False,sha256=HASH)]
+    service.register_files(uid,rid,files);service.seal_round(uid,rid,1)
+    service.mark_single_complete(uid,rid,[dict(path=path,size=3)])
+    service.complete_round(uid,rid)
+    assert service.resolve_collection(files)==dict(uploadId=uid,matchedRecordings=1,replacesRequestId=None)
+    assert service.resolve_collection([dict(files[0],sha256='b'*64)])['uploadId'] is None
+    # Participant and Session are part of the cloud source path.
+    assert service.resolve_collection([dict(files[0],path=path.replace(participant,'00000001'))])['uploadId'] is None
+    next_round=service.start_round(uid,'resume-request')
+    assert service.resolve_collection(files)['replacesRequestId']=='resume-request'
+
+
+def test_confirmation_promotes_files_concurrently(coordinator,monkeypatch):
+    import threading
+    service,storage=coordinator
+    barrier=threading.Barrier(4)
+    original=storage.promote
+    def promote(*args):
+        barrier.wait(timeout=5)
+        original(*args)
+    monkeypatch.setattr(storage,'promote',promote)
+    uid,rid=start(service)
+    files=[dict(path=f'{i}.txt',size=3,directory=False,sha256=HASH) for i in range(4)]
+    service.register_files(uid,rid,files);service.seal_round(uid,rid,4)
+    service.mark_single_complete(uid,rid,[dict(path=f['path'],size=3) for f in files])
+    assert all(f['state']=='complete' for f in service.round_status(uid,rid)['files'])
