@@ -35,7 +35,14 @@ def prepare_eeg(recording: RecordingInput, cfg: BenchConfig) -> PreparedEEG:
     data = np.asarray(recording.data, dtype=float)
     if data.ndim != 2:
         raise ValueError(f"data must be 2D (n_channels, n_times), got {data.shape}")
-    aux = recording.aux_ch_names or list(cfg.default_aux_names)
+    aux = set(cfg.default_aux_names)
+    aux.update(recording.aux_ch_names or ())
+    layout_id = recording.meta.get("channel_layout")
+    if layout_id:
+        from .layouts import get_layout
+
+        layout = get_layout(str(layout_id))
+        aux.update(channel.name for channel in layout.channels if channel.kind.lower() != "eeg")
     eeg, names, dropped = pick_eeg_channels(data, list(recording.ch_names), aux)
     raw_uv = eeg * recording.to_uv_scale()
     return PreparedEEG(raw_uv, highpass_channels(raw_uv, recording.sfreq, cfg.highpass_hz),

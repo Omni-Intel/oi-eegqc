@@ -139,12 +139,12 @@ def test_pick_eeg_channels_drops_aux_but_keeps_flat():
     data[2] = np.linspace(0, 2, 100)
     data[3] = np.linspace(0, 1, 100)
     kept, names, dropped = pick_eeg_channels(
-        data, ["Fz", "FLAT", "Cz", "ECG"], aux_names=("ECG",)
+        data, ["Fz", "FLAT", "Cz", "EOG IO"], aux_names=("EOG",)
     )
     # The flat channel must survive selection: dropping it would remove the
     # worst acquisition failure from the denominator.
     assert names == ["Fz", "FLAT", "Cz"]
-    assert dropped == ["ECG"]
+    assert dropped == ["EOG IO"]
     assert kept.shape[0] == 3
 
 

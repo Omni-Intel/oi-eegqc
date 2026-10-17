@@ -33,13 +33,17 @@ def test_npy_scoring_units_axes_and_invalid_inputs(tmp_path):
         score_file(path, sfreq=250)
 
 
-def write_edf(path, sfreq=250, signal=None):
+def write_edf(path, sfreq=250, signal=None, ch_names=None):
     """Small valid EDF fixture; avoids requiring an EDF export dependency."""
     def field(value, size):
         return str(value).encode("ascii").ljust(size)
     n = 4 if signal is None else len(signal)
     duration = 5 if signal is None else signal.shape[1] // sfreq
-    labels = ["Fp1", "Fp2", "C3", "C4"] if n == 4 else [f"C{i}" for i in range(n)]
+    labels = list(ch_names) if ch_names is not None else (
+        ["Fp1", "Fp2", "C3", "C4"] if n == 4 else [f"C{i}" for i in range(n)]
+    )
+    if len(labels) != n:
+        raise ValueError("ch_names length must match signal channel count")
     bdf = path.suffix.lower() == ".bdf"
     rail = 8388607 if bdf else 32767
     header = b"".join(field(v, s) for v, s in [

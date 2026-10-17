@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from oi_eegqc.adapters import pick_eeg_channels
 from oi_eegqc.config import default_config
 from oi_eegqc.datasets import open_dataset, synth_clean
 from oi_eegqc.intake import score_file
@@ -50,14 +49,21 @@ def test_layout_count_mismatch_is_an_error():
         resolve_channel_names(8, layout_id="bcigo_sdk_1.0.2")
 
 
-def test_io_is_not_dropped_as_aux():
+def test_io_is_dropped_as_aux_by_bcigo_layout():
+    from oi_eegqc.types import RecordingInput
+    from oi_eegqc.pipeline import evaluate_recording
+
     layout = get_layout("bcigo_sdk_1.0.2")
     data = synth_clean(32, 250.0, 2.0, seed=2)
-    cfg = default_config()
-    eeg, names, dropped = pick_eeg_channels(data, layout.names, cfg.default_aux_names)
-    assert "IO" in names
-    assert "IO" not in dropped
-    assert eeg.shape[0] == 32
+    recording = RecordingInput(
+        data=data,
+        sfreq=250.0,
+        ch_names=layout.names,
+        meta={"channel_layout": layout.id},
+    )
+    report = evaluate_recording(recording, default_config())
+    assert report.n_channels_used == 31
+    assert "IO" in report.extras["dropped_channels"]
 
 
 def _write_avsession(stamp: Path, n_ch: int, *, device_type: str = "brainco") -> None:
@@ -142,11 +148,32 @@ def test_npy_sidecar_channel_layout(tmp_path: Path):
     assert rec.ch_names[0] == "P8"
     assert rec.ch_names[28] == "IO"
     report = score_file(path)
-    assert report.n_channels_used == 32
+    assert report.n_channels_used == 31
     assert report.extras.get("channel_layout") == "bcigo_sdk_1.0.2"
-    assert "IO" not in report.extras.get("dropped_channels", [])
+    assert "IO" in report.extras.get("dropped_channels", [])
     subset = score_file(path, keep_channels=["P8", "IO"])
-    assert subset.n_channels_used == 2
+    assert subset.n_channels_used == 1
+    assert subset.extras["dropped_channels"] == ["IO"]
+
+
+def test_mislabelled_bids_eog_name_is_excluded(tmp_path: Path):
+    from oi_eegqc.adapters import is_aux_channel_name
+
+    assert is_aux_channel_name("EOG IO", default_config().default_aux_names)
+    assert is_aux_channel_name("EEG EOG IO", default_config().default_aux_names)
+    assert not is_aux_channel_name("EEG Fz", default_config().default_aux_names)
+
+    data = synth_clean(2, 250.0, 2.0, seed=5)
+    path = tmp_path / "sub-01_task-test_eeg.npy"
+    np.save(path, data)
+    path.with_suffix(".json").write_text(
+        json.dumps({"sfreq": 250.0, "unit": "uV", "channel_names": ["EEG Fz", "EOG IO"]}),
+        encoding="utf-8",
+    )
+    channels = path.with_name("sub-01_task-test_channels.tsv")
+    channels.write_text("name\ttype\tunits\nEEG Fz\tEEG\tuV\nEOG IO\tEEG\tuV\n", encoding="utf-8")
+    report = score_file(path)
+    assert report.n_channels_used == 1
 
 
 def test_session_stamp_metadata_names_zero_channel(tmp_path: Path):

@@ -11,7 +11,8 @@ source: >
   The PyPI "Channel Layout" section is anatomical grouping, not ndarray row order.
 notes: >
   Row 0 is P8. Row 28 is IO (EDF label "EOG IO"). IO is a recorded channel and
-  is not dropped as aux. Do not number the PyPI list as array indices.
+  is an ocular auxiliary channel, excluded from EEG quality scoring. Do not
+  number the PyPI list as array indices.
 channels:
   - {index: 0, name: P8, edf_label: "EEG P8", kind: eeg}
   - {index: 1, name: P7, edf_label: "EEG P7", kind: eeg}

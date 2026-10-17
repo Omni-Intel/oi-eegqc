@@ -1,7 +1,27 @@
 from __future__ import annotations
 
+import re
+
 import numpy as np
 from scipy.signal import butter, sosfiltfilt
+
+
+def is_aux_channel_name(name: str, aux_names=()) -> bool:
+    """Return whether a channel label identifies an auxiliary signal.
+
+    EDF labels often include a signal type and a site, e.g. ``EOG IO``. Treat
+    those as auxiliary even when a BIDS channels.tsv mistakenly labels them EEG.
+    """
+    normalized = re.sub(r"[_-]+", " ", str(name)).strip().upper()
+    if normalized.startswith("EEG "):
+        normalized = normalized[4:].strip()
+    for alias in aux_names or ():
+        token = re.sub(r"[_-]+", " ", str(alias)).strip().upper()
+        if not token:
+            continue
+        if normalized == token or re.match(rf"^{re.escape(token)}(?:\s|\d|$)", normalized):
+            return True
+    return False
 
 
 def pick_eeg_channels(
@@ -21,12 +41,11 @@ def pick_eeg_channels(
     if data.shape[0] != len(ch_names):
         raise ValueError("ch_names length must match data.shape[0]")
 
-    aux = {n.upper() for n in (aux_names or ())}
     keep_idx: list[int] = []
     keep_names: list[str] = []
     dropped: list[str] = []
     for i, name in enumerate(ch_names):
-        if name.upper() in aux:
+        if is_aux_channel_name(name, aux_names):
             dropped.append(name)
             continue
         # Missing EEG stays in the denominator, just like flat EEG.

@@ -358,10 +358,34 @@ def score_file(
         raise ValueError("请选择脑电或数组文件。")
     progress("检查")
     if keep_channels is None:
-        from .bids_metadata import channel_rows
+        from .adapters import is_aux_channel_name
+        from .bids_metadata import channel_rows, eeg_metadata
+
+        auxiliary_names = set(cfg.default_aux_names)
+        sidecar = eeg_metadata(path) if suffix in EDF_SUFFIXES else {}
+        layout_id = recording.meta.get("channel_layout") or sidecar.get("channel_layout")
+        if not layout_id and sidecar:
+            from .layouts import layout_for_device
+
+            layout = layout_for_device(
+                sidecar.get("Manufacturer") or sidecar.get("DeviceType"),
+                len(recording.ch_names),
+            )
+            layout_id = layout.id if layout else None
+        if layout_id:
+            from .layouts import get_layout
+
+            layout = get_layout(str(layout_id))
+            auxiliary_names.update(
+                channel.name for channel in layout.channels if channel.kind.lower() != "eeg"
+            )
         channels = channel_rows(path)
         if channels:
-            keep_channels = [r['name'] for r in channels if r.get('type', '').upper() == 'EEG']
+            keep_channels = [
+                r['name'] for r in channels
+                if r.get('type', '').upper() == 'EEG'
+                and not is_aux_channel_name(r['name'], auxiliary_names)
+            ]
             if not keep_channels:
                 raise ValueError('通道表没有 EEG 通道')
     if recording.data.ndim != 2 or min(recording.data.shape) == 0:

@@ -27,7 +27,27 @@ def score_request(request):
     with reader(path,preload=False,verbose='ERROR') as raw:
         fs=float(raw.info['sfreq']);duration=raw.n_times/fs
         cfg=load_config()
-        parent=RecordingInput(data=raw.get_data(),sfreq=fs,ch_names=list(raw.ch_names),unit='V')
+        from .bids_metadata import channel_rows, eeg_metadata
+        from .layouts import get_layout, layout_for_device
+
+        sidecar=eeg_metadata(path)
+        auxiliary_names=[]
+        for channel in channel_rows(path):
+            if channel.get('type','').strip().upper() not in ('EEG',''):
+                auxiliary_names.append(channel['name'])
+        layout_id=sidecar.get('channel_layout')
+        if not layout_id:
+            device=sidecar.get('Manufacturer') or sidecar.get('DeviceType')
+            layout=layout_for_device(device,len(raw.ch_names))
+            layout_id=layout.id if layout else None
+        meta={}
+        if layout_id:
+            meta['channel_layout']=str(layout_id)
+            layout=get_layout(str(layout_id))
+            auxiliary_names.extend(channel.name for channel in layout.channels
+                                   if channel.kind.lower()!='eeg')
+        parent=RecordingInput(data=raw.get_data(),sfreq=fs,ch_names=list(raw.ch_names),
+            unit='V',aux_ch_names=auxiliary_names,meta=meta)
         prepared=prepare_eeg(parent,cfg)
         for segment in segments:
             row={'trial_id':segment['trial_id'],'stimulus_id':segment['stimulus_id'],'score':None,'state':'needs_review'}
@@ -44,7 +64,8 @@ def score_request(request):
                 recording=RecordingInput(data=parent.data[:,first:last],sfreq=fs,
                     ch_names=list(raw.ch_names),unit='V',clip_id=segment['trial_id'],
                     subject_id=request.get('participant'),session_id=request.get('session_id'),
-                    stimulus_duration_s=segment.get('stimulus_duration_s'))
+                    stimulus_duration_s=segment.get('stimulus_duration_s'),
+                    aux_ch_names=parent.aux_ch_names,meta=parent.meta)
                 report=evaluate_recording(recording,cfg,prepared=prepared.crop(first,last))
                 score=float(report.gqi)
                 if not math.isfinite(score):raise ValueError('评分结果无效')

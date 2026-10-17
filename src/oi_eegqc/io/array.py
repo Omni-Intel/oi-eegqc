@@ -104,6 +104,16 @@ def load_npy(
             )
         else:
             ch_names = load_channel_names(None, arr.shape[0])
+    if layout_id is None and channel_layout:
+        from ..layouts import get_layout
+
+        declared_layout = get_layout(str(channel_layout))
+        if declared_layout.n_channels != arr.shape[0]:
+            raise ValueError(
+                f"channel_layout {declared_layout.id} has {declared_layout.n_channels} channels, "
+                f"recording has {arr.shape[0]}"
+            )
+        layout_id = declared_layout.id
     if len(ch_names) != arr.shape[0]:
         raise ValueError(
             f"ch_names length {len(ch_names)} does not match {arr.shape[0]} channels"
