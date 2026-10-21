@@ -93,7 +93,7 @@ class ChannelModel(QAbstractListModel):
 
 
 class FileModel(QAbstractListModel):
-    fields = ("label", "score", "state", "detail", "chosen", "ready", "folder")
+    fields = ("label", "score", "state", "detail", "chosen", "ready", "folder", "uploadState")
     roles = {Qt.ItemDataRole.UserRole + i + 1: name.encode() for i, name in enumerate(fields)}
 
     def __init__(self, parent=None):
@@ -133,7 +133,7 @@ class FileModel(QAbstractListModel):
         self.beginInsertRows(QModelIndex(), n, n)
         self.rows.append(dict(path=path, metadata=metadata, label=Path(path).name.lower(),
                               score="—", state="待评分", detail=path.lower(), chosen=False,
-                              ready=False, report=None, error="", folder="", import_stat=identity))
+                              ready=False, report=None, error="", folder="", uploadState="", import_stat=identity))
         self.path_indices[key] = n
         self.endInsertRows()
 
@@ -236,6 +236,7 @@ class Controller(QObject):
         self._pending = []
         self._intake_reports = {}
         self._folder_intake = False
+        self._bridge_intake = False
         self._cursor = 0
         self._shared = None
         self._parameters = {}
@@ -294,6 +295,7 @@ class Controller(QObject):
     busy = Property(bool, lambda self: self._busy, notify=changed)
     stopping = Property(bool, lambda self: self._stopping, notify=changed)
     count = Property(int, lambda self: len(self.files.rows), notify=changed)
+    removedCount = Property(int, lambda self: self.record_bridge.removed_count() if getattr(self, "record_bridge", None) else 0, notify=changed)
     selectedCount = Property(int, lambda self: sum(r["chosen"] for r in self.files.rows), notify=changed)
     canScore = Property(bool, lambda self: any(r["report"] is None for r in self.files.rows), notify=changed)
     orderIndex = Property(int, lambda self: self._order, notify=changed)
@@ -356,10 +358,11 @@ class Controller(QObject):
                 paths.append(url.toLocalFile())
         self.add_paths(paths)
 
-    def add_paths(self, paths):
+    def add_paths(self, paths, from_bridge=False):
         if self._busy or not paths:
             return
         self._busy = self._importing = True
+        self._bridge_intake = bool(from_bridge)
         self._notice = ""
         self._shared = None
         self._import_roots = [str(Path(p).absolute()) for p in paths if Path(p).exists()]
@@ -457,17 +460,16 @@ class Controller(QObject):
             self._notice = f'被试 {participants} · {len(self._import_sessions)} 个采集 Session · 优先评分无损数据'
             self.changed.emit()
             self._upload.resolveSubjects(self._import_sessions)
-        auto_score = False
-        if self._upload_after_import:
-            self._upload_after_import = False
-            if not self._errors:
-                self.prepareUpload(start_upload=True)
-        elif self._folder_intake and self.canScore and self._all_channels and not self._errors:
-            auto_score = True
         if self._closing:
             self.closeReady.emit()
         else:
             self.imported.emit()
+            if self._upload_after_import:
+                self._upload_after_import = False
+                if not self._errors:
+                    self.prepareUpload(start_upload=True)
+                return
+            auto_score = self._folder_intake and not self._bridge_intake and self.canScore and self._all_channels and not self._errors
             if not self._all_channels and self.canScore and not self._busy:
                 QTimer.singleShot(0, self.openChannelSheet)
             if auto_score:self._auto_score()
@@ -532,8 +534,9 @@ class Controller(QObject):
     def remove(self, all_rows=False):
         if self._busy:
             return
+        removed_paths = [r['path'] for r in self.files.rows if all_rows or r['chosen']]
         if getattr(self,'record_bridge',None):
-            self.record_bridge.remove_paths([r['path'] for r in self.files.rows if all_rows or r['chosen']])
+            self.record_bridge.remove_paths(removed_paths)
             self.record_bridge.refresh()
             if self._upload.active:return
         for i in range(len(self.files.rows)-1, -1, -1):
@@ -543,11 +546,21 @@ class Controller(QObject):
                 self.files.endRemoveRows()
         self.files.path_indices = {os.path.normcase(row["path"]): i for i, row in enumerate(self.files.rows)}
         self._anchor = 0
-        self._notice = ""
+        self._notice = ("已清空列表（源文件保留，可重新拖入或点击上方「恢复已清空」）" if all_rows else
+                        "已从列表移出（源文件保留，可重新拖入或点击上方「恢复已清空」）") if getattr(self, 'record_bridge', None) and removed_paths else ""
         self._folder_roots = [root for root in self._folder_roots
                               if any(Path(root) == Path(r["path"]) or Path(root) in Path(r["path"]).parents for r in self.files.rows)]
+        remaining = set(self.files.path_indices)
+        self._import_sessions = [s for s in self._import_sessions
+                                 if os.path.normcase(s['recording']) in remaining
+                                 or any(os.path.normcase(r['recording']) in remaining for r in s.get('recordings', []))]
         self.files.names(self._folder_roots)
         self.changed.emit()
+
+    @Slot()
+    def restoreRemoved(self):
+        if not self._busy and getattr(self, 'record_bridge', None):
+            self.record_bridge.restore_all()
 
     @Slot()
     def prepareUpload(self, start_upload=False):
@@ -555,7 +568,7 @@ class Controller(QObject):
             return
         if getattr(self,'record_bridge',None) and not self.record_bridge.upload_allowed(self._folder_roots):
             self._notice='所选文件夹包含已移除记录，请改选需要上传的记录文件夹';self.changed.emit();return
-        if any(r["report"] is None and not r.get("error") for r in self.files.rows):
+        if any(r["report"] is None and not r.get("error") and r.get("uploadState") != "已上传" for r in self.files.rows):
             self._prepare_after_score, self._upload_after_score = True, start_upload
             self.scoreOrStop()
             return
@@ -795,7 +808,7 @@ class Controller(QObject):
         jobs = []
         keep = None if self._all_channels else list(self._selected_channels)
         for i, row in enumerate(self.files.rows):
-            if row["report"] is not None:
+            if row["report"] is not None or (self._prepare_after_score and row.get("uploadState") == "已上传"):
                 continue
             meta = dict(row["metadata"], line_hz=self._mains)
             if "channels_first" not in meta and self._order:
@@ -1038,7 +1051,8 @@ class Controller(QObject):
 def create_engine(controller):
     engine = QQmlApplicationEngine()
     engine.setInitialProperties({"backend": controller})
-    engine.load(QUrl.fromLocalFile(str(Path(__file__).parent / "qml" / "Main.qml")))
+    qml_root = (Path(sys._MEIPASS) / "oi_eegqc") if hasattr(sys, "_MEIPASS") else Path(__file__).parent
+    engine.load(QUrl.fromLocalFile(str(qml_root / "qml" / "Main.qml")))
     return engine
 
 

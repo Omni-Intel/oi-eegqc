@@ -31,13 +31,38 @@ def read_report(path, metadata, source_stat=None):
     candidates=[path.parent/'eegqc-report.json']
     if path.parent.name=='eeg':candidates.append(path.parent.parent/'eegqc-report.json')
     candidates=[p for p in candidates if p.is_file()]
-    if not candidates:return None
-    from .recording_manifest import FORMATS,primary_recordings
-    if len(primary_recordings([p for p in path.parent.iterdir() if p.suffix.lower() in FORMATS and p.is_file()]))!=1:
-        return None
-    for candidate in candidates:
-        report=load(candidate)
-        if report is not None:return report
+    if candidates:
+        from .recording_manifest import FORMATS,primary_recordings
+        if len(primary_recordings([p for p in path.parent.iterdir() if p.suffix.lower() in FORMATS and p.is_file()]))==1:
+            for candidate in candidates:
+                report=load(candidate)
+                if report is not None:return report
+    if metadata.get('line_hz', 50) == 50 and not metadata.get('keep_channels'):
+        resolved = path.resolve()
+        for parent in (path.parent, *list(path.parents)[:3]):
+            fq = parent / 'file-quality.json'
+            if not fq.is_file():
+                continue
+            try:
+                saved = json.loads(fq.read_text(encoding='utf-8'))
+            except (ValueError, OSError):
+                continue
+            if saved.get('quality_state') != 'scored' or not isinstance(saved.get('report'), dict):
+                continue
+            rec = saved.get('recording')
+            if not rec:
+                continue
+            try:
+                if (parent / rec).resolve() != resolved:
+                    continue
+                fq_mtime = fq.stat().st_mtime_ns
+            except OSError:
+                continue
+            rep = saved['report']
+            if rep.get('extras', {}).get('algorithm_version', SCORING_ALGORITHM_VERSION) != SCORING_ALGORITHM_VERSION:
+                continue
+            if saved.get('source') == source or ('source' not in saved and identity[1] <= fq_mtime):
+                return rep
     return None
 
 

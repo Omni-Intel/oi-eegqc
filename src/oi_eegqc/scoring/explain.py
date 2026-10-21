@@ -83,6 +83,8 @@ def _layout_line(extras: dict, n_channels: int) -> str:
     layout = str(extras.get("channel_layout") or "")
     if layout.startswith("bcigo") or "brainco" in layout:
         return f"已对上强脑 {n_channels} 导通道名"
+    if "omnibci" in layout:
+        return f"已对上 OmniBCI {n_channels} 导通道名"
     if layout:
         return f"已对上采集端 {n_channels} 导通道名"
     return ""

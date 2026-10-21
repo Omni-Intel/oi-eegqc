@@ -108,6 +108,11 @@ class ScoreCache:
                 "SELECT report FROM score_reports WHERE sha256 = ? AND parameters = ? AND algorithm_version = ?",
                 (sha256, self.parameters_key(metadata), SCORING_ALGORITHM_VERSION),
             ).fetchone()
+            if not row and metadata.get("line_hz", 50) == 50 and not metadata.get("keep_channels"):
+                row = db.execute(
+                    "SELECT report FROM score_reports WHERE sha256 = ? AND parameters = ? AND algorithm_version = ?",
+                    (sha256, self.parameters_key({}), SCORING_ALGORITHM_VERSION),
+                ).fetchone()
         if not row:
             return None
         report = json.loads(row[0])

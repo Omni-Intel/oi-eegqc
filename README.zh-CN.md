@@ -1,141 +1,161 @@
-# OI-EEGQC 统一评分与上传软件
+<p align="center">
+  <img src="assets/oi-eegqc-hero.svg" alt="OI-EEGQC — EEG Quality Control" width="82%">
+</p>
 
-外部采集程序对接请阅读[存储与入库规范](docs/external-acquisition.zh-CN.md)，并使用[视频与 RSVP 元数据模板](examples/external-acquisition)。
+<p align="center">
+  <a href="README.md">English</a> &nbsp; / &nbsp; <strong>简体中文</strong>
+</p>
 
-[English](README.md) · [下载已发布 Windows 安装包](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)
+<p align="center">
+  <strong>面向脑电采集质控、信号复核与断点续传归档的本地优先工具</strong>
+</p>
 
-OI-EEGQC 是面向 EEG 采集质控与数据入库的本地优先工具。Windows 桌面端和命令行共用同一套评分引擎、输入规范化流程和版本化报告格式。一个采集文件夹可以同时包含 EEG 记录、采集元数据、阻抗截图、佩戴定位照片、视频和其他辅助文件。
+<p align="center">
+  <code>OI-EEGQC</code> 将桌面端交互式质检、采集端无窗口后台交接、CLI 批量评分与云端断点直传统一在同一套数值引擎与版本化报告格式之上，做到直观易排查、评分可复现、传输可恢复。
+</p>
 
-AV Capture 是主试的一站式入口，EEGQC 提供可无窗口调用的逐视频质检、整轮评分和可续传上传；EEGQC 窗口保留给专家复核与批量历史处理。协议与仓库职责见 [采集集成接口](docs/capture-integration.md)。
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-10%2F11%20x64-20252B?style=flat-square" alt="Windows 10/11 x64">
+  &nbsp;
+  <img src="https://img.shields.io/badge/Python-3.12%2B-20252B?style=flat-square" alt="Python 3.12+">
+  &nbsp;
+  <img src="https://img.shields.io/badge/GUI-Qt%20Quick%20%2F%20PySide6-FF5A01?style=flat-square&amp;labelColor=20252B" alt="Qt Quick / PySide6">
+  &nbsp;
+  <img src="https://img.shields.io/badge/Engine-oi--eegqc--score--v6-BADFDB?style=flat-square&amp;labelColor=20252B" alt="oi-eegqc-score-v6">
+  &nbsp;
+  <img src="https://img.shields.io/badge/Formats-EDF%20%7C%20BDF%20%7C%20NPY%20%7C%20BIDS-20252B?style=flat-square" alt="EDF | BDF | NPY | BIDS">
+</p>
 
-评分用于采集质量复核和数据入库，不推断认知状态、注意力、临床诊断或伪迹的生理原因。
+<p align="center">
+  <a href="#快速开始"><strong>快速开始</strong></a> &nbsp; / &nbsp;
+  <a href="https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe">Windows 安装包</a> &nbsp; / &nbsp;
+  <a href="https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip">便携版压缩包</a> &nbsp; / &nbsp;
+  <a href="docs/external-acquisition.zh-CN.md">外部采集接入规范</a> &nbsp; / &nbsp;
+  <a href="docs/scoring.md">评分模型</a>
+</p>
 
-## 数据流
+---
 
-```text
-采集文件夹
-├── EDF / BDF ─────────────── 从文件头读取采样率、单位和通道
-├── NPY + 可选 sidecar ────── 声明采样率、单位、数组方向和通道布局
-└── 辅助文件 ──────────────── 图片、视频、元数据和 session 文档
-            │
-            ▼
-输入核验并统一到物理单位
-            │
-            ▼
-分窗信号检查 ──► 版本化 GQI 报告 + 通道/时间窗证据
-            │                         │
-            │                         ├── Windows GUI
-            │                         ├── CLI / Python API / 标准输入输出协议
-            │                         └── 本地评分缓存
-            ▼
-采集快照与上传清单
-            │
-            ▼
-采集文件夹增量上传与断点续传
-```
+## 快速开始
 
-评分与上传是两个独立阶段。EEG 信号始终在本地处理；上传功能将所选采集文件夹及其中的辅助文件发送到项目配置的存储位置。
-
-## 支持的数据
-
-| 输入 | 采集参数来源 | 处理方式 |
-| --- | --- | --- |
-| EDF / BDF | 文件头 | 使用记录中的采样率、物理单位和通道名；文件头损坏时停止处理 |
-| NPY | sidecar 或显式输入 | 必须确定采样率和物理单位，并确认数组方向与通道布局 |
-| 采集文件夹 | 递归扫描 | 对受支持的 EEG 文件评分，普通辅助文件保留用于整夹上传 |
-
-NPY sidecar 可以声明 `sfreq`、`unit`、`channels_first`、`channel_names` 或已知 `channel_layout`。阻抗、同步误差等采集证据仅在实际存在时参与报告，不补造缺失信息。详见[通道布局](docs/channel-layouts.zh-CN.md)和[桌面端输入说明](docs/desktop.md)。
-
-## 质量模型
-
-当前报告格式为 v3，评分算法为 `oi-eegqc-score-v3`，阈值版本为 `oi-eegqc-v0.6.0`。每份报告都保存实际生效的配置和算法版本。
-
-GQI 是 0–100 的综合分数，由接触质量、信号洁净度和可用时长构成；完整性和刺激同步仅在提供对应证据时参与。报告保留每个时间窗的结论、异常通道和检测到的信号形态，便于主试追溯分数变化的原因。
-
-“可用窗口比例”和“时长评分”是两个不同指标。前者是通过通道规则的重叠时间窗占比，后者把该比例映射到配置的目标值；可用窗口比例不是精确可用秒数。
-
-未滤波信号窗中的局部极值平台作为待复核形态展示。量化也可能产生类似平台，因此平台本身不单独扣分，也不能证明硬件饱和。平直导联、幅度越界、工频干扰和缺失值分别由对应规则处理。详见[评分规则与边界](docs/scoring.md)。
-
-## 桌面端流程
-
-1. 选择或拖入采集文件夹、EDF、BDF 或 NPY 文件。
-2. 只补充无法从数据或 sidecar 中读取的采集参数。
-3. 在本地评分，查看 GQI、可用窗口和通道级证据。
-4. 确认采集内容后上传整个文件夹。
-
-仅当摘要能够避免后续重复读取大文件时，桌面端才计算并保存文件 SHA-256。文件内容、评分参数和算法版本均未变化时复用评分缓存；采集参数、通道选择、配置或算法版本变化时重新评分。
-
-评分在独立进程中运行。单个文件失败或取消不会清除已完成结果；评分进程崩溃或超时后，队列仍可继续。正式桌面界面为 Qt Quick / PySide6，旧 QWidget 界面不进入发布包。
-
-## 增量与断点续传
-
-应用能够跨日识别同一个本地采集文件夹，并为每次上传保存可恢复的进度：
-
-- 清单比对后跳过未变化文件；
-- 新文件追加到原采集目录；
-- 变化文件仅在传输成功后更新同一相对路径；
-- 本地删除文件不会删除云端历史对象；
-- 大文件自动使用可续传的分片传输；
-- 只有全部所选文件上传成功后，才把本次采集标记为完成。
-
-上传中断后可以继续，不会重复传输已经确认且内容未变化的文件。再次上传同一文件夹时，新增内容会追加，变化内容会更新，无关的远端文件仍然保留。
-
-## 使用接口
-
-### Windows 桌面端
-
-使用[已发布安装包](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)或[便携版压缩包](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip)。采集电脑静默安装/更新走 GitHub Releases：
+**Windows 桌面端：** 直接下载 [Windows 安装包 (`OI-EEGQC-Setup-Windows-x64.exe`)](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe) 或 [便携版压缩包 (`OI-EEGQC-Windows-x64.zip`)](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip)，也可在 PowerShell 中静默安装：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1
 ```
 
-安装器写入当前用户目录，不要求管理员权限。设置里的「检查更新」读 GitHub Releases API。评分保持本地执行，检查更新不会上传 EEG 数据。公开 WinGet 源需要另提 PR，采集点网络差时不要把它当主安装通道。
+**命令行与自动化接口：**
 
-### 命令行
-
-```sh
+```bash
 python -m pip install -e '.[mne]'
 
-oi-eegqc score -i recording.bdf -o report.json
-oi-eegqc score -i session_01 --sfreq 500 --unit uV -o batch-report.json
+oi-eegqc score -i recording.edf -o report.json
+oi-eegqc score -i session_01 --sfreq 250 --unit uV -o batch-report.json
 oi-eegqc --json datasets
 oi-eegqc serve --stdio
 ```
 
-CLI、数据集适配器、Python API 和标准输入输出协议与桌面端调用同一数值引擎。自动化程序可使用 JSON 或 NDJSON；交互式输出用于人工查看。
+将采集文件夹、BIDS 目录、`.edf`、`.bdf` 或 `.npy` 直接拖入窗口，即可在本地查看综合质量分（GQI）、可用时间窗占比与逐导联诊断建议，确认后一键整夹上传归档。
 
-## 工程结构
+> [!NOTE]
+> `OI-EEGQC` 将界面生命周期与后台评测/上传子进程解耦。采集端后台交接（`--capture-complete-request`）生成的整轮评分（`file-quality.json`）与上传回执（`upload-result.json`）落盘即生效——打开桌面窗口会 0 秒直接复用已有结果，不会重复重评历史 Session 或锁死上传按钮。
 
-| 层级 | 当前模块 | 职责 |
+## 支持格式与设备布局
+
+| 输入与视图 | 参数来源 | 处理行为 |
 | --- | --- | --- |
-| 表现层 | `desktop.py`、`quick.py`、`qml/`、`upload_ui.py` | 原生界面、用户操作、进度和报告展示 |
-| 应用任务层 | `application/`、`desktop_service.py` | 批处理、取消、缓存复用和评分子进程恢复 |
-| 采集输入层 | `intake.py`、`io/`、`layouts/` | 文件发现、单位、采样率、数组方向和通道身份 |
-| 数值引擎 | `pipeline.py`、`qa/`、`scoring/`、`config.py` | 时间窗证据、指标聚合和版本化报告 |
-| 持久化与传输 | `score_cache.py`、`desktop_upload.py`、`upload_session.py`、`upload_http.py` | 本地缓存、采集记录和断点直传 |
-| 自动化接口 | `cli.py`、`serve.py`、`datasets/`、`examples/` | CLI、机器协议、数据集评估和算法校准 |
+| **EDF / EDF+ / BDF / BDF+** | 文件头与可选 BIDS `_eeg.json` / `_channels.tsv` | 自动读取采样率、物理单位与通道标签；自动识别并排除 `EOG IO`、心电、肌电、Trigger 等辅助通道，避免污染脑电评分分母 |
+| **NPY + Sidecar** | `<stem>.json`、`metadata.json` 或弹窗补充 | 解析 `sfreq`、`unit`、`channels_first`、`channel_names` 或 `channel_layout`；不凭空捏造缺失标定 |
+| **采集文件夹** | 递归扫描 BIDS / Session 目录 | 复用已有 `file-quality.json` 与评分缓存，保留刺激事件、阻抗截图、视频等辅助文件一并校验上传 |
+| **本机公共记录名单** | `%LOCALAPPDATA%\Omni-Intelligence\records.sqlite` | 与 AV Capture 实时同步 `完成 · 已上传`、`正在上传`、`上传待重试` 状态；支持清空后拖入自动恢复与顶部一键「恢复已清空」 |
 
-项目采用一个产品仓库、两个薄入口和一个共享核心。CLI 与 GUI 分别构建发布，但不维护两套评分实现。
+<details>
+<summary>内置电极布局与采集设备适配</summary>
 
-## 开发与验证
+| 布局 ID | 通道数 | 设备代号 / 别名 | 说明 |
+| --- | --- | --- | --- |
+| `bcigo_sdk_1.0.2` | 32 (`31 EEG + 1 EOG IO`) | `bcigo`, `brainco` | 强脑 `bcigo-sdk 1.0.2` 原生 EDF 通道序，第 29 路 `EOG IO` 作为眼电辅助通道自动排除 |
+| `omnibci_32_channel` | 32 (`31 EEG + 1 EOG IO`) | `omnibci 32 channel`, `omnibci32`, `omnibci` | OmniBCI STM32 + 4×ADS1299（250 Hz，支持 USB/Dongle 串口与 E73 BLE）标准 10-20 32 导布局 |
+| `neuracle_things_65` | 65 (`63 EEG + 2 Aux`) | `neuracle`, `borekam` | 博睿康 65 导脑电布局，自动排除参考与触发通道 |
 
-Windows 构建使用 Python 3.12：
+外部采集程序对接请阅读 [存储与入库规范](docs/external-acquisition.zh-CN.md) 并使用 [视频与 RSVP 元数据模板](examples/external-acquisition)。
 
-```sh
+</details>
+
+## 桌面端操作一览
+
+| 功能 | 操作方式 | 行为说明 |
+| --- | --- | --- |
+| **导入文件 / 文件夹** | 拖拽文件/目录至窗口，或点击 `文件 / ZIP` · `选择文件夹` | 支持导入整个 Session 目录或单个脑电文件；拖入 Session 内的单个 `.edf` 时会自动关联外层 Session 目录以支持直接上传 |
+| **恢复已清空记录** | 点击顶部 `恢复已清空 (N)` 或直接重新拖入文件 | 立即将公共名单中被清空的记录恢复为可见状态（`removed=0`），无需手动改库 |
+| **本地评分 (`评分`)** | 点击 `评分` 或在 `通道` 中勾选子集 | 在独立子进程中执行分窗质检；文件指纹、参数与算法版本未变时直接命中缓存 |
+| **诊断报告 (`查看`)** | 双击列表行或点击 `查看` | 展示五维评分卡片与直观排查建议（如某导联 `全程为 0`、`数值几乎不变`、`工频干扰偏高`、`高频噪声偏高`） |
+| **断点上传 (`上传`)** | 点击 `上传` | 清单比对跳过未变文件，大文件分片续传，二次校验本地 SHA-256，服务端确认写入 `_COMPLETE` 后落盘回执 |
+| **在线更新 (`检查更新`)** | 点击 `检查更新` | 校验更新包 SHA-256 摘要，支持便携版与安装版热更新 |
+
+## 质量评分模型（GQI）
+
+当前报告格式为 v3，评分算法版本为 `oi-eegqc-score-v6`，默认阈值配置为 `oi-eegqc-v0.6.14`。每份报告均完整记录生效参数与算法版本。
+
+| 评分维度 | 默认权重 | 评估内容 |
+| --- | --- | --- |
+| **接触 (`contact`)** | `0.20` | 死导/平直导联、脱落电极、空间邻域去耦（`corr_threshold`）及开录阻抗 |
+| **洁净 (`cleanliness`)** | `0.30` | 高频噪信比（`55–95 Hz` 对比 `1–45 Hz`）、`50/60 Hz` 工频干扰占比、幅度异常离群窗 |
+| **时长评分 (`usable_time`)** | `0.30` | 通过通道级质量门限的 2 秒重叠时间窗占比，按录制总时长自适应映射评分 |
+| **完整性 (`integrity`)** | `0.10` | 声明导联在场率、有效数值占比及录制时长一致性（提供预期元数据时参与） |
+| **刺激同步 (`stimulus_sync`)** | `0.10` | 事件标记完整性与音视频/刺激呈现对时偏差（提供事件日志时参与） |
+
+<details>
+<summary>评分边界与局部极值说明</summary>
+
+- **质控评分的边界**：GQI 仅评价物理信号采集质量与数据入库可用性，不推断被试认知状态、注意力、临床诊断或伪迹的生理成因。
+- **死导与辅助通道区分**：眼电（`EOG IO`）、心电、触发等辅助通道在评分前自动剔除；但全零或平直的 **EEG 脑电导联**会保留在分母中并由平直幅度门限扣分，防止多路电极脱落却得高分。
+- **局部极值平台**：未滤波窗口中的短时极值平台会提示主试复核原始波形，但考虑到 ADC 量化也可产生短平台，仅在大幅度持续削顶时触发硬门限扣分。详见 [评分规则与边界](docs/scoring.md)。
+
+</details>
+
+## 工作原理
+
+```mermaid
+flowchart LR
+    A[采集文件夹<br/>EDF / BDF / NPY + Sidecar] --> B[输入核验与布局解析<br/>物理单位统一 · 辅助通道排除]
+    B --> C[分窗信号质检引擎<br/>接触 · 洁净 · 可用时长]
+    C --> D[版本化 GQI 报告<br/>file-quality.json + 本地缓存]
+    D --> E[Qt Quick 桌面端 / CLI / 无窗口交接]
+    D --> F[分片断点续传<br/>COS / TOS 封存 + 平台入库]
+```
+
+<details>
+<summary>项目结构</summary>
+
+```text
+assets/oi-eegqc-hero.svg        品牌头图与 Omni-Intelligence 视觉资产
+src/oi_eegqc/quick.py           Qt Quick / PySide6 桌面端控制器与状态绑定
+src/oi_eegqc/qml/               QML 界面视图、评分报告弹窗、通道选择与上传面板
+src/oi_eegqc/intake.py          文件发现、物理单位归一化、sidecar 与 BIDS 元数据解析
+src/oi_eegqc/layouts/           YAML 电极布局定义（BCIGO 32导、OmniBCI 32导、博睿康 65导）
+src/oi_eegqc/pipeline.py        零相位滤波预处理与分窗质检流水线
+src/oi_eegqc/qa/                时间窗检测器（幅度离群、噪信比、工频干扰、削顶平台）
+src/oi_eegqc/scoring/           GQI 综合算分、等级评定与白话排查提示生成
+src/oi_eegqc/capture_service.py 面向 AV Capture 的无窗口一站式整轮评分与上传服务
+src/oi_eegqc/upload_session.py  清单比对、分片断点续传、SHA-256 校验与云端封存
+src/oi_eegqc/record_bridge.py   本机公共记录名单（records.sqlite）同步与自动恢复
+```
+
+</details>
+
+## 开发与构建
+
+```bash
 python -m venv .venv
-# 在当前终端中激活虚拟环境。
 python -m pip install -e '.[desktop,dev,packaging]'
-oi-eegqc-desktop
+pytest
 python scripts/check.py --calibrate
 ```
 
-Windows 上的 `scripts/build-desktop.ps1` 依次执行产品测试、注入故障校准、PyInstaller 打包、冻结应用启动检查和 Inno Setup 安装器生成。CI 调用仓库中的同一套脚本，不在工作流配置里隐藏另一套构建逻辑。
-
-进一步文档：
+在 Windows 上运行 `scripts/build-desktop.ps1` 将依次执行单元测试、故障注入校准、PyInstaller 打包、冻结二进制冒烟核验（`scripts/smoke-desktop.py`）以及 Inno Setup 安装包构建。
 
 - [架构与模块职责](docs/architecture.md)
 - [评分规则与边界](docs/scoring.md)
-- [桌面端操作](docs/desktop.md)
+- [桌面端操作说明](docs/desktop.md)
 - [Windows 构建与发布](docs/windows-app.zh-CN.md)
-- [历史研究与基准说明](docs/archive/research-v0.5.zh-CN.md)

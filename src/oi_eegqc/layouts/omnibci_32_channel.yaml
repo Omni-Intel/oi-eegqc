@@ -1,0 +1,48 @@
+layout_schema: oi-eegqc-layout-v1
+id: omnibci_32_channel
+sdk: omnibci
+sdk_version: "0.2.0"
+n_channels: 32
+device_aliases:
+  - omnibci 32 channel
+  - omnibci32
+  - omnibci-32
+  - omnibci
+source: >
+  OmniBCI 32-channel 10-20 standard montage (STM32 + 4x ADS1299, 250 Hz).
+notes: >
+  31 standard 10-20 EEG channels plus IO (EDF label "EOG IO") as ocular
+  auxiliary channel, excluded from EEG quality scoring.
+channels:
+  - {index: 0, name: FP1, edf_label: "EEG FP1", kind: eeg}
+  - {index: 1, name: FP2, edf_label: "EEG FP2", kind: eeg}
+  - {index: 2, name: F3, edf_label: "EEG F3", kind: eeg}
+  - {index: 3, name: F4, edf_label: "EEG F4", kind: eeg}
+  - {index: 4, name: F7, edf_label: "EEG F7", kind: eeg}
+  - {index: 5, name: F8, edf_label: "EEG F8", kind: eeg}
+  - {index: 6, name: Fz, edf_label: "EEG Fz", kind: eeg}
+  - {index: 7, name: C3, edf_label: "EEG C3", kind: eeg}
+  - {index: 8, name: C4, edf_label: "EEG C4", kind: eeg}
+  - {index: 9, name: Cz, edf_label: "EEG Cz", kind: eeg}
+  - {index: 10, name: P3, edf_label: "EEG P3", kind: eeg}
+  - {index: 11, name: P4, edf_label: "EEG P4", kind: eeg}
+  - {index: 12, name: P7, edf_label: "EEG P7", kind: eeg}
+  - {index: 13, name: P8, edf_label: "EEG P8", kind: eeg}
+  - {index: 14, name: Pz, edf_label: "EEG Pz", kind: eeg}
+  - {index: 15, name: O1, edf_label: "EEG O1", kind: eeg}
+  - {index: 16, name: O2, edf_label: "EEG O2", kind: eeg}
+  - {index: 17, name: T7, edf_label: "EEG T7", kind: eeg}
+  - {index: 18, name: T8, edf_label: "EEG T8", kind: eeg}
+  - {index: 19, name: FC1, edf_label: "EEG FC1", kind: eeg}
+  - {index: 20, name: FC2, edf_label: "EEG FC2", kind: eeg}
+  - {index: 21, name: FC5, edf_label: "EEG FC5", kind: eeg}
+  - {index: 22, name: FC6, edf_label: "EEG FC6", kind: eeg}
+  - {index: 23, name: CP1, edf_label: "EEG CP1", kind: eeg}
+  - {index: 24, name: CP2, edf_label: "EEG CP2", kind: eeg}
+  - {index: 25, name: CP5, edf_label: "EEG CP5", kind: eeg}
+  - {index: 26, name: CP6, edf_label: "EEG CP6", kind: eeg}
+  - {index: 27, name: FT9, edf_label: "EEG FT9", kind: eeg}
+  - {index: 28, name: FT10, edf_label: "EEG FT10", kind: eeg}
+  - {index: 29, name: TP9, edf_label: "EEG TP9", kind: eeg}
+  - {index: 30, name: TP10, edf_label: "EEG TP10", kind: eeg}
+  - {index: 31, name: IO, edf_label: "EOG IO", kind: eog}

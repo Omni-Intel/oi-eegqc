@@ -1,5 +1,6 @@
 """Views of the common AppData list. No replicated lists or acknowledgement queue."""
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -35,7 +36,8 @@ class SharedRecordView(QObject):
     def __init__(self,controller,window=None,hub=None):
         super().__init__(controller)
         self.c=controller;self.window=window;self.hub=hub or RecordHub()
-        self.attempted=set();self.hidden=set();self.timer=QTimer(self);self.timer.setInterval(800)
+        self.attempted=set();self.hidden=set();self._initialized=False
+        self.timer=QTimer(self);self.timer.setInterval(800)
         self.timer.timeout.connect(self.refresh);self.server=None
         self.records=[];self.jobs=[];self.worker=None;self.signatures={};self.revision=None
         QTimer.singleShot(0,self.refresh)
@@ -51,7 +53,6 @@ class SharedRecordView(QObject):
         self.server.newConnection.connect(self.activate)
 
     def activate(self):
-        import json
         while self.server.hasPendingConnections():
             socket=self.server.nextPendingConnection()
             socket.write((json.dumps({'pid':os.getpid()})+'\n').encode());socket.flush()
@@ -71,12 +72,84 @@ class SharedRecordView(QObject):
         from .scoring_version import SCORING_ALGORITHM_VERSION
         return [SCORING_ALGORITHM_VERSION,self.c._order,self.c._mains,self.c._all_channels,self.c._selected_channels]
 
+    def removed_count(self):
+        return sum(1 for r in self.records if r.get('removed') and Path(r['root']).exists())
+
+    def restore_all(self):
+        if self.worker is not None:
+            self.worker.wait()
+        if not self.records:
+            try:self.records=self.hub.rows()
+            except Exception:pass
+        restored=[r for r in self.records if r.get('removed')]
+        if not restored:return 0
+        for r in restored:
+            self.hub.restore(r['id'])
+            r['removed']=0
+            self.hidden.discard(r['id'])
+            self.attempted.discard(r['id'])
+        self.revision=None
+        self.c._notice=f'已恢复 {len(restored)} 条记录'
+        self.c.changed.emit()
+        self.refresh()
+        return len(restored)
+
+    def _upload_label(self,record):
+        state=record.get('upload',{}).get('state','')
+        if state!='completed':
+            receipt=Path(record['root'])/'upload-result.json'
+            if receipt.is_file():
+                try:
+                    data=json.loads(receipt.read_text(encoding='utf-8'))
+                    if data.get('state')=='completed' and data.get('upload_id'):
+                        state='completed'
+                        value={'state':'completed','uploadId':data['upload_id']}
+                        record['upload']=value
+                        if self.signatures.get((record['id'],'upload'))!=value:
+                            self.status(record['id'],'upload',value);self.signatures[(record['id'],'upload')]=value
+                except (OSError,ValueError):pass
+        return {'completed':'已上传','uploading':'正在上传','failed':'上传待重试','paused':'已暂停','ready':'待上传'}.get(state,'')
+
     def imported(self):
         # Manual EEGQC imports participate in the same protocol, too.
+        if not getattr(self.c,'_bridge_intake',False):
+            if self.worker is not None:
+                self.worker.wait()
+            if not self.records:
+                try:self.records=self.hub.rows()
+                except Exception:pass
+            targets=list(self.c._import_roots or self.c._folder_roots)+[r['path'] for r in self.c.files.rows]
+            added_roots=[]
+            for record in self.records:
+                if any(contains(record['root'],p) or contains(p,record['root']) for p in targets):
+                    if record.get('removed'):
+                        self.hub.restore(record['id'])
+                        record['removed']=0
+                        self.hidden.discard(record['id'])
+                        self.revision=None
+                    if Path(record['root']).is_dir() and not any(contains(root,record['root']) for root in self.c._folder_roots):
+                        added_roots.append(str(Path(record['root']).resolve()))
+            if added_roots:
+                from .archive_import import read_sessions
+                self.c._folder_roots=list(dict.fromkeys(self.c._folder_roots+added_roots))
+                roots=sorted(self.c._folder_roots,key=lambda p:len(Path(p).parts))
+                self.c._folder_roots=[root for i,root in enumerate(roots)
+                                      if not any(Path(parent) in Path(root).parents for parent in roots[:i])]
+                self.c.files.names(self.c._folder_roots)
+                combined={s['recording']:s for s in self.c._import_sessions}
+                for root in added_roots:
+                    for s in read_sessions(root):
+                        combined[s['recording']]=s
+                self.c._import_sessions=list(combined.values())
         records=self.records
         from .application.qt_workers import ReportView
         for record in records:
             if record['removed']:continue
+            upload_label=self._upload_label(record)
+            if upload_label:
+                for i,row in enumerate(self.c.files.rows):
+                    if contains(record['root'],row['path']):
+                        self.c.files.patch(i,uploadState=upload_label)
             if record['qc'].get('settings')!=self.score_settings():continue
             saved={f.get('path'):f for f in record['qc'].get('files',[])}
             for i,row in enumerate(self.c.files.rows):
@@ -93,8 +166,23 @@ class SharedRecordView(QObject):
         self.refresh()
 
     def remove_paths(self,paths):
+        if self.worker is not None:
+            self.worker.wait()
+        if not self.records:
+            try:self.records=self.hub.rows()
+            except Exception:pass
+        removed_roots=[]
         for r in self.records:
-            if any(contains(r['root'],p) for p in paths):self.hub.remove(r['id'])
+            if any(contains(r['root'],p) or contains(p,r['root']) for p in paths):
+                self.hub.remove(r['id'])
+                r['removed']=1
+                self.hidden.add(r['id'])
+                self.attempted.discard(r['id'])
+                removed_roots.append(r['root'])
+        if removed_roots:
+            self.revision=None
+            if not self.c._upload.active:
+                self.c._upload.detachLocalRecords(removed_roots)
 
     def upload_allowed(self,roots):
         return not any(r['removed'] and any(contains(root,r['root']) or contains(r['root'],root) for root in roots) for r in self.records)
@@ -135,6 +223,14 @@ class SharedRecordView(QObject):
         c=self.c
         if c._closing:return
         records=self.records
+        if not self._initialized:
+            self._initialized=True
+            pre_removed=[r for r in records if r['removed'] and not self.matching(r)]
+            if pre_removed:
+                if not c._upload.active:
+                    c._upload.detachLocalRecords([r['root'] for r in pre_removed])
+                for r in pre_removed:
+                    self.hidden.add(r['id'])
         self.hidden.intersection_update(r['id'] for r in records if r['removed'])
         removed=[r for r in records if r['removed'] and (r['id'] not in self.hidden or self.matching(r))]
         if removed:
@@ -148,14 +244,24 @@ class SharedRecordView(QObject):
                     c.files.beginRemoveRows(QModelIndex(),i,i);c.files.rows.pop(i);c.files.endRemoveRows()
             c.files.path_indices={os.path.normcase(r['path']):i for i,r in enumerate(c.files.rows)}
             c._folder_roots=[root for root in c._folder_roots if not any(contains(r,root) for r in roots)]
+            remaining=set(c.files.path_indices)
+            c._import_sessions=[s for s in c._import_sessions
+                                if os.path.normcase(s['recording']) in remaining
+                                or any(os.path.normcase(r['recording']) in remaining for r in s.get('recordings',[]))]
             c.files.names(c._folder_roots)
             for r in removed:self.hidden.add(r['id']);self.attempted.discard(r['id'])
-            c._notice='已从公共名单移除，原始文件和已上传数据保留';c.changed.emit()
+            c._notice='已从公共名单移除，原始文件和已上传数据保留；可直接拖入或点击「恢复已清空」找回';c.changed.emit()
         if c._busy or c._upload.active:return
+        pending_roots=[]
         for r in records:
             if r['removed']:continue
             members=self.matching(r)
             if members:
+                upload_label=self._upload_label(r)
+                for x in members:
+                    idx=c.files.path_indices.get(os.path.normcase(x['path']))
+                    if idx is not None:
+                        c.files.patch(idx,uploadState=upload_label)
                 signature=(tuple(self.score_settings()[:-1]),tuple(self.c._selected_channels),
                            tuple((x['path'],x['state'],x.get('scored_stat'),id(x['report'])) for x in members))
                 if self.signatures.get((r['id'],'qc'))!=signature:
@@ -172,9 +278,18 @@ class SharedRecordView(QObject):
                     value={'state':part.get('status',''),'upload_id':part.get('upload_id'),'round_id':part.get('round_id')}
                     if self.signatures.get((r['id'],'upload'))!=value:
                         self.status(r['id'],'upload',value);self.signatures[(r['id'],'upload')]=value
+                    r['upload']=value
+                    if members:
+                        upload_label=self._upload_label(r)
+                        for x in members:
+                           idx=c.files.path_indices.get(os.path.normcase(x['path']))
+                           if idx is not None:
+                               c.files.patch(idx,uploadState=upload_label)
             if r['id'] not in self.attempted:
                 self.attempted.add(r['id'])
                 if not Path(r['root']).exists():
                     self.status(r['id'],'qc',{'state':'missing'});continue
                 self.status(r['id'],'qc',{**r['qc'],'state':'loading'})
-                c.add_paths([r['root']]);return
+                pending_roots.append(r['root'])
+        if pending_roots:
+            c.add_paths(pending_roots,from_bridge=True);return

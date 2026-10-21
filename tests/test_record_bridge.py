@@ -94,3 +94,62 @@ def test_unchanged_record_poll_does_not_read_reports_again(quick,tmp_path,monkey
     initial=rows.call_count
     bridge.refresh();wait(app,lambda:bridge.worker is None)
     assert rows.call_count==initial
+
+
+def test_clear_then_drag_file_or_restore_button_recovers_record(quick,tmp_path):
+    app,c,engine,window=quick
+    root=tmp_path/'capture';root.mkdir();source=root/'signal.npy';recording(source)
+    (root/'session.json').write_text('{"participant_id":"12345678","session_id":"s1","paradigm_code":"AVEEG-20260923"}',encoding='utf-8')
+    hub=RecordHub(tmp_path/'hub.sqlite');key=hub.publish('capture:clear',root,'capture',{'participant':'12345678'})
+    bridge=SharedRecordView(c,window,hub);c.record_bridge=bridge;bridge.timer.stop()
+    bridge.refresh();wait(app,lambda:bridge.worker is None and not bridge.jobs and not c._busy)
+    assert len(c.files.rows)==1
+    # User clicks "清空" before uploading
+    c.remove(True)
+    wait(app,lambda:bridge.worker is None and not bridge.jobs)
+    assert not c.files.rows and hub.get(key)['removed']==1 and c.removedCount==1
+    # User drags the recording file itself back into EEGQC
+    c.add_paths([str(source)])
+    wait(app,lambda:not c._busy and bridge.worker is None and not bridge.jobs)
+    bridge.refresh();wait(app,lambda:bridge.worker is None and not bridge.jobs and not c._busy)
+    assert len(c.files.rows)==1
+    assert hub.get(key)['removed']==0 and c.removedCount==0
+    assert c.canUpload and bridge.upload_allowed(c._folder_roots)
+    assert '已从公共名单移除' not in c.summary
+    # Clear again and use the one-click restore button
+    c.remove(True)
+    wait(app,lambda:bridge.worker is None and not bridge.jobs)
+    assert not c.files.rows and c.removedCount==1
+    c.restoreRemoved()
+    wait(app,lambda:bridge.worker is None and not bridge.jobs and not c._busy and len(c.files.rows)==1)
+    assert hub.get(key)['removed']==0 and c.removedCount==0
+
+
+def test_bridge_reuses_capture_handoff_report_and_upload_receipt_without_rescoring(quick,tmp_path):
+    import json
+    from oi_eegqc.scoring_version import SCORING_ALGORITHM_VERSION
+    app,c,engine,window=quick
+    root=tmp_path/'round';root.mkdir();source=root/'signal.npy';recording(source)
+    stat=source.stat()
+    (root/'file-quality.json').write_text(json.dumps({
+        'schema':'oi-eegqc-capture-complete-v1',
+        'quality_state':'scored',
+        'recording':'signal.npy',
+        'source':[stat.st_size,stat.st_mtime_ns,50,SCORING_ALGORITHM_VERSION],
+        'report':{'gqi':88.5,'duration_s':4.0,'usable_ratio':1.0,'extras':{'sfreq_hz':250,'algorithm_version':SCORING_ALGORITHM_VERSION}}
+    }),encoding='utf-8')
+    (root/'upload-result.json').write_text(json.dumps({
+        'schema':'oi-eegqc-capture-complete-v1',
+        'state':'completed',
+        'upload_id':'u-123',
+        'score':88.5
+    }),encoding='utf-8')
+    hub=RecordHub(tmp_path/'hub.sqlite')
+    key=hub.publish('capture:done',root,'capture',{'participant':'12345678'})
+    bridge=SharedRecordView(c,window,hub);c.record_bridge=bridge;bridge.timer.stop()
+    bridge.refresh();wait(app,lambda:bridge.worker is None and not bridge.jobs and not c._busy)
+    assert len(c.files.rows)==1
+    assert c.files.rows[0]['report'] is not None and c.files.rows[0]['score']=='88.5'
+    assert c.files.rows[0]['uploadState']=='已上传'
+    assert not c.canScore and c.canUpload
+

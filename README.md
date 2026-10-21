@@ -1,137 +1,161 @@
-# OI-EEGQC
+<p align="center">
+  <img src="assets/oi-eegqc-hero.svg" alt="OI-EEGQC — EEG Quality Control" width="82%">
+</p>
 
-External acquisition developers: see the [storage and import contract](docs/external-acquisition.md) and [metadata templates](examples/external-acquisition).
+<p align="center">
+  <strong>English</strong> &nbsp; / &nbsp; <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-[简体中文](README.zh-CN.md) · [Windows installer](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe)
+<p align="center">
+  <strong>Local-first EEG quality control, signal review, and resumable collection intake</strong>
+</p>
 
-OI-EEGQC is a local-first quality-control and collection-ingest tool for EEG acquisition. The Windows application and command-line interface use the same scoring engine, input normalization and versioned report schema. A selected collection can contain EEG recordings, acquisition metadata, impedance screenshots, positioning photographs, videos and other supporting files.
+<p align="center">
+  <code>OI-EEGQC</code> unifies desktop quality inspection, headless acquisition handoff, CLI batch scoring, and resumable cloud intake on a single numerical engine and versioned report schema.
+</p>
 
-The score describes recording quality for acquisition review and data intake. It does not infer cognition, attention, diagnosis or the physiological cause of an artifact.
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-10%2F11%20x64-20252B?style=flat-square" alt="Windows 10/11 x64">
+  &nbsp;
+  <img src="https://img.shields.io/badge/Python-3.12%2B-20252B?style=flat-square" alt="Python 3.12+">
+  &nbsp;
+  <img src="https://img.shields.io/badge/GUI-Qt%20Quick%20%2F%20PySide6-FF5A01?style=flat-square&amp;labelColor=20252B" alt="Qt Quick / PySide6">
+  &nbsp;
+  <img src="https://img.shields.io/badge/Engine-oi--eegqc--score--v6-BADFDB?style=flat-square&amp;labelColor=20252B" alt="oi-eegqc-score-v6">
+  &nbsp;
+  <img src="https://img.shields.io/badge/Formats-EDF%20%7C%20BDF%20%7C%20NPY%20%7C%20BIDS-20252B?style=flat-square" alt="EDF | BDF | NPY | BIDS">
+</p>
 
-## Data flow
+<p align="center">
+  <a href="#quick-start"><strong>Get started</strong></a> &nbsp; / &nbsp;
+  <a href="https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe">Windows installer</a> &nbsp; / &nbsp;
+  <a href="https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip">Portable zip</a> &nbsp; / &nbsp;
+  <a href="docs/external-acquisition.md">External acquisition contract</a> &nbsp; / &nbsp;
+  <a href="docs/scoring.md">Scoring model</a>
+</p>
 
-```text
-Collection folder
-├── EDF / BDF ─────────────── file header: sampling rate, units, channels
-├── NPY + optional sidecar ── declared sampling rate, units and channel layout
-└── supporting files ──────── images, video, metadata and session documents
-            │
-            ▼
-Input validation and normalization to physical units
-            │
-            ▼
-Windowed signal checks ──► versioned GQI report + channel/window evidence
-            │                         │
-            │                         ├── Windows GUI
-            │                         ├── CLI / Python API / stdio protocol
-            │                         └── local score cache
-            ▼
-Collection snapshot and upload manifest
-            │
-            ▼
-Incremental and resumable collection upload
-```
+---
 
-Scoring and upload are separate operations. EEG samples are processed locally; upload transfers the selected collection and its supporting files to the configured project storage.
+## Quick Start
 
-## Supported recordings
-
-| Input | Acquisition metadata | Behavior |
-| --- | --- | --- |
-| EDF / BDF | Read from the file header | Uses the recorded sampling rate, physical units and channel names; corrupt headers fail validation |
-| NPY | Sidecar metadata or explicit input | Requires a sampling rate and physical unit; array orientation and channel layout must be known or resolved |
-| Collection folder | Recursive discovery | Scores supported EEG files and retains ordinary supporting files for upload |
-
-NPY sidecars may declare `sfreq`, `unit`, `channels_first`, `channel_names` or a known `channel_layout`. Acquisition-specific metadata such as impedance or synchronization error is used only when present; missing evidence is not invented. See [channel layouts](docs/channel-layouts.md) and the [desktop input guide](docs/desktop.md).
-
-## Quality model
-
-The current report is schema v3, scoring algorithm `oi-eegqc-score-v3`, and threshold set `oi-eegqc-v0.6.0`. Every report records the effective configuration and algorithm version.
-
-GQI is a 0–100 composite of contact quality, signal cleanliness and usable duration. Completeness and stimulus synchronization contribute only when the corresponding evidence is supplied. Reports retain per-window decisions, affected channels and detected signal shapes so that an operator can inspect why a score changed.
-
-Usable-window ratio and duration score are distinct quantities. The ratio is the fraction of overlapping windows that pass the channel-level rules; the duration score maps that ratio against the configured target. It is not an estimate of exact usable seconds.
-
-Local extrema plateaus in unfiltered windows are reported for review. Quantization can produce similar shapes, so plateaus alone do not lower the score or establish hardware saturation. Flat channels, amplitude excursions, line interference and missing values are evaluated by their own rules. See [scoring rules and limitations](docs/scoring.md).
-
-## Desktop workflow
-
-1. Select or drop a collection folder, EDF, BDF or NPY recording.
-2. Resolve only the acquisition parameters that cannot be read from the data or sidecar.
-3. Score locally and inspect GQI, usable windows and channel-level evidence.
-4. Upload the collection when it is ready for intake.
-
-The desktop application hashes a file when the digest can avoid a later full read. An unchanged file with the same scoring inputs and algorithm version reuses its cached result. Changed inputs, channel selection, configuration or algorithm version trigger a new score.
-
-Scoring runs in a separate process. A failed or cancelled file does not discard completed results, and the queue can continue after a worker crash or timeout. The supported production interface is Qt Quick / PySide6; the retired QWidget implementation is excluded from distributions.
-
-## Incremental and resumable upload
-
-The application recognizes the same local collection across days and maintains resumable progress for each upload:
-
-- unchanged paths are skipped after manifest comparison;
-- new files are appended;
-- changed files replace the same relative path only after a successful transfer;
-- local deletion does not remove historical cloud objects;
-- large files use resumable multipart transfer;
-- a collection is marked complete only after every selected file succeeds.
-
-Interrupted uploads can continue without retransmitting confirmed, unchanged files. Uploading the folder again adds new content and updates changed paths while retaining unrelated remote files.
-
-## Interfaces
-
-### Windows application
-
-Use the [published installer](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe) or the [portable zip](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip). Silent install from GitHub Releases:
+**Windows Desktop:** Download the [Windows installer (`OI-EEGQC-Setup-Windows-x64.exe`)](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Setup-Windows-x64.exe) or the [portable archive (`OI-EEGQC-Windows-x64.zip`)](https://github.com/Omni-Intel/oi-eegqc/releases/latest/download/OI-EEGQC-Windows-x64.zip), or install silently from PowerShell:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-desktop.ps1
 ```
 
-### Command line
+**Command Line & Python API:**
 
-```sh
+```bash
 python -m pip install -e '.[mne]'
 
-oi-eegqc score -i recording.bdf -o report.json
-oi-eegqc score -i session_01 --sfreq 500 --unit uV -o batch-report.json
+oi-eegqc score -i recording.edf -o report.json
+oi-eegqc score -i session_01 --sfreq 250 --unit uV -o batch-report.json
 oi-eegqc --json datasets
 oi-eegqc serve --stdio
 ```
 
-The CLI, dataset adapters, Python API and stdio protocol call the same numerical engine as the desktop application. Machine consumers can use JSON or NDJSON output; interactive output is intended for operator inspection.
+Drop a collection folder, BIDS session, `.edf`, `.bdf`, or `.npy` file onto the window to inspect channel-level evidence and Global Quality Index (GQI), then upload the verified collection to project storage.
 
-## Architecture
+> [!NOTE]
+> `OI-EEGQC` decouples UI responsiveness from numerical scoring and cloud transfer. Scoring and headless capture handoff (`--capture-complete-request`) run in isolated worker processes and persist durable `file-quality.json` and `upload-result.json` receipts—closing the window never corrupts or discards an completed background upload.
 
-| Layer | Current modules | Responsibility |
+## What It Shows & Supported Inputs
+
+| Input / View | Metadata Source | Behavior |
 | --- | --- | --- |
-| Presentation | `desktop.py`, `quick.py`, `qml/`, `upload_ui.py` | Native GUI, operator actions, progress and report presentation |
-| Application tasks | `application/`, `desktop_service.py` | Batch execution, cancellation, cache reuse and scorer-process recovery |
-| Acquisition input | `intake.py`, `io/`, `layouts/` | File discovery, units, sampling rate, orientation and channel identity |
-| Numerical engine | `pipeline.py`, `qa/`, `scoring/`, `config.py` | Window evidence, metric aggregation and versioned reports |
-| Persistence and transport | `score_cache.py`, `desktop_upload.py`, `upload_session.py`, `upload_http.py` | Local cache, collection records and resumable direct upload |
-| Automation | `cli.py`, `serve.py`, `datasets/`, `examples/` | CLI, machine protocol, dataset evaluation and calibration |
+| **EDF / EDF+ / BDF / BDF+** | File header & optional BIDS `_eeg.json` / `_channels.tsv` | Reads recorded sampling rate, physical units, and channel labels; automatically excludes auxiliary EOG/ECG/EMG/Trigger channels from EEG denominator |
+| **NPY + Sidecar** | `<stem>.json`, `metadata.json`, or explicit prompt | Resolves `sfreq`, `unit`, `channels_first`, `channel_names`, or `channel_layout`; never invents missing calibration |
+| **Collection Folder** | Recursive BIDS / session discovery | Scores all supported EEG files, reuses cached reports (`file-quality.json`), and retains stimulus logs, photos, and metadata for atomic folder upload |
+| **Shared Record Hub** | `%LOCALAPPDATA%\Omni-Intelligence\records.sqlite` | Synchronizes session status (`已上传` / `正在上传` / `待重试`) with AV Capture; supports drag-and-drop auto-restore and one-click recovery of cleared lists |
 
-This is one product repository with two thin user interfaces and one shared core. The CLI and GUI are built as separate artifacts, but do not maintain independent scoring implementations.
+<details>
+<summary>Built-in Channel Layouts & Acquisition Profiles</summary>
 
-## Development and verification
+| Layout ID | Channels | Device Aliases | Notes |
+| --- | --- | --- | --- |
+| `bcigo_sdk_1.0.2` | 32 (`31 EEG + 1 EOG IO`) | `bcigo`, `brainco` | Native EDF label order in `bcigo-sdk 1.0.2`; `EOG IO` excluded from EEG quality scoring |
+| `omnibci_32_channel` | 32 (`31 EEG + 1 EOG IO`) | `omnibci 32 channel`, `omnibci32`, `omnibci` | 10-20 standard montage for STM32 + 4x ADS1299 (250 Hz, USB/Dongle serial & E73 BLE) |
+| `neuracle_things_65` | 65 (`63 EEG + 2 Aux`) | `neuracle`, `borekam` | Neuracle 65-channel montage with auxiliary trigger/reference exclusion |
 
-Use Python 3.12 for Windows builds:
+External acquisition programs can integrate via the [storage and import contract](docs/external-acquisition.md) and [metadata templates](examples/external-acquisition).
 
-```sh
+</details>
+
+## Desktop Workflow & Controls
+
+| Action | Operation | Behavior |
+| --- | --- | --- |
+| **Import Files / Folders** | Drag & drop or click `文件 / ZIP` · `选择文件夹` | Imports recordings or session folders; dropping a single `.edf` inside a session automatically attaches its parent session metadata for upload |
+| **Restore Cleared List** | Click `恢复已清空 (N)` or drag files back in | Immediately restores records previously cleared from the shared list (`removed=0`) without re-scoring |
+| **Score (`评分`)** | Click `评分` or select channel subset in `通道` | Runs windowed signal inspection in an isolated subprocess; reuses `ScoreCache` and `file-quality.json` when file fingerprint and parameters match |
+| **Inspect Report (`报告`)** | Double-click row or click `查看` | Opens operator-friendly diagnostic breakdown: 5 dimension cards, channel-by-channel fault notes (`死导`, `幅度越界`, `工频干扰`, `高频噪声`), and window metrics |
+| **Upload (`上传`)** | Click `上传` | Performs manifest diffing, multipart resumable COS/TOS upload, SHA-256 verification, and server-side `_COMPLETE` sealing |
+| **Check Update (`检查更新`)** | Click `检查更新` | Verifies SHA-256 digest against the release manifest and applies in-place portable or installer updates |
+
+## Quality Model (GQI)
+
+The current report format is schema v3, scoring algorithm `oi-eegqc-score-v6`, and threshold profile `oi-eegqc-v0.6.14`. Every report records the exact algorithm version and active configuration.
+
+| Dimension | Default Weight | What It Evaluates |
+| --- | --- | --- |
+| **Contact (`接触`)** | `0.20` | Dead/flat channels, detached leads, spatial neighbor decoupling (`corr_threshold`), and optional impedance |
+| **Cleanliness (`洁净`)** | `0.30` | High-frequency noise-to-signal ratio (`55–95 Hz` vs `1–45 Hz`), `50/60 Hz` mains line interference, and amplitude excursions |
+| **Usable Time (`时长评分`)** | `0.30` | Fraction of overlapping 2-second windows passing channel-level gates, mapped against duration-adaptive cutoffs |
+| **Integrity (`完整性`)** | `0.10` | Channel completeness, finite samples, and recording duration consistency (when expected metadata is supplied) |
+| **Stimulus Sync (`刺激同步`)** | `0.10` | Event marker completeness and presentation clock drift (evaluated only when stimulus events are provided) |
+
+<details>
+<summary>Scoring boundaries and plateau rules</summary>
+
+- **Quality vs. cognitive state:** GQI measures physical recording quality for acquisition review and dataset intake. It does not infer cognition, attention, clinical diagnosis, or the physiological origin of an artifact.
+- **Auxiliary channel handling:** Auxiliary channels (`EOG IO`, `ECG`, `EMG`, `TRIGGER`, `STI 014`) are excluded before scoring. Dead or flat *EEG* channels are deliberately kept in the denominator and penalized by the flat-amplitude gate so a recording with dead electrodes cannot achieve a high score.
+- **Extrema plateaus:** Local extrema plateaus in unfiltered windows are reported for operator review; quantization alone can produce short plateaus, so only sustained rail-clipping triggers hard-fail gates. See [scoring rules and limitations](docs/scoring.md).
+
+</details>
+
+## How It Works
+
+```mermaid
+flowchart LR
+    A[Collection Folder<br/>EDF / BDF / NPY + Sidecars] --> B[Intake & Layout Resolution<br/>Physical Units & Aux Exclusion]
+    B --> C[Windowed QA Engine<br/>Contact · Cleanliness · Usable Time]
+    C --> D[Versioned GQI Report<br/>file-quality.json + ScoreCache]
+    D --> E[Qt Quick GUI / CLI / Headless API]
+    D --> F[Resumable Multipart Upload<br/>COS / TOS + Platform Sync]
+```
+
+<details>
+<summary>Project Structure</summary>
+
+```text
+assets/oi-eegqc-hero.svg       Brand hero banner and Omni-Intelligence icons
+src/oi_eegqc/quick.py          Qt Quick / PySide6 desktop controller and QML bindings
+src/oi_eegqc/qml/              Declarative UI views, report sheet, channel selector, upload sheet
+src/oi_eegqc/intake.py         File discovery, physical unit normalization, sidecar & BIDS parsing
+src/oi_eegqc/layouts/          YAML electrode layouts (BCIGO 32ch, OmniBCI 32ch, Neuracle 65ch)
+src/oi_eegqc/pipeline.py       Zero-phase preprocessing and windowed QA orchestration
+src/oi_eegqc/qa/               Window-level detectors (amplitude, NSR, line noise, clipping)
+src/oi_eegqc/scoring/          GQI aggregation, letter grades, and plain-language operator notes
+src/oi_eegqc/capture_service.py Headless one-stop scoring + upload handoff for AV Capture
+src/oi_eegqc/upload_session.py Resumable multipart uploader, manifest diffing, and sealing
+src/oi_eegqc/record_bridge.py  Shared SQLite record hub synchronization and auto-recovery
+```
+
+</details>
+
+## Development
+
+```bash
 python -m venv .venv
-# Activate the environment for the current shell.
 python -m pip install -e '.[desktop,dev,packaging]'
-oi-eegqc-desktop
+pytest
 python scripts/check.py --calibrate
 ```
 
-On Windows, `scripts/build-desktop.ps1` runs the product tests, injected-fault calibration, PyInstaller packaging, frozen-application smoke checks and Inno Setup generation. CI calls the same repository scripts; build behavior is not hidden in the workflow configuration.
-
-Further documentation:
+On Windows, `scripts/build-desktop.ps1` runs the test suite, fault-injection calibration, PyInstaller packaging, frozen-binary smoke verification (`scripts/smoke-desktop.py`), and Inno Setup installer generation.
 
 - [Architecture and module ownership](docs/architecture.md)
 - [Scoring rules and limitations](docs/scoring.md)
-- [Desktop operation](docs/desktop.md)
+- [Desktop operation guide](docs/desktop.md)
 - [Windows build and release](docs/windows-app.md)
-- [Historical research and benchmark notes](docs/archive/research-v0.5.md)

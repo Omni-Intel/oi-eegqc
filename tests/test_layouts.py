@@ -24,6 +24,31 @@ def test_bcigo_layout_matches_sdk_row_order():
     assert "brainco" in layout.device_aliases
 
 
+def test_omnibci_32_channel_layout_and_alias():
+    from oi_eegqc.types import RecordingInput
+    from oi_eegqc.pipeline import evaluate_recording
+
+    layout = get_layout("omnibci_32_channel")
+    assert layout.n_channels == 32
+    assert layout.names[0] == "FP1"
+    assert layout.names[31] == "IO"
+    assert layout.channels[31].edf_label == "EOG IO"
+    assert "omnibci 32 channel" in layout.device_aliases
+    names, layout_id = resolve_channel_names(32, device_type="omnibci 32 channel")
+    assert layout_id == "omnibci_32_channel"
+    assert names[0] == "FP1" and names[31] == "IO"
+    data = synth_clean(32, 250.0, 2.0, seed=2)
+    recording = RecordingInput(
+        data=data,
+        sfreq=250.0,
+        ch_names=layout.names,
+        meta={"channel_layout": layout.id},
+    )
+    report = evaluate_recording(recording, default_config())
+    assert report.n_channels_used == 31
+    assert "IO" in report.extras["dropped_channels"]
+
+
 def test_device_alias_only_when_count_matches():
     names, layout_id = resolve_channel_names(32, device_type="brainco")
     assert layout_id == "bcigo_sdk_1.0.2"

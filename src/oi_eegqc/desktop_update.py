@@ -272,7 +272,8 @@ def launch_portable_update(archive):
     incoming = stage_portable_update(archive)
     folder = incoming.parent
     helper = folder / 'apply-update.ps1'
-    shutil.copyfile(Path(__file__).with_name('apply-update.ps1'), helper)
+    pkg_root = (Path(sys._MEIPASS) / 'oi_eegqc') if hasattr(sys, '_MEIPASS') else Path(__file__).parent
+    shutil.copyfile(pkg_root / 'apply-update.ps1', helper)
     config = folder / 'update.json'
     config.write_text(json.dumps({'pid': os.getpid(), 'root': str(Path(sys.executable).parent),
                                  'incoming': str(incoming), 'backup': str(folder / 'previous')}), encoding='utf-8')

@@ -36,6 +36,7 @@ ApplicationWindow {
             spacing: 9
             QuietButton { objectName: "chooseFiles"; text: "文件 / ZIP"; symbol: "file"; enabled: !backend.busy; onClicked: files.open() }
             QuietButton { objectName: "chooseFolder"; text: "选择文件夹"; symbol: "folder"; enabled: !backend.busy; onClicked: folders.open() }
+            QuietButton { objectName: "restoreRemoved"; text: "恢复已清空 (" + backend.removedCount + ")"; visible: backend.removedCount > 0 && !backend.busy; onClicked: backend.restoreRemoved() }
             Item { Layout.fillWidth: true }
             QuietButton { objectName: "settingsButton"; text: "设置"; symbol: "settings"; enabled: !backend.busy; onClicked: window.settingsOpen = !window.settingsOpen }
         }
@@ -58,7 +59,7 @@ ApplicationWindow {
                     Layout.fillWidth: true; Layout.leftMargin: 18; Layout.rightMargin: 18; Layout.preferredHeight: 44
                     Text { text: backend.folderCount > 0 ? "文件夹 " + backend.folderCount : "文件"; color: "#89929b"; Layout.fillWidth: true }
                     Text { text: "分数"; color: "#89929b"; Layout.preferredWidth: 76; horizontalAlignment: Text.AlignRight }
-                    Text { text: "状态"; color: "#89929b"; Layout.preferredWidth: 96; horizontalAlignment: Text.AlignRight }
+                    Text { text: "状态"; color: "#89929b"; Layout.preferredWidth: 116; horizontalAlignment: Text.AlignRight }
                 }
                 Rectangle { visible: backend.count > 0; Layout.fillWidth: true; height: 1; color: "#eff1f3" }
                 ListView {
@@ -96,6 +97,7 @@ ApplicationWindow {
                         required property string label
                         required property string score
                         required property string state
+                        required property string uploadState
                         required property string detail
                         required property bool chosen
                         required property bool ready
@@ -108,7 +110,7 @@ ApplicationWindow {
                             anchors.fill: parent; anchors.leftMargin: 18; anchors.rightMargin: 18; spacing: 12
                             Text { text: row.label; textFormat: Text.PlainText; color: "#303941"; elide: Text.ElideMiddle; Layout.fillWidth: true }
                             Text { text: row.score; color: "#303941"; font.pixelSize: 15; Layout.preferredWidth: 76; horizontalAlignment: Text.AlignRight }
-                            Text { text: row.state; color: "#88939d"; Layout.preferredWidth: 96; horizontalAlignment: Text.AlignRight }
+                            Text { text: row.uploadState ? (row.state + " · " + row.uploadState) : row.state; color: row.uploadState === "已上传" ? "#577a70" : "#88939d"; Layout.preferredWidth: 116; horizontalAlignment: Text.AlignRight }
                         }
                         Rectangle { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.leftMargin: 18; anchors.rightMargin: 18; height: 1; color: "#f0f2f4" }
                         MouseArea {
@@ -131,7 +133,7 @@ ApplicationWindow {
                     Text {
                         anchors.centerIn: parent
                         visible: backend.count === 0
-                        text: drop.containsDrag ? "松开以导入" : "拖入文件或文件夹"
+                        text: drop.containsDrag ? "松开以导入" : (backend.removedCount > 0 ? "列表已清空 · 可直接拖入文件/文件夹，或点击上方「恢复已清空」" : "拖入文件或文件夹")
                         color: "#99a2ab"; font.pixelSize: 14
                     }
                 }

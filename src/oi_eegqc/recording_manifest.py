@@ -127,6 +127,8 @@ def session_row(directory, recordings, participant, sid, data):
         row['started_at'] = row['started_at'] or details[0]['started_at']
     else:
         row['recordings'] = details
+    device_model = data.get('device_model') or (data.get('mode') if data.get('mode') in ('bcigo', 'omnibci 32 channel') else None)
     row['presentation'].update(recording_count=len(details),
-                               recording_status=data.get('recording_status'), stop_reason=data.get('stop_reason'))
+                               recording_status=data.get('recording_status'), stop_reason=data.get('stop_reason'),
+                               **({'device_model': str(device_model)} if device_model else {}))
     return row

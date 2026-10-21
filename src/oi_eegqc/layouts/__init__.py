@@ -46,6 +46,11 @@ class ChannelLayout:
 
 
 def _layout_dir() -> Path:
+    import sys
+    if hasattr(sys, "_MEIPASS"):
+        candidate = Path(sys._MEIPASS) / "oi_eegqc" / "layouts"
+        if candidate.is_dir():
+            return candidate
     return Path(__file__).resolve().parent
 
 
