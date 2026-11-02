@@ -156,6 +156,7 @@ python scripts/check.py --calibrate
 On Windows, `scripts/build-desktop.ps1` runs the test suite, fault-injection calibration, PyInstaller packaging, frozen-binary smoke verification (`scripts/smoke-desktop.py`), and Inno Setup installer generation.
 
 - [Architecture and module ownership](docs/architecture.md)
+- [RustFS NAS upload configuration (Chinese)](docs/nas-upload.zh-CN.md)
 - [Scoring rules and limitations](docs/scoring.md)
 - [Desktop operation guide](docs/desktop.md)
 - [Windows build and release](docs/windows-app.md)

@@ -13,6 +13,10 @@ venv/
 *.npy
 *.json
 !configs/**
+/configs/*.local.json
+*.local.ps1
+.env
+.env.*
 !packaging/quality-api.json
 !examples/external-acquisition/**/*.json
 /pytest-*/

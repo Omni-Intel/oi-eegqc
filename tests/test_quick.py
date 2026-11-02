@@ -49,6 +49,23 @@ def quick(tmp_path, monkeypatch):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
+def test_nas_target_refresh_changes_queue_and_display(quick):
+    app, controller, _, _ = quick
+    upload = controller._upload
+    previous = upload.store.directory
+    code = upload._paradigms[0]['code']
+    upload._paradigms = [dict(code=code, name='NAS', destination=dict(
+        provider='s3', endpoint='http://172.16.4.2:9000', bucket='oi-data',
+        region='us-east-1', prefix='test-task'))]
+    upload.selectParadigm(0)
+    assert upload.store.directory != previous
+    assert upload.destinationText == 's3://oi-data/test-task/ · http://172.16.4.2:9000'
+    first = upload.store.directory
+    upload._paradigms[0]['destination'] = dict(upload._paradigms[0]['destination'], endpoint='http://172.16.4.3:9000')
+    upload.selectParadigm(0)
+    assert upload.store.directory != first
+
+
 def recording(path, complete=True, channels=4):
     import numpy as np
     from oi_eegqc.datasets import synth_clean

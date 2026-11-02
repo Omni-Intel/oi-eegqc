@@ -47,7 +47,20 @@ def complete(request, progress=lambda value: None, data_directory=None):
     if quality and not quality.get("error") and (quality.get("session_id") != plan["session_id"] or quality.get("platform_session_id") != plan["platform_session_id"]):
         raise ValueError("逐视频质检结果与实验不匹配")
     data_directory = Path(data_directory) if data_directory else app_data()
-    store = BatchStore(data_directory / "uploads-cos-beijing")
+    paradigm_code = request.get("paradigm_code") or os.environ.get("OI_EEGQC_UPLOAD_PARADIGM")
+    if paradigm_code:
+        from .upload_http import SignClient
+        from .upload_destination import queue_directory
+        client = SignClient()
+        try:
+            paradigm = next((p for p in client.paradigms() if p["code"] == paradigm_code), None)
+        finally:
+            client.close()
+        if paradigm is None:
+            raise ValueError("上传范式不存在，请检查采集配置")
+        store = BatchStore(queue_directory(data_directory, paradigm), paradigm)
+    else:
+        store = BatchStore(data_directory / "uploads-cos-beijing")
     store.directory.mkdir(parents=True, exist_ok=True)
     lock = QLockFile(str(store.directory / "upload.lock"))
     lock.setStaleLockTime(0)

@@ -89,6 +89,32 @@ def test_handoff_rejects_unmatched_quality_before_upload(tmp_path):
                  data_directory=tmp_path / 'app')
 
 
+def test_headless_handoff_uses_selected_nas_paradigm_and_queue(tmp_path, monkeypatch):
+    from oi_eegqc import desktop_upload, intake
+    from oi_eegqc.upload_destination import queue_directory
+    from oi_eegqc.upload_http import SignClient
+    folder, _ = fixture_round(tmp_path)
+    row = dict(code='AVEEG-20260923', name='AV', destination=dict(
+        provider='s3', endpoint='http://172.16.4.2:9000', bucket='oi-data',
+        region='us-east-1', prefix='test-task'))
+    monkeypatch.setattr(SignClient, 'paradigms', lambda self: [row])
+    monkeypatch.setattr(intake, 'score_file', lambda *a, **k: (_ for _ in ()).throw(ValueError('test EDF')))
+    seen = []
+
+    class Session:
+        def __init__(self, store, batch, data, progress):
+            seen.append((store, batch))
+        def run(self):
+            return {'status': 'completed', 'upload_id': 'nas-upload'}
+
+    monkeypatch.setattr(desktop_upload, 'UploadSession', Session)
+    request = dict(schema=SCHEMA, request_id='nas-handoff', folder=str(folder), paradigm_code=row['code'])
+    assert complete(request, data_directory=tmp_path / 'app')['upload_id'] == 'nas-upload'
+    store, batch = seen[0]
+    assert store.directory == queue_directory(tmp_path / 'app', row)
+    assert batch['destination'] == row['destination']
+
+
 def test_completed_folder_is_reused_only_when_unchanged(tmp_path):
     import hashlib
     from oi_eegqc.desktop_upload import BatchStore, UploadError

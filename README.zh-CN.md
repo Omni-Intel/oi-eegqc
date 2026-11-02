@@ -156,6 +156,7 @@ python scripts/check.py --calibrate
 在 Windows 上运行 `scripts/build-desktop.ps1` 将依次执行单元测试、故障注入校准、PyInstaller 打包、冻结二进制冒烟核验（`scripts/smoke-desktop.py`）以及 Inno Setup 安装包构建。
 
 - [架构与模块职责](docs/architecture.md)
+- [RustFS NAS 上传配置](docs/nas-upload.zh-CN.md)
 - [评分规则与边界](docs/scoring.md)
 - [桌面端操作说明](docs/desktop.md)
 - [Windows 构建与发布](docs/windows-app.zh-CN.md)

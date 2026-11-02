@@ -7,6 +7,7 @@ import re
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Property, QLockFile, QTimer, QUrl
 from .desktop_upload import BatchStore, UploadSession, UploadCancelled, friendly_error
 from .archive_import import database_pending
+from .upload_destination import destination_text, normalize_destination, queue_directory
 
 
 class ParadigmWorker(QThread):
@@ -160,7 +161,7 @@ class UploadController(QObject):
         if self._paradigm_index < 0:
             return '连接内网后选择上传范式'
         target = self._paradigms[self._paradigm_index]['destination']
-        return f"cos://{target['bucket']}/{target['prefix'].strip('/')}/"
+        return destination_text(target)
 
     @Slot()
     def refreshParadigms(self):
@@ -202,13 +203,13 @@ class UploadController(QObject):
         settings = getattr(self.parent(), 'store', None)
         if settings is not None:
             settings.setValue('upload_paradigm', row['code'])
-        if self.store.paradigm and self.store.paradigm['code'] == row['code']:
+        if (self.store.paradigm and self.store.paradigm['code'] == row['code']
+                and self.store.directory == queue_directory(self.data_directory, row)
+                and normalize_destination(self.store.paradigm['destination']) == normalize_destination(row['destination'])):
             self.store.paradigm = row
             self.changed.emit()
             return
-        directory = self.data_directory / 'uploads-cos-beijing'
-        if row['code'] != 'AVEEG-20260923':
-            directory = self.data_directory / 'uploads' / row['code']
+        directory = queue_directory(self.data_directory, row)
         self.store = BatchStore(directory, row)
         self._error = ''
         self._selection = None

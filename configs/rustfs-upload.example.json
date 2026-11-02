@@ -1,0 +1,15 @@
+{
+  "paradigms": [
+    {
+      "code": "REPLACE_WITH_PLATFORM_PARADIGM_CODE",
+      "name": "Replace with the platform paradigm name",
+      "destination": {
+        "provider": "s3",
+        "endpoint": "http://172.16.4.2:9000",
+        "bucket": "oi-data",
+        "region": "us-east-1",
+        "prefix": "replace-with-metadata-unique-name"
+      }
+    }
+  ]
+}
