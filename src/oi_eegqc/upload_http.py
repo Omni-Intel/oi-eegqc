@@ -76,17 +76,21 @@ class SignClient:
         self.stopped = threading.Event()
         self.connection_lock = threading.Lock()
         self.connection = None
+        self.connections = []
 
     def interrupt(self):
         self.stopped.set()
         with self.connection_lock:
-            connection = self.connection
-            sock = getattr(connection, "sock", None)
-            if sock is not None:
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+            active = list(self.connections)
+            if self.connection is not None and all(c is not self.connection for c in active):
+                active.append(self.connection)
+            for connection in active:
+                sock = getattr(connection, "sock", None)
+                if sock is not None:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
 
     def _track(self, connection):
         with self.connection_lock:
@@ -94,11 +98,14 @@ class SignClient:
                 connection.close()
                 raise InterruptedError()
             self.connection = connection
+            if all(c is not connection for c in self.connections):
+                self.connections.append(connection)
 
     def _release(self, connection):
         with self.connection_lock:
+            self.connections = [c for c in self.connections if c is not connection]
             if self.connection is connection:
-                self.connection = None
+                self.connection = self.connections[-1] if self.connections else None
             connection.close()
 
     def paradigms(self):
@@ -106,6 +113,9 @@ class SignClient:
 
     def resolve_subjects(self, numbers):
         return self._request('/v1/capture/imports/resolve', {'participant_numbers': numbers})['subjects']
+
+    def resolve_imports(self, numbers):
+        return self._request('/v1/capture/imports/resolve', {'participant_numbers': numbers})
 
     def commit_import(self, payload):
         return self._request('/v1/capture/imports/commit', payload)

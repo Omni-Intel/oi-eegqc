@@ -7,6 +7,17 @@ import re
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Property, QLockFile, QTimer, QUrl
 from .desktop_upload import BatchStore, UploadSession, UploadCancelled, friendly_error
 from .archive_import import database_pending
+from .mixed_upload import MIXED_CODE, MixedBatchStore, paradigm_directory
+
+
+class UploadLocks:
+    def __init__(self, locks):
+        self.locks = locks
+
+    def unlock(self):
+        for lock in reversed(self.locks):
+            lock.unlock()
+        self.locks.clear()
 
 
 class ParadigmWorker(QThread):
@@ -24,7 +35,7 @@ class ParadigmWorker(QThread):
 class UploadWorker(QThread):
     progress = Signal(object)
 
-    def __init__(self, store, data_directory, batch=None, roots=None, scored=None, parent=None, new_acquisition=False, sessions=None):
+    def __init__(self, store, data_directory, batch=None, roots=None, scored=None, parent=None, new_acquisition=False, sessions=None, paradigms=None):
         super().__init__(parent)
         self.store, self.data_directory = store, data_directory
         self.batch, self.roots, self.scored = batch, roots, scored
@@ -34,6 +45,7 @@ class UploadWorker(QThread):
         self.sessions_provided = sessions is not None
         self.database_error = ''
         self._last_progress = 0
+        self.paradigms = paradigms or []
 
     def report(self, value):
         now = time.monotonic()
@@ -55,8 +67,13 @@ class UploadWorker(QThread):
                 self.progress.emit({'stage':'identifying','current':'正在识别被试和采集 Session'})
                 if not self.sessions_provided:
                     self.imports=[s for root in self.roots if Path(root).is_dir() for s in read_sessions(root)]
-                if any(s['paradigm_code'] and s['paradigm_code']!=self.store.paradigm['code'] for s in self.imports):
-                    raise ValueError('所选范式与采集元数据不一致，请按记录中的范式分别上传')
+                codes = {s['paradigm_code'] for s in self.imports if s.get('paradigm_code')}
+                if len(codes) > 1 and not isinstance(self.store, MixedBatchStore):
+                    self.store = MixedBatchStore(self.data_directory, self.paradigms)
+                if isinstance(self.store, MixedBatchStore):
+                    self.roots = self.store.configure(self.roots, self.imports)
+                elif any(code != self.store.paradigm['code'] for code in codes):
+                    raise ValueError('所选范式与采集元数据不一致，请核对采集 Session')
                 completed = {}
                 if not self.new_acquisition:
                     for root in self.roots:
@@ -101,8 +118,9 @@ class UploadWorker(QThread):
                 try:
                     sync_database(self.store, self.batch, client, lambda name:self.report({'current':name}), self.isInterruptionRequested)
                 except Exception as error:
+                    pid = getattr(error, 'participant_number', '') or ''
                     self.database_error = ('文件已上传，' + str(error) if isinstance(error, ValueError) else
-                                           '文件已上传，平台未找到对应被试。请核对账号后重试入库'
+                                           f'文件已上传，平台未找到被试 {pid}（其余已匹配 Session 已入库）。请核对账号后重试入库'.replace('  ', ' ')
                                            if getattr(error, 'status_code', None) == 404 else '文件已上传，统计入库失败。请点击“重试入库”')
                     if self.parent().telemetry:
                         self.parent().telemetry.report('database_import_failed', exc=error)
@@ -153,10 +171,17 @@ class UploadController(QObject):
     paradigmIndex = Property(int, lambda self: self._paradigm_index, notify=changed)
     subjectText = Property(str, lambda self: self._subject_text, notify=changed)
     loadingParadigms = Property(bool, lambda self: self.registry_worker is not None, notify=changed)
-    paradigmName = Property(str, lambda self: self._paradigms[self._paradigm_index]['name'] if self._paradigm_index >= 0 else '选择上传范式', notify=changed)
+    mixedParadigms = Property(bool, lambda self: isinstance(self.store, MixedBatchStore), notify=changed)
+    paradigmName = Property(str, lambda self: '混合范式 · 自动分流' if self.mixedParadigms else self._paradigms[self._paradigm_index]['name'] if self._paradigm_index >= 0 else '选择上传范式', notify=changed)
 
     @Property(str, notify=changed)
     def destinationText(self):
+        if self.mixedParadigms:
+            codes = {p.get('paradigm_code') for p in (self.batch or {}).get('children', [])}
+            rows = [p for p in self._paradigms if p['code'] in codes]
+            if not rows:
+                return '自动按 Session 元数据分流，正在核对目标位置'
+            return '\n'.join(f"{p['name']} → cos://{p['destination']['bucket']}/{p['destination']['prefix'].strip('/')}/" for p in rows)
         if self._paradigm_index < 0:
             return '连接内网后选择上传范式'
         target = self._paradigms[self._paradigm_index]['destination']
@@ -184,7 +209,17 @@ class UploadController(QObject):
             self._paradigms = worker.rows
             index = next((i for i,p in enumerate(self._paradigms) if p['code'] == (self._wanted_code or old)), 0)
             if not self.active and self._paradigms:
-                self.selectParadigm(index)
+                if self.mixedParadigms or saved == MIXED_CODE:
+                    if self.telemetry:
+                        self.telemetry.paradigm = None
+                    self._paradigm_index = index
+                    self.store = MixedBatchStore(self.data_directory, self._paradigms)
+                    try:
+                        self.batch = self.store.load()
+                    except Exception as error:
+                        self._error = friendly_error(error)
+                else:
+                    self.selectParadigm(index)
             elif not self._paradigms:
                 self._paradigm_index = -1
                 self._error = '数据库中没有启用的范式，请联系管理员配置'
@@ -206,9 +241,7 @@ class UploadController(QObject):
             self.store.paradigm = row
             self.changed.emit()
             return
-        directory = self.data_directory / 'uploads-cos-beijing'
-        if row['code'] != 'AVEEG-20260923':
-            directory = self.data_directory / 'uploads' / row['code']
+        directory = paradigm_directory(self.data_directory, row['code'])
         self.store = BatchStore(directory, row)
         self._error = ''
         self._selection = None
@@ -286,6 +319,8 @@ class UploadController(QObject):
             summary = f'文件清单 {file_count} 个' if not preparing else ''
         else:
             summary = f'已上传 {done_files} 个文件 · 待传 {file_count - done_files} 个' if file_count else ''
+        if self.mixedParadigms and batch.get('groups'):
+            summary = f"自动分流 {len(batch['groups'])} 种范式 · " + summary
         return dict(status=label, summary=summary, current=str(self._progress.get('current', '')) if self.active else '',
                     progress=1. if status == 'completed' else min(1., done / total) if total else 0.,
                     preparing=preparing, completed=status == 'completed' and not pending,
@@ -331,19 +366,28 @@ class UploadController(QObject):
                     {"ready": "待上传", "paused": "已暂停，可继续", "failed": "上传失败，可重试" if self._show_batch_error else "待继续上传", "completed": "文件已上传，统计待入库" if database_pending(batch) else ("上传和入库完成" if any(p.get('imports') for p in parts) else "上传完成")}.get(status, ""))
 
     def _acquire(self):
+        locks = []
         try:
-            self.store.directory.mkdir(parents=True, exist_ok=True)
+            # Also lock canonical stores before background discovery can reveal
+            # mixed inputs. This prevents normal and mixed windows racing IDs.
+            directories = {self.store.directory, self.data_directory/'uploads-mixed'}
+            directories.update(paradigm_directory(self.data_directory, p['code']) for p in self._paradigms)
+            for directory in sorted(directories):
+                directory.mkdir(parents=True, exist_ok=True)
+                lock = QLockFile(str(directory/'upload.lock'))
+                lock.setStaleLockTime(0)
+                if not lock.tryLock(0):
+                    UploadLocks(locks).unlock()
+                    self._error = "另一个窗口正在处理上传，请稍后重试"
+                    self.changed.emit()
+                    return False
+                locks.append(lock)
         except OSError:
+            UploadLocks(locks).unlock()
             self._error = "无法写入本地上传状态，请检查应用数据目录权限"
             self.changed.emit()
             return False
-        lock = QLockFile(str(self.store.directory / "upload.lock"))
-        lock.setStaleLockTime(0)
-        if not lock.tryLock(0):
-            self._error = "另一个窗口正在处理上传，请稍后重试"
-            self.changed.emit()
-            return False
-        self.lock = lock
+        self.lock = UploadLocks(locks)
         return True
 
     def prepare(self, roots, scored, new_acquisition=False, sessions=None, start_upload=False):
@@ -359,13 +403,29 @@ class UploadController(QObject):
             return
         self._show_batch_error = False
         self._error = ""
+        target_code = self._paradigms[self._paradigm_index]['code']
+        if sessions:
+            codes = {s['paradigm_code'] for s in sessions if s.get('paradigm_code')}
+            if not codes <= {p['code'] for p in self._paradigms}:
+                self._error = '部分采集 Session 的范式在平台未启用，请联系管理员'
+                self.changed.emit(); return
+            if len(codes) > 1:
+                if self.telemetry:
+                    self.telemetry.paradigm = None
+                self.store = MixedBatchStore(self.data_directory, self._paradigms)
+                self.batch = None
+                self._wanted_code = None
+            elif len(codes) == 1 and (self.mixedParadigms or next(iter(codes)) != target_code):
+                only_code = next(iter(codes))
+                idx = next((i for i, p in enumerate(self._paradigms) if p['code'] == only_code), -1)
+                if idx >= 0:
+                    self.selectParadigm(idx)
+        elif self.mixedParadigms:
+            self.selectParadigm(self._paradigm_index)
         if not self._acquire():
             return
         self._selection = (list(roots), dict(scored) if scored is not None else None)
-        if any(s['paradigm_code'] and s['paradigm_code'] != self._paradigms[self._paradigm_index]['code'] for s in sessions or []):
-            self._error = '所选范式与采集元数据不一致，请按记录中的范式分别上传'
-            self.lock.unlock(); self.lock = None; self.changed.emit(); return
-        self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition, sessions=sessions)
+        self.worker = UploadWorker(self.store, self.data_directory, roots=roots, scored=scored, parent=self, new_acquisition=new_acquisition, sessions=sessions, paradigms=self._paradigms)
         self._start_after_prepare = start_upload
         self._launch()
 
@@ -435,6 +495,13 @@ class UploadController(QObject):
         worker = self.worker
         self._show_batch_error = worker.roots is None
         self.worker = None
+        if isinstance(getattr(worker, 'store', None), MixedBatchStore):
+            if self.telemetry:
+                self.telemetry.paradigm = None
+            self.store = worker.store
+            settings = getattr(self.parent(), 'store', None)
+            if settings is not None:
+                settings.setValue('upload_paradigm', MIXED_CODE)
         if worker.batch:
             self.batch = worker.batch
         if worker.imports:
@@ -493,6 +560,10 @@ class UploadController(QObject):
     def restoreUploadId(self, value):
         from .desktop_upload import ID_PATTERN
         value = value.strip()
+        if self.mixedParadigms:
+            self._error = '请切换到对应范式后恢复该 Session 的编号'
+            self.changed.emit()
+            return False
         if self.active or not self.batch or not self.info["uncertain"] or not re.fullmatch(ID_PATTERN, value):
             return False
         if not self._acquire():

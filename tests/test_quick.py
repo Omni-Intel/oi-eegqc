@@ -776,3 +776,41 @@ def test_closed_upload_controller_does_not_launch_deferred_registry(quick, tmp_p
     upload.shutdown()
     QTest.qWait(20)
     assert calls==[] and upload.registry_worker is None
+
+
+def test_mixed_upload_is_automatic_visible_and_restored(quick, tmp_path, monkeypatch):
+    from oi_eegqc import archive_import
+    from oi_eegqc.mixed_upload import MIXED_CODE, MixedBatchStore
+    from oi_eegqc.upload_http import SignClient
+    from oi_eegqc.upload_ui import UploadController
+    from test_mixed_upload import PARADIGMS, fixture_sessions
+    app, controller, _, window = quick
+    upload = controller._upload
+    monkeypatch.setattr(SignClient, 'paradigms', lambda self: PARADIGMS)
+    monkeypatch.setattr(archive_import, 'grade_sessions', lambda *args: dict(scored=0, reused=2, failed=0))
+    upload.refreshParadigms()
+    wait(app, lambda: not upload.loadingParadigms)
+    rows = fixture_sessions(tmp_path/'mixed')
+    upload.prepare([tmp_path/'mixed'], None, sessions=rows)
+    wait(app, lambda: not upload.active)
+    assert upload.info['error'] == ''
+    assert isinstance(upload.store, MixedBatchStore)
+    assert len(upload.batch['children']) == 2
+    assert controller.store.value('upload_paradigm') == MIXED_CODE
+    assert 'rsvp/' in upload.destinationText and 'DoRSVP/' in upload.destinationText
+    assert '自动分流 2 种范式' in upload.progressInfo['summary']
+    upload.changed.emit()
+    app.processEvents()
+    assert window.findChild(QObject, 'uploadParadigm').property('displayText') == '混合范式 · 自动分流'
+    restored = UploadController(upload.data_directory, controller)
+    try:
+        wait(app, lambda: not restored.loadingParadigms and restored.mixedParadigms)
+        assert restored.batch['local_id'] == upload.batch['local_id']
+        assert upload._acquire()
+        try:
+            assert not restored._acquire()
+        finally:
+            upload.lock.unlock()
+            upload.lock = None
+    finally:
+        restored.shutdown()
