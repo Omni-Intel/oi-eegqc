@@ -13,6 +13,7 @@ def score_request(request):
     from .config import load_config
     from .types import RecordingInput
     from .scoring_version import SCORING_ALGORITHM_VERSION
+    from .evidence import boundary_check, file_identity, recording_identity, segment_evidence
     if request.get('schema')!=SCHEMA:raise ValueError('Unsupported segment request schema')
     threshold=float(request.get('threshold',60))
     if not math.isfinite(threshold) or not 0<=threshold<=100:raise ValueError('Invalid threshold')
@@ -49,6 +50,7 @@ def score_request(request):
         parent=RecordingInput(data=raw.get_data(),sfreq=fs,ch_names=list(raw.ch_names),
             unit='V',aux_ch_names=auxiliary_names,meta=meta)
         prepared=prepare_eeg(parent,cfg)
+        identity=recording_identity(raw);identity.update(file_identity(path))
         for segment in segments:
             row={'trial_id':segment['trial_id'],'stimulus_id':segment['stimulus_id'],'score':None,'state':'needs_review'}
             try:
@@ -69,9 +71,12 @@ def score_request(request):
                 report=evaluate_recording(recording,cfg,prepared=prepared.crop(first,last))
                 score=float(report.gqi)
                 if not math.isfinite(score):raise ValueError('评分结果无效')
+                evidence=segment_evidence(report,start,stop)
+                evidence['boundary']=boundary_check(raw,start)
                 row.update(score=score,state='retry' if score<threshold else 'passed',
                     onset=start,offset=stop,sample_start=first,sample_stop=last,
-                    duration_s=round(stop-start,3),report=report.to_dict())
+                    duration_s=round(stop-start,3),usable_duration_s=evidence['usable_duration_s'],
+                    evidence=evidence,report=report.to_dict())
             except Exception as exc:row['reason']=str(exc)
             rows.append(row)
     stat=path.stat()
@@ -80,11 +85,13 @@ def score_request(request):
     return {'schema':SCHEMA,'request_id':request['request_id'],'session_id':request['session_id'],
         'platform_session_id':request.get('platform_session_id'),
         'algorithm_version':SCORING_ALGORITHM_VERSION,'threshold':threshold,'segments':rows,
-        'recording':{'size':fingerprint[0],'mtime_ns':fingerprint[1]},
+        'recording':{'size':fingerprint[0],'mtime_ns':fingerprint[1]},'recording_identity':identity,
         'timing_status':request.get('timing_status','unknown'),
         'summary':{'passed':sum(r['state']=='passed' for r in rows),'retry':sum(r['state']=='retry' for r in rows),
             'needs_review':sum(r['state']=='needs_review' for r in rows),
-            'minimum':min(scores) if scores else None,'mean':sum(scores)/len(scores) if scores else None}}
+            'minimum':min(scores) if scores else None,'mean':sum(scores)/len(scores) if scores else None,
+            'usable_duration_s':round(sum(r.get('usable_duration_s') or 0.0 for r in rows),3),
+            'scored_duration_s':round(sum(r.get('duration_s') or 0.0 for r in rows if r.get('score') is not None),3)}}
 
 
 def main(argv=None):
