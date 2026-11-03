@@ -18,11 +18,15 @@ def test_one_bad_video_does_not_reject_the_good_video(tmp_path):
         dict(trial_id='short',stimulus_id='d',onset=1,offset=1.1)]}
     result=score_request(request)
     good,bad,invalid,short=result['segments']
-    assert good['score']>=60 and good['state']=='passed'
-    assert bad['score']<60 and bad['state']=='retry'
-    assert invalid['state']==short['state']=='needs_review'
+    # Only two verdicts exist now: usable or unusable, and every segment carries a number.
+    assert good['state']=='usable' and good['score']>=60 and good['usable_duration_s']>0
+    assert bad['state']=='unusable' and bad['score']<60 and bad['usable_duration_s']==0
+    assert invalid['state']=='unusable' and short['state']=='unusable'
+    assert invalid['void'] is True and short['void'] is True
+    assert all(isinstance(row['score'],(int,float)) for row in result['segments'])
     assert good['sample_stop']==bad['sample_start']==1250
-    assert result['summary']['retry']==1
+    assert result['summary']['unusable']==3 and result['summary']['usable']==1
+    assert result['rules']=={'pass_ratio':0.6,'void_ratio':0.5}
 
 
 def test_eog_io_marked_eeg_in_bids_is_not_scored_as_eeg(tmp_path):
