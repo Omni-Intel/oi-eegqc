@@ -5,7 +5,27 @@ import re
 from pathlib import Path
 
 FORMATS = {'.edf', '.edf+', '.bdf', '.npy', '.float32'}
-TASK_CODES = {'things': 'RSVP-20260924', 'rsvp': 'RSVP-20260924', 'av': 'AVEEG-20260923'}
+TASK_CODES = {
+    'things': 'RSVP-20260924',
+    'rsvp': 'RSVP-20260924',
+    'thingspair': 'DoRSVP-20261011',
+    'dorsvp': 'DoRSVP-20261011',
+    'av': 'AVEEG-20260923',
+}
+
+
+def _infer_collection_paradigm(directory):
+    directory = Path(directory)
+    for candidate in (directory, directory.parent):
+        coll = read_json(candidate / 'collection.json')
+        if not coll:
+            locked = read_json(candidate / 'locked_config.json')
+            coll = locked.get('collection') if isinstance(locked, dict) and isinstance(locked.get('collection'), dict) else {}
+        if coll.get('paradigm') == 'dual_image' or coll.get('strategy') == 'paired':
+            return 'DoRSVP-20261011'
+        if coll.get('paradigm') == 'single_image' or coll.get('strategy') == 'positions':
+            return 'RSVP-20260924'
+    return None
 
 
 def recording_duration(path):
@@ -99,14 +119,15 @@ def discover_sessions(root):
 
 
 def session_row(directory, recordings, participant, sid, data):
-    codes = {str(data['paradigm_code'])} if data.get('paradigm_code') else set()
+    inferred_paradigm = _infer_collection_paradigm(directory)
+    codes = {str(data['paradigm_code'])} if data.get('paradigm_code') else ({inferred_paradigm} if inferred_paradigm else set())
     details = []
     for raw in recordings:
         from .bids_metadata import eeg_metadata
         metadata = read_json(raw.with_suffix('.float32.json')) if raw.suffix == '.float32' else eeg_metadata(raw)
         if metadata.get('paradigm_code'):
             codes.add(str(metadata['paradigm_code']))
-        elif not data.get('paradigm_code'):
+        elif not data.get('paradigm_code') and not inferred_paradigm:
             code = TASK_CODES.get(entity(raw.name, 'task'))
             if code:
                 codes.add(code)

@@ -217,6 +217,33 @@ def run(store, state, client):
     return UploadSession(store, state, store.directory.parent, lambda v: None, lambda p: client).run()
 
 
+def test_signed_objects_upload_concurrently_and_resume(tmp_path):
+    from threading import Barrier
+    from oi_eegqc.upload_http import SignClient
+
+    class ConcurrentClient(FakeClient, SignClient):
+        def __init__(self):
+            FakeClient.__init__(self)
+            self.barrier = Barrier(2, timeout=5)
+
+        def put(self, url, key, source, size, cancelled, progress):
+            if key.endswith(('/a.txt', '/b.txt')):
+                self.barrier.wait()
+            return super().put(url, key, source, size, cancelled, progress)
+
+    folder = tmp_path/'collection'
+    folder.mkdir()
+    (folder/'a.txt').write_text('first')
+    (folder/'b.txt').write_text('second')
+    store = BatchStore(tmp_path/'state')
+    client = ConcurrentClient()
+    result = run(store, store.prepare([folder], None), client)
+    assert result['status'] == 'completed'
+    assert len(client.calls) == 2
+    assert run(store, store.prepare([folder], None), client)['status'] == 'completed'
+    assert len(client.calls) == 2
+
+
 @pytest.mark.parametrize("stage", ["health", "start_round"])
 def test_offline_first_upload_can_retry_without_recovery(batch, stage):
     from oi_eegqc.upload_http import NetworkUnavailable

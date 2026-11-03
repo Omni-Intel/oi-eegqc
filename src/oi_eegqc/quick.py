@@ -469,7 +469,8 @@ class Controller(QObject):
                 if not self._errors:
                     self.prepareUpload(start_upload=True)
                 return
-            auto_score = self._folder_intake and not self._bridge_intake and self.canScore and self._all_channels and not self._errors
+            needs_score = any(r["report"] is None and r.get("uploadState") != "已上传" for r in self.files.rows)
+            auto_score = self._folder_intake and not self._import_sessions and not self._bridge_intake and needs_score and self._all_channels and not self._errors
             if not self._all_channels and self.canScore and not self._busy:
                 QTimer.singleShot(0, self.openChannelSheet)
             if auto_score:self._auto_score()
@@ -568,7 +569,7 @@ class Controller(QObject):
             return
         if getattr(self,'record_bridge',None) and not self.record_bridge.upload_allowed(self._folder_roots):
             self._notice='所选文件夹包含已移除记录，请改选需要上传的记录文件夹';self.changed.emit();return
-        if any(r["report"] is None and not r.get("error") and r.get("uploadState") != "已上传" for r in self.files.rows):
+        if not self._import_sessions and any(r["report"] is None and not r.get("error") and r.get("uploadState") != "已上传" for r in self.files.rows):
             self._prepare_after_score, self._upload_after_score = True, start_upload
             self.scoreOrStop()
             return

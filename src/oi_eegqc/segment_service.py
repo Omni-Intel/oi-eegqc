@@ -70,7 +70,8 @@ def score_request(request):
                 score=float(report.gqi)
                 if not math.isfinite(score):raise ValueError('评分结果无效')
                 row.update(score=score,state='retry' if score<threshold else 'passed',
-                    onset=start,offset=stop,sample_start=first,sample_stop=last,report=report.to_dict())
+                    onset=start,offset=stop,sample_start=first,sample_stop=last,
+                    duration_s=round(stop-start,3),report=report.to_dict())
             except Exception as exc:row['reason']=str(exc)
             rows.append(row)
     stat=path.stat()
