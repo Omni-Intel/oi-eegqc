@@ -323,3 +323,36 @@ def test_s3_registration_switches_to_multipart_at_configured_cutoff(tmp_path, s3
     coordinator.register_files(uid, rid, [dict(path="large.bin", size=128 * 1024**2 + 1, sha256="a" * 64)])
     assert coordinator.round_status(uid, rid)["files"][0]["mode"] == "multipart"
     coordinator.db.close()
+
+
+def test_historical_cos_round_keeps_its_target_after_nas_switch(tmp_path, s3, monkeypatch):
+    from unittest.mock import Mock
+    from oi_eegqc.upload_signer.cos_backend import CosStorage
+    from oi_eegqc.upload_signer.service import Conflict
+    import shutil
+    cos = CosStorage(Mock(), bucket='jianyu-1442740494', region='ap-beijing', prefix='rsvp')
+    legacy = tmp_path/'NAS-TEST.sqlite3'
+    previous = UploadCoordinator(legacy, cos)
+    ids = previous.start_round(None, 'historical-cos-request')
+    uid, rid = ids['upload_id'], ids['round_id']
+    previous.register_files(uid, rid, [dict(path='recording/eeg.edf', size=1, sha256='a'*64)])
+    previous.db.execute("UPDATE files SET state='complete'")
+    previous.db.execute("UPDATE rounds SET state='complete',expected_files=1")
+    previous.db.commit()
+    previous.db.close()
+    original = legacy.read_bytes()
+    config = tmp_path/'paradigms.json'
+    config.write_text(json.dumps({'paradigms':[paradigm(s3.destination)]}))
+    registry = ParadigmRegistry(None, tmp_path/'signer.sqlite3', s3, config_file=config)
+    result = registry.round_status('NAS-TEST', uid, rid)
+    assert result['state']=='complete' and result['storageTarget']==cos.destination
+    assert result['files'][0]['path']=='recording/eeg.edf'
+    assert legacy.read_bytes()==original
+    with pytest.raises(ValueError, match='ledger storage target changed'):
+        UploadCoordinator(legacy, s3)
+    shutil.copy2(legacy, tmp_path/'NAS-TEST-s3-duplicate.sqlite3')
+    with pytest.raises(Conflict, match='multiple storage ledgers'):
+        registry.round_status('NAS-TEST', uid, rid)
+    for _, coordinator, storage in registry.routes.values():
+        coordinator.db.close()
+        storage.client.close()

@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.request import urlopen
 
 from .cos_backend import CosStorage
-from .service import UploadCoordinator
+from .service import UploadCoordinator, NotFound, Conflict
 from .s3_backend import S3Storage
 from ..upload_destination import destination_id, normalize_destination
 
@@ -59,3 +59,23 @@ class ParadigmRegistry:
             coordinator = UploadCoordinator(database, storage)
             self.routes[code] = identity, coordinator, storage
             return coordinator, storage
+
+    def round_status(self, code, upload_id, round_id):
+        # Initialize the current target, then search only this paradigm's canonical
+        # ledgers. Old COS/NAS receipts retain the target recorded in their ledger.
+        self.route(code)
+        legacy = self.state if code == 'AVEEG-20260923' else self.state.with_name(code + '.sqlite3')
+        databases = {legacy, *self.state.parent.glob(code + '-s3-*.sqlite3')}
+        found = []
+        for database in sorted(databases):
+            if not database.is_file():
+                continue
+            try:
+                found.append(UploadCoordinator.readonly_round_status(database, upload_id, round_id))
+            except NotFound:
+                continue
+        if not found:
+            raise NotFound('upload round not found')
+        if len(found) != 1:
+            raise Conflict('upload round exists in multiple storage ledgers')
+        return found[0]

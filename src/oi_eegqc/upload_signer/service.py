@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import threading
 from pathlib import Path, PurePosixPath
+from ..upload_destination import normalize_destination
 
 
 INBOX_PREFIX = "neuro-lm/data/inbox"
@@ -114,6 +115,15 @@ class UploadCoordinator:
             """
         )
         self.db.execute("CREATE INDEX IF NOT EXISTS collection_content ON collection_files(path,size,content_hash)")
+        self.target = getattr(storage, 'destination', None)
+        if self.target:
+            self.target = normalize_destination(self.target)
+            self.db.execute("CREATE TABLE IF NOT EXISTS storage_target (singleton INTEGER PRIMARY KEY CHECK(singleton=1), target TEXT NOT NULL)")
+            previous = self.db.execute("SELECT target FROM storage_target WHERE singleton=1").fetchone()
+            if previous and normalize_destination(json.loads(previous['target'])) != self.target:
+                self.db.close()
+                raise ValueError('ledger storage target changed; select an isolated ledger')
+            self.db.execute("INSERT OR IGNORE INTO storage_target(singleton,target) VALUES(1,?)", (json.dumps(self.target, sort_keys=True),))
         self.db.commit()
 
     def resolve_collection(self, files):
@@ -490,6 +500,7 @@ class UploadCoordinator:
                 "roundId": round_id,
                 "state": row["state"],
                 "fileCount": row["expected_files"],
+                **({"storageTarget": self.target} if self.target else {}),
                 "files": [
                     {
                         "path": item["path"],
@@ -510,6 +521,24 @@ class UploadCoordinator:
                     for item in files
                 ],
             }
+
+    @classmethod
+    def readonly_round_status(cls, database, upload_id, round_id):
+        """Read a historical receipt without opening storage or changing its ledger."""
+        db = sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True)
+        db.row_factory = sqlite3.Row
+        try:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='storage_target'").fetchone():
+                raise NotFound('ledger storage target has not been recorded')
+            target = db.execute('SELECT target FROM storage_target WHERE singleton=1').fetchone()
+            if not target:
+                raise NotFound('ledger storage target has not been recorded')
+            reader = cls.__new__(cls)
+            reader.db, reader.lock = db, threading.RLock()
+            reader.target = normalize_destination(json.loads(target['target']))
+            return reader.round_status(upload_id, round_id)
+        finally:
+            db.close()
 
     def complete_round(self, upload_id, round_id):
         with self.lock, self.db:
