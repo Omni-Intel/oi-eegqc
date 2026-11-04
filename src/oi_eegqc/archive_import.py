@@ -7,11 +7,43 @@ import uuid
 from zipfile import ZipFile
 
 RSVP = 'RSVP-20260924'
+EEG_ARCHIVE_EXTS = {'.edf', '.edf+', '.bdf', '.npy', '.float32'}
 
 
 def read_sessions(root):
     from .recording_manifest import discover_sessions
     return discover_sessions(root)
+
+
+def _inspect_zip_quick(path):
+    try:
+        with ZipFile(path) as zf:
+            members = zf.infolist()
+            has_eeg = any(
+                not m.is_dir() and m.file_size > 0 and Path(m.filename).suffix.lower() in EEG_ARCHIVE_EXTS
+                for m in members
+            )
+            if not has_eeg:
+                return {'has_eeg': False}
+            sj = next((m.filename for m in members if m.filename.endswith('/session.json') or m.filename == 'session.json'), None)
+            cj = next((m.filename for m in members if m.filename.endswith('/collection.json') or m.filename == 'collection.json'), None)
+            s_data = json.loads(zf.read(sj).decode('utf-8-sig')) if sj else {}
+            c_data = json.loads(zf.read(cj).decode('utf-8-sig')) if cj else {}
+            raw_pid = str(s_data.get('participant_id') or s_data.get('participant_number') or s_data.get('subject_id') or '')
+            m = re.fullmatch(r'(?:sub-)?(\d{8})', raw_pid)
+            pid = m[1] if m else None
+            sid = str(s_data.get('session_id') or '') or None
+            pcode = s_data.get('paradigm_code')
+            if not pcode:
+                if c_data.get('paradigm') == 'dual_image' or c_data.get('strategy') == 'paired':
+                    pcode = 'DoRSVP-20261011'
+                elif c_data.get('paradigm') == 'single_image' or c_data.get('strategy') == 'positions':
+                    pcode = 'RSVP-20260924'
+                else:
+                    pcode = 'RSVP-20260924'
+            return {'has_eeg': True, 'participant_number': pid, 'source_session_id': sid, 'paradigm_code': str(pcode)}
+    except Exception:
+        return {'has_eeg': True}
 
 
 def expand_inputs(paths, cache, cancelled=lambda: False, progress=lambda *args: None):
@@ -20,19 +52,70 @@ def expand_inputs(paths, cache, cancelled=lambda: False, progress=lambda *args: 
     expanded = []
     with sqlite3.connect(cache/'archives.sqlite') as db:
         db.execute('CREATE TABLE IF NOT EXISTS archives(source TEXT PRIMARY KEY,size INTEGER,mtime INTEGER,target TEXT,complete INTEGER)')
-        inputs = []
+        raw_inputs = []
         for value in paths:
             path = Path(value).resolve()
             if path.is_dir():
                 archives = sorted(path.rglob('*.zip'))
                 if archives:
-                    inputs.extend(archives)
-                    if any(p.suffix.lower() in ('.edf', '.bdf', '.float32', '.npy') for p in path.rglob('*') if p.is_file()):
-                        inputs.append(path)
+                    raw_inputs.extend(archives)
+                    non_zip_eeg = [p for p in path.rglob('*') if p.is_file() and p.suffix.lower() in EEG_ARCHIVE_EXTS]
+                    if non_zip_eeg:
+                        try:
+                            s_dirs = sorted({Path(s['session_directory']).resolve() for s in read_sessions(path)})
+                        except Exception:
+                            s_dirs = []
+                        if s_dirs:
+                            raw_inputs.extend(s_dirs)
+                        else:
+                            raw_inputs.append(path)
                 else:
-                    inputs.append(path)
+                    try:
+                        s_dirs = sorted({Path(s['session_directory']).resolve() for s in read_sessions(path)})
+                    except Exception:
+                        s_dirs = []
+                    if len(s_dirs) > 1:
+                        raw_inputs.extend(s_dirs)
+                    else:
+                        raw_inputs.append(path)
             else:
-                inputs.append(path)
+                raw_inputs.append(path)
+
+        zip_meta = {}
+        dir_meta = {}
+        for path in raw_inputs:
+            if path.suffix.lower() == '.zip' and path.is_file():
+                zip_meta[path] = _inspect_zip_quick(path)
+            elif path.is_dir() and len(raw_inputs) > 1:
+                try:
+                    rows = read_sessions(path)
+                    if len(rows) == 1:
+                        s = rows[0]
+                        dir_meta[path] = {
+                            'has_eeg': True,
+                            'participant_number': s.get('participant_number'),
+                            'source_session_id': s.get('source_session_id'),
+                            'paradigm_code': s.get('paradigm_code'),
+                        }
+                except Exception:
+                    pass
+
+        multi = len(raw_inputs) > 1
+        all_meta = {**zip_meta, **dir_meta}
+        has_real_participant = any(
+            (m.get('participant_number') or '') not in ('', '00000000', '00000001')
+            for m in all_meta.values() if m.get('has_eeg')
+        )
+        inputs = []
+        for path in raw_inputs:
+            if path in all_meta:
+                info = all_meta[path]
+                if not info.get('has_eeg', True) and multi:
+                    continue
+                if multi and has_real_participant and info.get('participant_number') in ('00000000', '00000001'):
+                    continue
+            inputs.append(path)
+
         for path in inputs:
             if cancelled():
                 raise InterruptedError('已取消解压')
@@ -41,9 +124,9 @@ def expand_inputs(paths, cache, cancelled=lambda: False, progress=lambda *args: 
                 continue
             stat = path.stat()
             saved = db.execute('SELECT size,mtime,target,complete FROM archives WHERE source=?', (str(path),)).fetchone()
-            current = saved and saved[:2] == (stat.st_size,stat.st_mtime_ns)
-            target = Path(saved[2]) if current else cache/(path.stem+'-'+uuid.uuid4().hex[:8])
-            if not (current and saved[3] and target.is_dir()):
+            current = bool(saved and saved[:2] == (stat.st_size, stat.st_mtime_ns))
+            target = Path(saved[2]) if current and saved else cache/(path.stem+'-'+uuid.uuid4().hex[:8])
+            if not (current and saved and saved[3] and target.is_dir()):
                 target.mkdir(parents=True, exist_ok=True)
                 db.execute('INSERT OR REPLACE INTO archives VALUES (?,?,?,?,0)',(str(path),stat.st_size,stat.st_mtime_ns,str(target)))
                 db.commit()
@@ -250,6 +333,7 @@ def attach_sessions(batch, rows):
 
 
 def sync_database(store, batch, client, progress, cancelled=lambda:False):
+    first_error = None
     for part in batch.get('children') or [batch]:
         if part.get('status') != 'completed':
             continue
@@ -258,27 +342,38 @@ def sync_database(store, batch, client, progress, cancelled=lambda:False):
                 return
             if row.get('receipt'):
                 continue
-            from datetime import datetime
-            for field in ('started_at', 'ended_at'):
-                try:
-                    stamp = datetime.fromisoformat(str(row.get(field) or '').replace('Z', '+00:00'))
-                    if stamp.tzinfo is None:
-                        raise ValueError()
-                except ValueError:
-                    raise ValueError(f'采集元数据缺少带时区的 {field}，请补齐后重新导入') from None
-            if not row.get('recorded_duration_s') or row['recorded_duration_s'] <= 0:
-                raise ValueError('无法确定实际采集时长，请核对原始文件后重新导入')
-            if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', row['source_session_id']):
-                raise ValueError('采集编号需为 1–128 位字母、数字、下划线或连字符')
-            progress(f"正在入库 {row['participant_number']} · {row['source_session_id']}")
-            payload = {k:v for k,v in row.items() if k!='receipt'}
-            if 'signal_qc' in payload:
-                payload['signal_qc'] = score_summary(payload['signal_qc'])
-            payload.update(upload_id=part['upload_id'], round_id=part['round_id'])
-            row['receipt'] = client.commit_import(payload)
-            store.save(batch)
-        part['database_status'] = 'complete' if part.get('imports') else 'not_required'
+            try:
+                from datetime import datetime
+                for field in ('started_at', 'ended_at'):
+                    try:
+                        stamp = datetime.fromisoformat(str(row.get(field) or '').replace('Z', '+00:00'))
+                        if stamp.tzinfo is None:
+                            raise ValueError()
+                    except ValueError:
+                        raise ValueError(f'采集元数据缺少带时区的 {field}，请补齐后重新导入') from None
+                if not row.get('recorded_duration_s') or row['recorded_duration_s'] <= 0:
+                    raise ValueError('无法确定实际采集时长，请核对原始文件后重新导入')
+                if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', row['source_session_id']):
+                    raise ValueError('采集编号需为 1–128 位字母、数字、下划线或连字符')
+                progress(f"正在入库 {row['participant_number']} · {row['source_session_id']}")
+                payload = {k:v for k,v in row.items() if k!='receipt'}
+                if 'signal_qc' in payload:
+                    payload['signal_qc'] = score_summary(payload['signal_qc'])
+                payload.update(upload_id=part['upload_id'], round_id=part['round_id'])
+                row['receipt'] = client.commit_import(payload)
+                store.save(batch)
+            except Exception as exc:
+                if getattr(exc, 'participant_number', None) is None:
+                    try:
+                        exc.participant_number = row.get('participant_number')
+                    except Exception:
+                        pass
+                if first_error is None:
+                    first_error = exc
+        part['database_status'] = ('complete' if all(r.get('receipt') for r in part.get('imports', [])) else 'pending') if part.get('imports') else 'not_required'
         store.save(batch)
+    if first_error is not None:
+        raise first_error
 
 
 def database_pending(batch):

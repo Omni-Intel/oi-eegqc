@@ -66,6 +66,86 @@ def test_nas_target_refresh_changes_queue_and_display(quick):
     assert upload.store.directory != first
 
 
+def test_mixed_nas_display_and_lock_use_the_same_canonical_queue(quick):
+    from PySide6.QtCore import QLockFile
+    from oi_eegqc.mixed_upload import MixedBatchStore
+    from oi_eegqc.upload_destination import queue_directory
+    _, controller, _, _ = quick
+    upload = controller._upload
+    row = dict(code='NAS-TEST', name='NAS', destination=dict(
+        provider='s3', endpoint='http://172.16.4.2:9000', bucket='oi-data',
+        region='us-east-1', prefix='test-task'))
+    upload._paradigms = [row]
+    upload.store = MixedBatchStore(upload.data_directory, [row])
+    upload.batch = dict(children=[dict(paradigm_code=row['code'])])
+    assert 'NAS → s3://oi-data/test-task/' in upload.destinationText
+    canonical = queue_directory(upload.data_directory, row)
+    canonical.mkdir(parents=True, exist_ok=True)
+    lock = QLockFile(str(canonical/'upload.lock'))
+    assert lock.tryLock(0)
+    try:
+        assert not upload._acquire()
+    finally:
+        lock.unlock()
+    assert upload._acquire()
+    upload.lock.unlock()
+    upload.lock = None
+
+
+def test_automatic_updates_recheck_and_wait_for_each_clients_idle_window(quick, monkeypatch):
+    from types import SimpleNamespace
+    import oi_eegqc.quick as module
+    _, controller, _, _ = quick
+    controller.update_timer.stop()
+    monkeypatch.setattr(module.sys, 'frozen', True, raising=False)
+    clock = [1000.]
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    checks, installs = [], []
+    monkeypatch.setattr(controller, 'checkUpdate', lambda: checks.append(clock[0]))
+    monkeypatch.setattr(controller, 'installUpdate', lambda: installs.append(clock[0]))
+    controller._next_update_check = 999.
+    controller._apply_automatic_update()
+    assert checks == [1000.]
+    assert 2800 <= controller._next_update_check <= 4600
+    clock[0] = controller._next_update_check
+    controller._apply_automatic_update()
+    assert len(checks) == 2  # A continuously open client discovers later releases.
+    controller._automatic_updates = True
+    controller._installer = Path('ready.exe')
+    controller._update_idle_delay = 60
+    # A paused queue must survive the update, without blocking it indefinitely.
+    controller._upload.batch = dict(status='paused', entries=[])
+    controller._apply_automatic_update()
+    clock[0] += 59
+    controller._apply_automatic_update()
+    assert not installs
+    controller._busy = True
+    controller._apply_automatic_update()
+    controller._busy = False
+    controller._importing = True
+    clock[0] += 120
+    controller._apply_automatic_update()
+    assert not installs
+    controller._importing = False
+    controller._upload.worker = object()
+    controller._apply_automatic_update()
+    controller._upload.worker = None
+    controller._apply_automatic_update()
+    clock[0] += 60
+    controller._apply_automatic_update()
+    assert installs == [clock[0]]
+    assert controller._upload.batch['status'] == 'paused'
+
+
+def test_manual_update_waits_for_import_to_finish(quick, monkeypatch):
+    _, controller, _, _ = quick
+    controller._installer = Path('ready.exe')
+    controller._importing = True
+    controller.installUpdate()
+    assert controller.installer_worker is None and not controller.busy
+    controller._importing = False
+
+
 def recording(path, complete=True, channels=4):
     import numpy as np
     from oi_eegqc.datasets import synth_clean
@@ -479,7 +559,8 @@ def test_qml_folder_upload_gate_preview_and_resume(quick, tmp_path, monkeypatch)
         original(self, *args, **kwargs)
     monkeypatch.setattr(service.UploadSession, "__init__", init)
     upload.close()
-    QTest.qWait(100)
+    wait(app, lambda: not window.findChild(QObject, "uploadSheet").property("visible"))
+    QTest.qWait(150)
     start = window.findChild(QObject, "startUpload")
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      start.mapToScene(start.boundingRect().center()).toPoint())
@@ -793,3 +874,41 @@ def test_closed_upload_controller_does_not_launch_deferred_registry(quick, tmp_p
     upload.shutdown()
     QTest.qWait(20)
     assert calls==[] and upload.registry_worker is None
+
+
+def test_mixed_upload_is_automatic_visible_and_restored(quick, tmp_path, monkeypatch):
+    from oi_eegqc import archive_import
+    from oi_eegqc.mixed_upload import MIXED_CODE, MixedBatchStore
+    from oi_eegqc.upload_http import SignClient
+    from oi_eegqc.upload_ui import UploadController
+    from test_mixed_upload import PARADIGMS, fixture_sessions
+    app, controller, _, window = quick
+    upload = controller._upload
+    monkeypatch.setattr(SignClient, 'paradigms', lambda self: PARADIGMS)
+    monkeypatch.setattr(archive_import, 'grade_sessions', lambda *args: dict(scored=0, reused=2, failed=0))
+    upload.refreshParadigms()
+    wait(app, lambda: not upload.loadingParadigms)
+    rows = fixture_sessions(tmp_path/'mixed')
+    upload.prepare([tmp_path/'mixed'], None, sessions=rows)
+    wait(app, lambda: not upload.active)
+    assert upload.info['error'] == ''
+    assert isinstance(upload.store, MixedBatchStore)
+    assert len(upload.batch['children']) == 2
+    assert controller.store.value('upload_paradigm') == MIXED_CODE
+    assert 'rsvp/' in upload.destinationText and 'DoRSVP/' in upload.destinationText
+    assert '自动分流 2 种范式' in upload.progressInfo['summary']
+    upload.changed.emit()
+    app.processEvents()
+    assert window.findChild(QObject, 'uploadParadigm').property('displayText') == '混合范式 · 自动分流'
+    restored = UploadController(upload.data_directory, controller)
+    try:
+        wait(app, lambda: not restored.loadingParadigms and restored.mixedParadigms)
+        assert restored.batch['local_id'] == upload.batch['local_id']
+        assert upload._acquire()
+        try:
+            assert not restored._acquire()
+        finally:
+            upload.lock.unlock()
+            upload.lock = None
+    finally:
+        restored.shutdown()

@@ -28,7 +28,7 @@ QuietPopup {
         RowLayout {
             Layout.fillWidth: true
             Text { text: "范式"; color: "#303941"; font.weight: Font.DemiBold }
-            QuietCombo { objectName: "uploadParadigm"; Layout.fillWidth: true; model: sheet.backend.upload.paradigmNames; currentIndex: sheet.backend.upload.paradigmIndex; enabled: !sheet.backend.upload.active; onActivated: function(index) { sheet.backend.upload.selectParadigm(index); } }
+            QuietCombo { objectName: "uploadParadigm"; Layout.fillWidth: true; model: sheet.backend.upload.paradigmNames; currentIndex: sheet.backend.upload.paradigmIndex; displayText: sheet.backend.upload.mixedParadigms ? "混合范式 · 自动分流" : currentText; enabled: !sheet.backend.upload.active; onActivated: function(index) { sheet.backend.upload.selectParadigm(index); } }
             QuietButton { text: sheet.backend.upload.loadingParadigms ? "读取中…" : "刷新目录"; enabled: !sheet.backend.upload.active && !sheet.backend.upload.loadingParadigms; onClicked: sheet.backend.upload.refreshParadigms() }
         }
         Rectangle {
@@ -49,7 +49,7 @@ QuietPopup {
         }
         Flow {
             Layout.fillWidth: true; spacing: 8
-            visible: sheet.maintenanceOpen && !sheet.backend.upload.active
+            visible: sheet.maintenanceOpen && !sheet.backend.upload.active && !sheet.backend.upload.mixedParadigms
             QuietButton { objectName: "newAcquisition"; text: "作为新采集上传"; visible: sheet.info.started || sheet.info.uncertain; enabled: sheet.backend.canUpload; onClicked: newConfirm.open() }
             QuietButton { objectName: "restoreUploadId"; text: "恢复编号"; visible: sheet.info.uncertain; onClicked: restoreDialog.open() }
             QuietButton { objectName: "resetUploadRecord"; text: "重置上传记录"; visible: sheet.info.folderCount > 0; onClicked: resetFirst.open() }
@@ -57,7 +57,7 @@ QuietPopup {
         RowLayout {
             Layout.fillWidth: true; spacing: 8
             QuietButton { text: sheet.backend.upload.active ? "收起" : "关闭"; onClicked: sheet.backend.upload.close() }
-            QuietButton { objectName: "uploadMaintenance"; text: sheet.maintenanceOpen ? "收起更多" : "更多"; visible: !sheet.backend.upload.active; onClicked: sheet.maintenanceOpen = !sheet.maintenanceOpen }
+            QuietButton { objectName: "uploadMaintenance"; text: sheet.maintenanceOpen ? "收起更多" : "更多"; visible: !sheet.backend.upload.active && !sheet.backend.upload.mixedParadigms; onClicked: sheet.maintenanceOpen = !sheet.maintenanceOpen }
             Item { Layout.fillWidth: true }
             QuietButton {
                 text: "确定"

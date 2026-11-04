@@ -128,9 +128,9 @@ def s3(monkeypatch):
 
 
 @contextmanager
-def signer(tmp_path, storage, monkeypatch):
+def signer(tmp_path, storage, monkeypatch, rows=None):
     config = tmp_path / "paradigms.json"
-    config.write_text(json.dumps({"paradigms": [paradigm(storage.destination)]}), encoding="utf-8")
+    config.write_text(json.dumps({"paradigms": rows or [paradigm(storage.destination)]}), encoding="utf-8")
     state = tmp_path / "signer.sqlite3"
     coordinator = UploadCoordinator(state, storage)
     registry = ParadigmRegistry(None, state, storage, config_file=config)
@@ -176,6 +176,55 @@ def test_direct_s3_upload_publishes_bytes_and_completion_receipt(tmp_path, s3, m
         retried = UploadSession(store, store.load(), tmp_path / "app", lambda p: None)
         assert retried.run()["status"] == "completed"
         assert retried.transferred_files == 0 and retried.reused_files == 1
+
+
+def test_mixed_nas_upload_isolates_cos_receipts_and_reuses_canonical_ids(tmp_path, s3, monkeypatch):
+    from oi_eegqc.mixed_upload import MixedBatchStore
+    rows, sessions = [], []
+    for code, prefix in (("TASK-A", "task-a"), ("TASK-B", "task-b")):
+        rows.append(dict(code=code, name=code, destination=dict(s3.destination, prefix=prefix)))
+        source = tmp_path / code
+        source.mkdir()
+        (source / "eeg.txt").write_bytes(code.encode())
+        sessions.append(dict(session_directory=str(source), paradigm_code=code))
+    app = tmp_path / "app"
+    roots = [s["session_directory"] for s in sessions]
+    cos_rows = [dict(p, destination=dict(provider="cos", bucket="jianyu-1442740494",
+                                        region="ap-beijing", prefix=p["code"])) for p in rows]
+    cos = MixedBatchStore(app, cos_rows)
+    old = cos.prepare(cos.configure(roots, sessions), None)
+    for child in old["children"]:
+        child.update(status="completed", upload_id="20261102T000000Z-12345678")
+        for entry in child["entries"]:
+            entry["done"] = True
+    old["status"] = "completed"
+    cos.save(old)
+    original = (cos.directory / old["local_id"] / "state.json").read_bytes()
+
+    # Normal and mixed views of the same NAS task share its upload identity.
+    normal = BatchStore(queue_directory(app, rows[0]), rows[0])
+    canonical = normal.prepare([roots[0]], None)
+    mixed = MixedBatchStore(app, rows)
+    assert mixed.directory != cos.directory and mixed.load() is None
+    batch = mixed.prepare(mixed.configure(roots, sessions), None)
+    assert batch["children"][0]["local_id"] == canonical["local_id"]
+    assert all(p["upload_id"] is None and not any(e["done"] for e in p["entries"])
+               for p in batch["children"])
+    with signer(tmp_path, s3, monkeypatch, rows):
+        result = UploadSession(mixed, batch, app, lambda _: None).run()
+        assert result["status"] == "completed", result["error"]
+        for child in result["children"]:
+            prefix = child["destination"]["prefix"] + "/" + child["upload_id"] + "/"
+            key = prefix + child["paradigm_code"] + "/eeg.txt"
+            assert s3.client.get_object(Bucket="oi-data", Key=key)["Body"].read() == child["paradigm_code"].encode()
+            s3.client.head_object(Bucket="oi-data", Key=prefix + "_COMPLETE")
+        resumed = MixedBatchStore(app, list(reversed(rows)))
+        retry = UploadSession(resumed, resumed.load(), app, lambda _: None)
+        assert retry.run()["status"] == "completed" and retry.transferred_files == 0
+    assert normal.load()["upload_id"] == result["children"][0]["upload_id"]
+    assert (cos.directory / old["local_id"] / "state.json").read_bytes() == original
+    changed = [dict(rows[0], destination=dict(rows[0]["destination"], prefix="new-task")), rows[1]]
+    assert MixedBatchStore(app, changed).load() is None
 
 
 def test_multipart_resumes_after_signer_restart(tmp_path, s3, monkeypatch):

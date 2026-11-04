@@ -377,31 +377,94 @@ class UploadSession:
             for offset in range(0, len(pending_single), 5000):
                 group = pending_single[offset : offset + 5000]
                 urls = self._signed_single(client, upload_id, round_id, group)
-                for entry in group:
-                    batch["current"] = entry["relative"]
+                if isinstance(client, SignClient) and len(group) > 1:
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    progress_lock = threading.Lock()
+                    in_flight = {}
+
+                    def put_concurrent(entry):
+                        self.check_cancel()
+                        if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set) != {
+                            key: entry[key] for key in ("size", "mtime")
+                        }:
+                            raise UploadError("源文件已变化，已停止上传")
+                        u, k = urls[entry["relative"]]
+                        last = 0
+
+                        def report(sent, rel=entry["relative"]):
+                            nonlocal last
+                            with progress_lock:
+                                delta = max(0, sent - last)
+                                last = sent
+                                transferred[0] += delta
+                                in_flight[rel] = sent
+                                cur_done = done + sum(item["size"] for item in uploaded) + sum(in_flight.values())
+                                spd = transferred[0] / max(0.1, time.monotonic() - started)
+                            self.progress({"current": rel, "done": cur_done, "total": total, "speed": spd})
+
+                        for attempt in range(2):
+                            try:
+                                etag = client.put(
+                                    u, k, None if entry["directory"] else entry["source"],
+                                    entry["size"], self.stopped.is_set, report,
+                                )
+                                break
+                            except ServiceError as error:
+                                if error.status_code not in (401, 403) or attempt:
+                                    raise
+                                u, k = self._signed_single(client, upload_id, round_id, [entry])[entry["relative"]]
+                                with progress_lock:
+                                    in_flight[entry["relative"]] = 0
+                                    last = 0
+                        self.check_cancel()
+                        if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set) != {
+                            key: entry[key] for key in ("size", "mtime")
+                        }:
+                            raise UploadError("上传期间文件发生变化，不会确认文件完成")
+                        with progress_lock:
+                            in_flight.pop(entry["relative"], None)
+                        return entry, {"path": entry["relative"], "size": entry["size"], "etag": etag or ""}
+
                     try:
-                        receipt = self._put_single(
-                            client,
-                            upload_id,
-                            round_id,
-                            entry,
-                            urls[entry["relative"]],
-                            done + sum(item["size"] for item in uploaded),
-                            total,
-                            started,
-                            transferred,
-                        )
+                        with ThreadPoolExecutor(max_workers=4) as pool:
+                            futures = [pool.submit(put_concurrent, entry) for entry in group]
+                            for fut in as_completed(futures):
+                                entry, receipt = fut.result()
+                                with progress_lock:
+                                    confirmations.append(receipt)
+                                    uploaded.append(entry)
+                                    if len(confirmations) >= 16 or sum(item["size"] for item in confirmations) >= 32 * 1024 * 1024:
+                                        confirm()
                     except Exception:
-                        if not self.stopped.is_set():confirm()
+                        if not self.stopped.is_set():
+                            confirm()
                         raise
-                    self.check_cancel()
-                    if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set) != {
-                        key: entry[key] for key in ("size", "mtime")
-                    }:
-                        raise UploadError("上传期间文件发生变化，不会完成本轮上传")
-                    confirmations.append(receipt);uploaded.append(entry)
-                    if len(confirmations)>=16 or sum(item['size'] for item in confirmations)>=32*1024*1024:
-                        confirm()
+                else:
+                    for entry in group:
+                        batch["current"] = entry["relative"]
+                        try:
+                            receipt = self._put_single(
+                                client,
+                                upload_id,
+                                round_id,
+                                entry,
+                                urls[entry["relative"]],
+                                done + sum(item["size"] for item in uploaded),
+                                total,
+                                started,
+                                transferred,
+                            )
+                        except Exception:
+                            if not self.stopped.is_set():confirm()
+                            raise
+                        self.check_cancel()
+                        if not entry["directory"] and fingerprint(entry["source"], self.stopped.is_set) != {
+                            key: entry[key] for key in ("size", "mtime")
+                        }:
+                            raise UploadError("上传期间文件发生变化，不会完成本轮上传")
+                        confirmations.append(receipt);uploaded.append(entry)
+                        if len(confirmations)>=16 or sum(item['size'] for item in confirmations)>=32*1024*1024:
+                            confirm()
             confirm()
             for entry in [
                 item
@@ -465,11 +528,15 @@ class UploadSession:
         batch, outer = self.batch, self
         total = sum(entry["size"] for entry in batch["entries"])
         completed = 0
+        failed = None
         batch.update(status="uploading", error="")
         self.store.save(batch)
         groups = {}
         for index, part in enumerate(batch["children"]):
-            groups.setdefault(part.get("upload_id") or part["local_id"], []).append(index)
+            target = part.get("destination") or {}
+            identity = (part.get("paradigm_code"), target.get("bucket"), target.get("region"),
+                        target.get("prefix"), part.get("upload_id") or part["local_id"])
+            groups.setdefault(identity, []).append(index)
         try:
             for indices in groups.values():
                 self.check_cancel()
@@ -535,9 +602,17 @@ class UploadSession:
                 self.reused_files += self.child.reused_files
                 self.child, self.committing = None, False
                 if result["status"] != "completed":
+                    if batch.get("mixed_paradigms") and result["status"] == "failed":
+                        failed = failed or (child.get("paradigm_code", "") + " · " + result.get("error", "上传失败"))
+                        completed += sum(e["size"] for e in child["entries"] if e["done"])
+                        continue
                     batch.update(status=result["status"], error=result.get("error", ""))
                     return batch
                 completed += size
+            if failed:
+                batch.update(status="failed", error=failed)
+                self.progress({"current": "", "done": completed, "total": total, "speed": 0})
+                return batch
             batch.update(status="completed", error="", current="")
             self.progress({"current": "", "done": total, "total": total, "speed": 0})
         except Exception as error:

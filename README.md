@@ -21,7 +21,7 @@
   &nbsp;
   <img src="https://img.shields.io/badge/GUI-Qt%20Quick%20%2F%20PySide6-FF5A01?style=flat-square&amp;labelColor=20252B" alt="Qt Quick / PySide6">
   &nbsp;
-  <img src="https://img.shields.io/badge/Engine-oi--eegqc--score--v7-BADFDB?style=flat-square&amp;labelColor=20252B" alt="oi-eegqc-score-v7">
+  <img src="https://img.shields.io/badge/Engine-oi--eegqc--score--v8-BADFDB?style=flat-square&amp;labelColor=20252B" alt="oi-eegqc-score-v8">
   &nbsp;
   <img src="https://img.shields.io/badge/Formats-EDF%20%7C%20BDF%20%7C%20NPY%20%7C%20BIDS-20252B?style=flat-square" alt="EDF | BDF | NPY | BIDS">
 </p>
@@ -95,7 +95,7 @@ External acquisition programs can integrate via the [storage and import contract
 
 ## Quality Model (GQI)
 
-The current report format is schema v3, scoring algorithm `oi-eegqc-score-v7`, and default threshold profile `oi-eegqc-v0.6.14`. Every report records the exact algorithm version and active configuration.
+The current report format is schema v3, scoring algorithm `oi-eegqc-score-v8`, and default threshold profile `oi-eegqc-v0.6.14`. Every report records the exact algorithm version and active configuration.
 
 | Dimension | Default Weight | What It Evaluates |
 | --- | --- | --- |

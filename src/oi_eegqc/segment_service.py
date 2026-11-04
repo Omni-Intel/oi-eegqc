@@ -5,6 +5,10 @@ from pathlib import Path
 import uuid
 
 SCHEMA='oi-eegqc-segments-v1'
+# Two thresholds, no intermediate states: a clip is usable when most of its windows are,
+# and it is void (record it again) when more than half of them are not.
+PASS_RATIO=0.6
+VOID_RATIO=0.5
 
 
 def score_request(request):
@@ -13,6 +17,7 @@ def score_request(request):
     from .config import load_config
     from .types import RecordingInput
     from .scoring_version import SCORING_ALGORITHM_VERSION
+    from .evidence import boundary_check, file_identity, recording_identity, segment_evidence
     if request.get('schema')!=SCHEMA:raise ValueError('Unsupported segment request schema')
     threshold=float(request.get('threshold',60))
     if not math.isfinite(threshold) or not 0<=threshold<=100:raise ValueError('Invalid threshold')
@@ -49,6 +54,7 @@ def score_request(request):
         parent=RecordingInput(data=raw.get_data(),sfreq=fs,ch_names=list(raw.ch_names),
             unit='V',aux_ch_names=auxiliary_names,meta=meta)
         prepared=prepare_eeg(parent,cfg)
+        identity=recording_identity(raw);identity.update(file_identity(path))
         for segment in segments:
             row={'trial_id':segment['trial_id'],'stimulus_id':segment['stimulus_id'],'score':None,'state':'needs_review'}
             try:
@@ -67,23 +73,42 @@ def score_request(request):
                     stimulus_duration_s=segment.get('stimulus_duration_s'),
                     aux_ch_names=parent.aux_ch_names,meta=parent.meta)
                 report=evaluate_recording(recording,cfg,prepared=prepared.crop(first,last))
-                score=float(report.gqi)
-                if not math.isfinite(score):raise ValueError('评分结果无效')
-                row.update(score=score,state='retry' if score<threshold else 'passed',
-                    onset=start,offset=stop,sample_start=first,sample_stop=last,report=report.to_dict())
-            except Exception as exc:row['reason']=str(exc)
+                ratio=float(getattr(report,'usable_ratio',0.0) or 0.0)
+                clip_duration=round(stop-start,3)
+                # One verdict per segment: usable or not. Nothing in between, so the client,
+                # the platform and the participant all see the same number.
+                void=clip_duration<=0 or ratio<VOID_RATIO
+                usable=(not void) and ratio>=PASS_RATIO
+                evidence=segment_evidence(report,start,stop)
+                evidence['boundary']=boundary_check(raw,start)
+                evidence['void']=void
+                row.update(score=round(ratio*100,2),state='usable' if usable else 'unusable',
+                    onset=start,offset=stop,sample_start=first,sample_stop=last,
+                    duration_s=clip_duration,usable=usable,void=void,
+                    usable_duration_s=0.0 if void else round(clip_duration*ratio,3),
+                    evidence=evidence,report=report.to_dict())
+            except Exception as exc:
+                # A segment that cannot be scored is unusable, never "pending": the upload
+                # must not stall waiting for a second opinion.
+                row.update(state='unusable',usable=False,void=True,score=0.0,
+                    usable_duration_s=0.0,reason=str(exc))
             rows.append(row)
     stat=path.stat()
     if fingerprint!=(stat.st_size,stat.st_mtime_ns):raise ValueError('评分期间脑电文件发生变化')
-    scores=[r['score'] for r in rows if r['score'] is not None]
+    scored=[r for r in rows if r.get('score') is not None]
+    scores=[r['score'] for r in scored]
+    usable_rows=[r for r in rows if r.get('usable')]
     return {'schema':SCHEMA,'request_id':request['request_id'],'session_id':request['session_id'],
         'platform_session_id':request.get('platform_session_id'),
         'algorithm_version':SCORING_ALGORITHM_VERSION,'threshold':threshold,'segments':rows,
-        'recording':{'size':fingerprint[0],'mtime_ns':fingerprint[1]},
+        'recording':{'size':fingerprint[0],'mtime_ns':fingerprint[1]},'recording_identity':identity,
         'timing_status':request.get('timing_status','unknown'),
-        'summary':{'passed':sum(r['state']=='passed' for r in rows),'retry':sum(r['state']=='retry' for r in rows),
-            'needs_review':sum(r['state']=='needs_review' for r in rows),
-            'minimum':min(scores) if scores else None,'mean':sum(scores)/len(scores) if scores else None}}
+        'rules':{'pass_ratio':PASS_RATIO,'void_ratio':VOID_RATIO},
+        'summary':{'usable':len(usable_rows),'unusable':len(rows)-len(usable_rows),
+            'void':sum(1 for r in rows if r.get('void')),
+            'minimum':min(scores) if scores else 0.0,'mean':sum(scores)/len(scores) if scores else 0.0,
+            'usable_duration_s':round(sum(r.get('usable_duration_s') or 0.0 for r in rows),3),
+            'scored_duration_s':round(sum(r.get('duration_s') or 0.0 for r in scored),3)}}
 
 
 def main(argv=None):

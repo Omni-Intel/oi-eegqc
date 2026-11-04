@@ -23,6 +23,6 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libxkbcommon0
       - name: Install product and test dependencies
-        run: python -m pip install -e '.[desktop,dev]'
+        run: python -m pip install -e '.[desktop,dev,s3-test]'
       - name: Verify product and scoring
         run: python scripts/check.py --calibrate
