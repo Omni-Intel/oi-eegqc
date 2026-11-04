@@ -3,6 +3,7 @@ import json
 import os
 
 class CosStorage:
+    provider='cos'
     bucket='neurolm-1442740494'
     region='ap-beijing'
     prefix='neuro-lm/data/inbox'
@@ -13,6 +14,10 @@ class CosStorage:
         self.bucket=bucket or type(self).bucket
         self.region=region or type(self).region
         self.prefix=(prefix or type(self).prefix).strip('/')
+
+    @property
+    def destination(self):
+        return dict(provider='cos',bucket=self.bucket,region=self.region,prefix=self.prefix)
 
     @classmethod
     def from_env(cls,*,bucket=None,region=None,prefix=None):

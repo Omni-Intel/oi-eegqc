@@ -119,7 +119,7 @@ class UploadHandler(BaseHTTPRequestHandler):
                 "prefix": self.storage.prefix + "/",
                 "destination": getattr(self.storage, "provider", None) or ("local-inbox" if hasattr(self.storage, "root") else ("cos" if self.storage.__class__.__name__=='CosStorage' else "tos")),
                 "storageTarget": getattr(self.storage, "destination", None),
-                "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only", "collection-resolution", "batch-confirmation"],
+                "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only", "collection-resolution", "batch-confirmation", "storage-target-receipts"],
             }
         if method == "POST" and path == "/v1/uploads/resolve":
             return self.coordinator.resolve_collection(self.read_json().get("files"))
@@ -144,6 +144,9 @@ class UploadHandler(BaseHTTPRequestHandler):
         upload_id, round_id = match.group("upload"), match.group("round")
         action = (match.group("action") or "").rstrip("/")
         if method == "GET" and not action:
+            code = self.headers.get('X-EEG-Paradigm')
+            if code and self.server.registry:
+                return self.server.registry.round_status(code, upload_id, round_id)
             return self.coordinator.round_status(upload_id, round_id)
         if method == "GET" and action == "multipart/parts":
             values = parse_qs(parsed.query)
