@@ -21,7 +21,7 @@
   &nbsp;
   <img src="https://img.shields.io/badge/GUI-Qt%20Quick%20%2F%20PySide6-FF5A01?style=flat-square&amp;labelColor=20252B" alt="Qt Quick / PySide6">
   &nbsp;
-  <img src="https://img.shields.io/badge/Engine-oi--eegqc--score--v7-BADFDB?style=flat-square&amp;labelColor=20252B" alt="oi-eegqc-score-v7">
+  <img src="https://img.shields.io/badge/Engine-oi--eegqc--score--v8-BADFDB?style=flat-square&amp;labelColor=20252B" alt="oi-eegqc-score-v8">
   &nbsp;
   <img src="https://img.shields.io/badge/Formats-EDF%20%7C%20BDF%20%7C%20NPY%20%7C%20BIDS-20252B?style=flat-square" alt="EDF | BDF | NPY | BIDS">
 </p>
@@ -95,7 +95,7 @@ oi-eegqc serve --stdio
 
 ## 质量评分模型（GQI）
 
-当前报告格式为 v3，评分算法版本为 `oi-eegqc-score-v7`，默认阈值配置为 `oi-eegqc-v0.6.14`。每份报告均完整记录生效参数与算法版本。
+当前报告格式为 v3，评分算法版本为 `oi-eegqc-score-v8`，默认阈值配置为 `oi-eegqc-v0.6.14`。每份报告均完整记录生效参数与算法版本。
 
 | 评分维度 | 默认权重 | 评估内容 |
 | --- | --- | --- |
@@ -156,6 +156,7 @@ python scripts/check.py --calibrate
 在 Windows 上运行 `scripts/build-desktop.ps1` 将依次执行单元测试、故障注入校准、PyInstaller 打包、冻结二进制冒烟核验（`scripts/smoke-desktop.py`）以及 Inno Setup 安装包构建。
 
 - [架构与模块职责](docs/architecture.md)
+- [RustFS NAS 上传配置](docs/nas-upload.zh-CN.md)
 - [评分规则与边界](docs/scoring.md)
 - [桌面端操作说明](docs/desktop.md)
 - [Windows 构建与发布](docs/windows-app.zh-CN.md)

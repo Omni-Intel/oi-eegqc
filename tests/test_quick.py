@@ -49,6 +49,103 @@ def quick(tmp_path, monkeypatch):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
+def test_nas_target_refresh_changes_queue_and_display(quick):
+    app, controller, _, _ = quick
+    upload = controller._upload
+    previous = upload.store.directory
+    code = upload._paradigms[0]['code']
+    upload._paradigms = [dict(code=code, name='NAS', destination=dict(
+        provider='s3', endpoint='http://172.16.4.2:9000', bucket='oi-data',
+        region='us-east-1', prefix='test-task'))]
+    upload.selectParadigm(0)
+    assert upload.store.directory != previous
+    assert upload.destinationText == 's3://oi-data/test-task/ · http://172.16.4.2:9000'
+    first = upload.store.directory
+    upload._paradigms[0]['destination'] = dict(upload._paradigms[0]['destination'], endpoint='http://172.16.4.3:9000')
+    upload.selectParadigm(0)
+    assert upload.store.directory != first
+
+
+def test_mixed_nas_display_and_lock_use_the_same_canonical_queue(quick):
+    from PySide6.QtCore import QLockFile
+    from oi_eegqc.mixed_upload import MixedBatchStore
+    from oi_eegqc.upload_destination import queue_directory
+    _, controller, _, _ = quick
+    upload = controller._upload
+    row = dict(code='NAS-TEST', name='NAS', destination=dict(
+        provider='s3', endpoint='http://172.16.4.2:9000', bucket='oi-data',
+        region='us-east-1', prefix='test-task'))
+    upload._paradigms = [row]
+    upload.store = MixedBatchStore(upload.data_directory, [row])
+    upload.batch = dict(children=[dict(paradigm_code=row['code'])])
+    assert 'NAS → s3://oi-data/test-task/' in upload.destinationText
+    canonical = queue_directory(upload.data_directory, row)
+    canonical.mkdir(parents=True, exist_ok=True)
+    lock = QLockFile(str(canonical/'upload.lock'))
+    assert lock.tryLock(0)
+    try:
+        assert not upload._acquire()
+    finally:
+        lock.unlock()
+    assert upload._acquire()
+    upload.lock.unlock()
+    upload.lock = None
+
+
+def test_automatic_updates_recheck_and_wait_for_each_clients_idle_window(quick, monkeypatch):
+    from types import SimpleNamespace
+    import oi_eegqc.quick as module
+    _, controller, _, _ = quick
+    controller.update_timer.stop()
+    monkeypatch.setattr(module.sys, 'frozen', True, raising=False)
+    clock = [1000.]
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    checks, installs = [], []
+    monkeypatch.setattr(controller, 'checkUpdate', lambda: checks.append(clock[0]))
+    monkeypatch.setattr(controller, 'installUpdate', lambda: installs.append(clock[0]))
+    controller._next_update_check = 999.
+    controller._apply_automatic_update()
+    assert checks == [1000.]
+    assert 2800 <= controller._next_update_check <= 4600
+    clock[0] = controller._next_update_check
+    controller._apply_automatic_update()
+    assert len(checks) == 2  # A continuously open client discovers later releases.
+    controller._automatic_updates = True
+    controller._installer = Path('ready.exe')
+    controller._update_idle_delay = 60
+    # A paused queue must survive the update, without blocking it indefinitely.
+    controller._upload.batch = dict(status='paused', entries=[])
+    controller._apply_automatic_update()
+    clock[0] += 59
+    controller._apply_automatic_update()
+    assert not installs
+    controller._busy = True
+    controller._apply_automatic_update()
+    controller._busy = False
+    controller._importing = True
+    clock[0] += 120
+    controller._apply_automatic_update()
+    assert not installs
+    controller._importing = False
+    controller._upload.worker = object()
+    controller._apply_automatic_update()
+    controller._upload.worker = None
+    controller._apply_automatic_update()
+    clock[0] += 60
+    controller._apply_automatic_update()
+    assert installs == [clock[0]]
+    assert controller._upload.batch['status'] == 'paused'
+
+
+def test_manual_update_waits_for_import_to_finish(quick, monkeypatch):
+    _, controller, _, _ = quick
+    controller._installer = Path('ready.exe')
+    controller._importing = True
+    controller.installUpdate()
+    assert controller.installer_worker is None and not controller.busy
+    controller._importing = False
+
+
 def recording(path, complete=True, channels=4):
     import numpy as np
     from oi_eegqc.datasets import synth_clean
@@ -462,7 +559,8 @@ def test_qml_folder_upload_gate_preview_and_resume(quick, tmp_path, monkeypatch)
         original(self, *args, **kwargs)
     monkeypatch.setattr(service.UploadSession, "__init__", init)
     upload.close()
-    QTest.qWait(100)
+    wait(app, lambda: not window.findChild(QObject, "uploadSheet").property("visible"))
+    QTest.qWait(150)
     start = window.findChild(QObject, "startUpload")
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      start.mapToScene(start.boundingRect().center()).toPoint())

@@ -1,4 +1,4 @@
-"""LAN signing service and HTTPS object uploads to the dedicated COS bucket."""
+"""LAN signing service and direct uploads to configured COS or RustFS targets."""
 import http.client
 import json
 import os
@@ -6,6 +6,8 @@ import ssl
 import socket
 import threading
 from urllib.parse import quote, urlsplit, unquote
+
+from .upload_destination import normalize_destination
 
 INTRANET_HOST = "personnel.intra.omni-intel.cn"
 INTRANET_PORT = 8443
@@ -40,6 +42,17 @@ def _origin():
 def validate_put_url(url, object_key, destination=None):
     parsed = urlsplit(url)
     destination = destination or {}
+    if destination.get("provider") == "s3":
+        target = normalize_destination(destination)
+        endpoint = urlsplit(target["endpoint"])
+        if (not _same_endpoint(parsed, endpoint) or parsed.username or parsed.password
+                or parsed.fragment or not parsed.query
+                or unquote(parsed.path) != f"/{target['bucket']}/{object_key}"
+                or not object_key.startswith(target["prefix"] + "/")
+                or "\\" in object_key
+                or any(p in ("", ".", "..") for p in object_key.rstrip("/").split("/"))):
+            raise ValueError("invalid S3 destination")
+        return
     host = f"{destination['bucket']}.cos.{destination['region']}.myqcloud.com" if destination else COS_HOST
     prefix = destination.get('prefix', PREFIX).rstrip('/') + '/'
     if parsed.hostname==host:
@@ -56,10 +69,21 @@ def validate_put_url(url, object_key, destination=None):
         raise ValueError("invalid signed destination")
 
 
+def _same_endpoint(parsed, endpoint):
+    def port(url):
+        return url.port if url.port is not None else (443 if url.scheme == "https" else 80)
+    return (parsed.scheme, parsed.hostname, port(parsed)) == (endpoint.scheme, endpoint.hostname, port(endpoint))
+
+
 def _connection(parsed, timeout, destination=None):
-    host = f"{destination['bucket']}.cos.{destination['region']}.myqcloud.com" if destination else COS_HOST
-    if parsed.hostname not in ALLOWED_HOSTS and not (parsed.hostname==host and parsed.scheme=='https'):
-        raise ValueError("upload host is not an allowed intranet address")
+    if destination and destination.get("provider") == "s3":
+        endpoint = urlsplit(normalize_destination(destination)["endpoint"])
+        if not _same_endpoint(parsed, endpoint) or parsed.username or parsed.password:
+            raise ValueError("upload host is not the configured S3 endpoint")
+    else:
+        host = f"{destination['bucket']}.cos.{destination['region']}.myqcloud.com" if destination else COS_HOST
+        if parsed.hostname not in ALLOWED_HOSTS and not (parsed.hostname==host and parsed.scheme=='https'):
+            raise ValueError("upload host is not an allowed intranet address")
     if parsed.scheme == "https":
         return http.client.HTTPSConnection(
             parsed.hostname, parsed.port, timeout=timeout, context=ssl.create_default_context()
@@ -124,16 +148,7 @@ class SignClient:
         return self._request('/v1/uploads/resolve', {'files':files})
 
     def health(self):
-        connection = _connection(_origin(), 8)
-        self._track(connection)
-        try:
-            connection.request("GET", "/upload-health" if _origin().hostname == INTRANET_HOST else "/health")
-            if connection.getresponse().status != 200:
-                raise NetworkUnavailable()
-        except (OSError, http.client.HTTPException):
-            raise NetworkUnavailable() from None
-        finally:
-            self._release(connection)
+        return self._request("/upload-health" if _origin().hostname == INTRANET_HOST else "/health", method="GET")
 
     def _request(self, route, payload=None, method="POST"):
         # Only round requests have persisted request identities and idempotent handlers.

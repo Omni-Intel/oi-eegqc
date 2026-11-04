@@ -7,7 +7,8 @@ import re
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Property, QLockFile, QTimer, QUrl
 from .desktop_upload import BatchStore, UploadSession, UploadCancelled, friendly_error
 from .archive_import import database_pending
-from .mixed_upload import MIXED_CODE, MixedBatchStore, paradigm_directory
+from .upload_destination import destination_text, normalize_destination, queue_directory
+from .mixed_upload import MIXED_CODE, MixedBatchStore
 
 
 class UploadLocks:
@@ -181,11 +182,11 @@ class UploadController(QObject):
             rows = [p for p in self._paradigms if p['code'] in codes]
             if not rows:
                 return '自动按 Session 元数据分流，正在核对目标位置'
-            return '\n'.join(f"{p['name']} → cos://{p['destination']['bucket']}/{p['destination']['prefix'].strip('/')}/" for p in rows)
+            return '\n'.join(f"{p['name']} → {destination_text(p['destination'])}" for p in rows)
         if self._paradigm_index < 0:
             return '连接内网后选择上传范式'
         target = self._paradigms[self._paradigm_index]['destination']
-        return f"cos://{target['bucket']}/{target['prefix'].strip('/')}/"
+        return destination_text(target)
 
     @Slot()
     def refreshParadigms(self):
@@ -237,11 +238,13 @@ class UploadController(QObject):
         settings = getattr(self.parent(), 'store', None)
         if settings is not None:
             settings.setValue('upload_paradigm', row['code'])
-        if self.store.paradigm and self.store.paradigm['code'] == row['code']:
+        if (self.store.paradigm and self.store.paradigm['code'] == row['code']
+                and self.store.directory == queue_directory(self.data_directory, row)
+                and normalize_destination(self.store.paradigm['destination']) == normalize_destination(row['destination'])):
             self.store.paradigm = row
             self.changed.emit()
             return
-        directory = paradigm_directory(self.data_directory, row['code'])
+        directory = queue_directory(self.data_directory, row)
         self.store = BatchStore(directory, row)
         self._error = ''
         self._selection = None
@@ -371,7 +374,7 @@ class UploadController(QObject):
             # Also lock canonical stores before background discovery can reveal
             # mixed inputs. This prevents normal and mixed windows racing IDs.
             directories = {self.store.directory, self.data_directory/'uploads-mixed'}
-            directories.update(paradigm_directory(self.data_directory, p['code']) for p in self._paradigms)
+            directories.update(queue_directory(self.data_directory, p) for p in self._paradigms)
             for directory in sorted(directories):
                 directory.mkdir(parents=True, exist_ok=True)
                 lock = QLockFile(str(directory/'upload.lock'))

@@ -1,11 +1,13 @@
 """One local queue with canonical, independently resumable paradigm batches."""
 import json
+import hashlib
 import re
 import secrets
 from pathlib import Path
 
 from .desktop_upload import BatchStore, ID_PATTERN, UploadError, normalize_roots, plain_path
 from .local_files import atomic_json
+from .upload_destination import normalize_destination, queue_directory
 
 MIXED_CODE = '__mixed__'
 
@@ -30,10 +32,15 @@ def aggregate_status(parts):
 
 class MixedBatchStore(BatchStore):
     def __init__(self, data_directory, paradigms):
-        super().__init__(Path(data_directory)/'uploads-mixed')
         self.paradigms = {p['code']: p for p in paradigms}
+        directory = Path(data_directory)/'uploads-mixed'
+        targets = {code: normalize_destination(p['destination']) for code, p in self.paradigms.items()}
+        if any(t['provider'] == 's3' for t in targets.values()):
+            identity = hashlib.sha256(json.dumps(targets, sort_keys=True).encode()).hexdigest()[:16]
+            directory = Path(data_directory)/f'uploads-mixed-{identity}'
+        super().__init__(directory)
         self.stores = {
-            code: BatchStore(paradigm_directory(data_directory, code), row)
+            code: BatchStore(queue_directory(data_directory, row), row)
             for code, row in self.paradigms.items()
         }
         self.groups = {}

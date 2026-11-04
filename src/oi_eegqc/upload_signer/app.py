@@ -22,6 +22,7 @@ from .service import (
     normalize_path,
 )
 from .tos_backend import TosStorage
+from ..upload_destination import destination_id
 
 OBJECT_ROUTE = re.compile(r"^/objects/(?P<key>.+)$")
 PRIVATE_NETWORKS = (
@@ -116,7 +117,8 @@ class UploadHandler(BaseHTTPRequestHandler):
                 "version": 2,
                 "bucket": self.storage.bucket,
                 "prefix": self.storage.prefix + "/",
-                "destination": "local-inbox" if hasattr(self.storage, "root") else ("cos" if self.storage.__class__.__name__=='CosStorage' else "tos"),
+                "destination": getattr(self.storage, "provider", None) or ("local-inbox" if hasattr(self.storage, "root") else ("cos" if self.storage.__class__.__name__=='CosStorage' else "tos")),
+                "storageTarget": getattr(self.storage, "destination", None),
                 "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only", "collection-resolution", "batch-confirmation"],
             }
         if method == "POST" and path == "/v1/uploads/resolve":
@@ -284,6 +286,13 @@ def main():
         storage=CosStorage.from_env()
     elif backend == "tos":
         storage = TosStorage.from_tosutil_config(os.environ.get("TOS_CONFIG", "/home/xiekp/.tosutilconfig"))
+    elif backend == "s3":
+        from pathlib import Path
+        from .s3_backend import S3Storage
+        storage = S3Storage.from_env()
+        # COS completion records cannot establish that an object exists on NAS.
+        base = Path(state)
+        state = str(base.with_name(f"{base.stem}-s3-{destination_id(storage.destination)}{base.suffix}"))
     else:
         inbox = os.environ.get("EEG_INBOX_ROOT", r"D:\EEG_Data\inbox")
         public_url = os.environ.get("UPLOAD_PUBLIC_URL", "http://172.16.1.249:8443")
@@ -293,9 +302,10 @@ def main():
     host = os.environ.get("LISTEN_HOST", "172.16.1.249")
     port = int(os.environ.get("LISTEN_PORT", "8443"))
     registry = None
-    if backend == 'cos':
+    if backend in ('cos', 's3'):
         from .paradigms import ParadigmRegistry
-        registry = ParadigmRegistry(os.environ.get('PARADIGMS_API_URL', 'https://personnel.intra.omni-intel.cn/v1/capture/paradigms'), state, storage)
+        registry = ParadigmRegistry(os.environ.get('PARADIGMS_API_URL', 'https://personnel.intra.omni-intel.cn/v1/capture/paradigms'), state, storage,
+                                    config_file=os.environ.get("UPLOAD_PARADIGMS_FILE"))
     server = UploadServer((host, port), coordinator, storage, registry)
     if backend == "tos" or os.environ.get("TLS_CERT"):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

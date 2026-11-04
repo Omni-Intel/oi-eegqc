@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -282,6 +283,9 @@ class Controller(QObject):
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(1500)
         self.update_timer.timeout.connect(self._apply_automatic_update)
+        self._next_update_check = time.monotonic() + random.uniform(30, 180)
+        self._update_idle_since = None
+        self._update_idle_delay = random.uniform(30, 120)
         self.update_timer.start()
 
     model = Property(QObject, lambda self: self.files, constant=True)
@@ -324,9 +328,20 @@ class Controller(QObject):
         self.changed.emit()
 
     def _apply_automatic_update(self):
-        if (getattr(sys, 'frozen', False) and self._automatic_updates and not self._closing
-                and self._installer
-                and not self._busy and not self._importing and not self._upload.active):
+        if not getattr(sys, 'frozen', False) or self._closing:
+            return
+        now = time.monotonic()
+        if (now >= self._next_update_check and not self.updater and not self.downloader
+                and not self.installer_worker and not self._installer):
+            self._next_update_check = now + random.uniform(30 * 60, 60 * 60)
+            self.checkUpdate()
+        if (not self._automatic_updates or not self._installer or self._busy or self._importing
+                or self._upload.active or self.updater or self.downloader or self.installer_worker):
+            self._update_idle_since = None
+            return
+        if self._update_idle_since is None:
+            self._update_idle_since = now
+        if now - self._update_idle_since >= self._update_idle_delay:
             self.installUpdate()
 
     @Property(str, notify=changed)
@@ -984,7 +999,7 @@ class Controller(QObject):
 
     @Slot()
     def installUpdate(self):
-        if self._busy or self._upload.active or self.downloader or self.updater or self.installer_worker or not self._installer:
+        if self._busy or self._importing or self._upload.active or self.downloader or self.updater or self.installer_worker or not self._installer:
             return
         self._busy = True
         self._phase = "准备更新"
@@ -1094,7 +1109,6 @@ def main():
         controller.store.remove('update_restore_paths')
         if restored:
             QTimer.singleShot(200, lambda: controller.add_paths([p for p in restored if Path(p).exists()]))
-        QTimer.singleShot(1000, controller.checkUpdate)
     args = sys.argv[1:]
     if args and not bridge_enabled:
         import json

@@ -11,6 +11,7 @@ from pathlib import Path
 
 BUCKET = "neurolm-1442740494"
 from .upload_http import PREFIX
+from .upload_destination import normalize_destination
 ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
 EEG_SUFFIXES = {".edf", ".edf+", ".bdf", ".npy", ".float32"}
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -158,6 +159,16 @@ class BatchStore:
         self.paradigm = paradigm
         self._legacy_records = None
 
+    def _matches_destination(self, record):
+        if not self.paradigm:
+            return True
+        target = normalize_destination(self.paradigm["destination"])
+        saved = record.get("destination")
+        if saved is None:
+            return target["provider"] == "cos" and self.paradigm["code"] == "AVEEG-20260923"
+        return (record.get("paradigm_code") == self.paradigm["code"]
+                and normalize_destination(saved) == target)
+
     def save(self, batch):
         for child in batch.get("children", []):
             self._write_record(child)
@@ -198,6 +209,8 @@ class BatchStore:
             if batch["version"] != 2 or batch["local_id"] != batch_id:
                 raise ValueError()
             for part in batch.get("children") or [batch]:
+                if not self._matches_destination(part):
+                    return None
                 part.setdefault("round_id", None)
                 part.setdefault("round_request_id", secrets.token_hex(16))
                 part.setdefault("round_sealed", False)
@@ -217,7 +230,7 @@ class BatchStore:
             record = json.loads((self.directory / local_id / "state.json").read_text(encoding="utf-8"))
             if [os.path.normcase(p) for p in record["roots"]] != [os.path.normcase(str(root))]:
                 raise UploadError("文件夹上传记录不匹配，请联系管理员")
-            return pointer, record
+            return pointer, record if self._matches_destination(record) else None
         # Adopt pre-index records without abandoning an already allocated cloud ID.
         if self._legacy_records is None:
             self._legacy_records = [json.loads(p.read_text(encoding="utf-8")) for p in
@@ -226,6 +239,8 @@ class BatchStore:
             if record.get("version") == 1 and os.path.normcase(str(root)) in [os.path.normcase(p) for p in record.get("roots", [])] and any(e.get("done") for e in record.get("entries", [])):
                 raise UploadError("旧认证批次已传过文件，请联系管理员迁移；旧状态已保留")
             if record.get("version") != 2 or record.get("children"):
+                continue
+            if not self._matches_destination(record):
                 continue
             if os.path.normcase(str(root)) not in [os.path.normcase(p) for p in record["roots"]]:
                 continue

@@ -12,6 +12,7 @@ from .upload_http import (
     SignClient,
     validate_put_url,
 )
+from .upload_destination import normalize_destination, single_put_limit
 
 
 ROUND_PATTERN = r"r_\d{8}T\d{6}Z_[0-9a-f]{8}"
@@ -339,7 +340,11 @@ class UploadSession:
                 client.destination = self.destination
             self.client = client
             self.check_cancel()
-            client.health()
+            health = client.health()
+            target = health.get("storageTarget") if isinstance(health, dict) else None
+            if target and (self.destination or target.get("provider") == "s3"):
+                if not self.destination or normalize_destination(self.destination) != normalize_destination(target):
+                    raise UploadError("存储目标已变化，请刷新范式目录并重新准备上传；原上传状态已保留")
             upload_id, round_id = self._ensure_round(client, current)
             remote_state = self._reconcile(client, upload_id, round_id, batch["entries"])
             total = sum(entry["size"] for entry in current)
@@ -352,7 +357,7 @@ class UploadSession:
             pending_single = [
                 entry
                 for entry in batch["entries"]
-                if not entry["done"] and (entry["directory"] or entry["size"] <= MAX_SINGLE_PUT)
+                if not entry["done"] and (entry["directory"] or entry["size"] <= single_put_limit(self.destination))
             ]
             confirmations, uploaded = [], []
 
@@ -464,7 +469,7 @@ class UploadSession:
             for entry in [
                 item
                 for item in batch["entries"]
-                if not item["done"] and not item["directory"] and item["size"] > MAX_SINGLE_PUT
+                if not item["done"] and not item["directory"] and item["size"] > single_put_limit(self.destination)
             ]:
                 batch["current"] = entry["relative"]
                 self.store.save(batch)

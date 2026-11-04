@@ -241,7 +241,7 @@ class UploadCoordinator:
                 raise ValueError("invalid sha256")
             if directory and content_hash != EMPTY_SHA256:
                 raise ValueError("invalid directory sha256")
-            mode = "single" if directory or size <= MAX_SINGLE_PUT else "multipart"
+            mode = "single" if directory or size <= getattr(self.storage, "single_put_limit", MAX_SINGLE_PUT) else "multipart"
             normalized.append((path, size, int(directory), mode, content_hash))
         if len({item[0] for item in normalized}) != len(normalized):
             raise ValueError("duplicate file path")
