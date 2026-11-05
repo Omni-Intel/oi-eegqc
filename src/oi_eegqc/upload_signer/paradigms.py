@@ -13,11 +13,24 @@ from ..upload_destination import destination_id, normalize_destination
 
 
 class ParadigmRegistry:
-    def __init__(self, url, state, default_storage, config_file=None):
+    def __init__(self, url, state, default_storage, config_file=None, legacy_config_file=None):
         self.url, self.state, self.default_storage = url, Path(state), default_storage
         self.rows, self.loaded_at, self.routes = [], 0, {}
         self.lock = threading.RLock()
         self.config_file = Path(config_file) if config_file else None
+        self.legacy = (ParadigmRegistry(None, state, default_storage, config_file=legacy_config_file)
+                       if legacy_config_file else None)
+
+    def route_for_client(self, code, target_id=None, supports_s3=False):
+        if target_id:
+            for registry in (self, self.legacy):
+                if registry is None:
+                    continue
+                row = next((r for r in registry.list() if r['code'] == code), None)
+                if row and destination_id(row['destination']) == target_id:
+                    return registry.route(code)
+            raise ValueError('storage target is not configured for this paradigm')
+        return (self if supports_s3 or self.legacy is None else self.legacy).route(code)
 
     def list(self):
         with self.lock:

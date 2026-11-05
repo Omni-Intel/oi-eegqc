@@ -7,7 +7,7 @@ import socket
 import threading
 from urllib.parse import quote, urlsplit, unquote
 
-from .upload_destination import normalize_destination
+from .upload_destination import normalize_destination, destination_id
 
 INTRANET_HOST = "personnel.intra.omni-intel.cn"
 INTRANET_PORT = 8443
@@ -176,6 +176,9 @@ class SignClient:
             except (OSError, http.client.HTTPException):
                 raise NetworkUnavailable() from None
             headers = {'Content-Type': 'application/json', 'Content-Length': str(len(body))}
+            headers['X-EEG-Upload-Capabilities'] = 's3-targets-v1'
+            if self.destination:
+                headers['X-EEG-Storage-Target'] = destination_id(self.destination)
             if self.paradigm:
                 headers['X-EEG-Paradigm'] = self.paradigm
             connection.request(method, route, body=body, headers=headers)

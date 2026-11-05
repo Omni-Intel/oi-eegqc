@@ -10,6 +10,10 @@
 配置为 `destination.prefix`。不要将刺激素材桶 `oi-task-assets` 用作采集归档桶。
 范式代码 `code` 继续使用人员平台已有代码；它与 `unique_name` 是不同的字段。
 
+2026-11-05，维护者确认三个没有 `metadata.toml` 的旧范式以现有编号作为 NAS `unique_name`：
+`AVEEG-20260923`、`RSVP-20260924`、`DoRSVP-20261011`。这是旧范式的明确命名约定，
+不从显示名称推断；新范式仍取自身的 `metadata.toml`。
+
 上传后的目录为：
 
 ```text
@@ -65,6 +69,11 @@ oi-eegqc-upload-signer
 部署本分支构建的客户端后，刷新上传范式，确认显示
 `s3://oi-data/<unique_name>/ · http://172.16.4.2:9000`，然后准备上传。
 旧客户端只支持 COS 地址，不能使用 NAS 签名目标。
+
+从 0.7.2 起，客户端向签名服务声明 NAS 能力，并携带已准备任务的目标标识。
+部署时将切换前的 COS 范式列表保存为只读 JSON，通过 `UPLOAD_LEGACY_PARADIGMS_FILE` 提供。
+旧客户端继续获取和使用 COS 目标，新客户端获取当前 NAS 目标；新版重试已准备的 COS 任务时仍路由到旧目标。
+保留两个账本和旧存储，直至对应任务完成，不需要所有电脑同时空闲或逐台清空队列。
 
 若需要更换上传服务 API 地址，设置 `OI_EEGQC_UPLOAD_ORIGIN` 为该服务的 HTTPS origin。
 不要将此变量设置成 NAS 的 S3 endpoint。

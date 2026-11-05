@@ -62,8 +62,12 @@ class UploadHandler(BaseHTTPRequestHandler):
         if code:
             if self.server.registry is None:
                 raise ValueError('paradigm routing unavailable')
-            return self.server.registry.route(code)
+            return self.server.registry.route_for_client(code,
+                self.headers.get('X-EEG-Storage-Target'), self.supports_s3())
         return self.server.coordinator, self.server.storage
+
+    def supports_s3(self):
+        return 's3-targets-v1' in self.headers.get('X-EEG-Upload-Capabilities', '').split(',')
 
     def log_message(self, fmt, *args):
         print(f"{self.client_address[0]} {fmt % args}", flush=True)
@@ -109,7 +113,10 @@ class UploadHandler(BaseHTTPRequestHandler):
         if method == 'GET' and path == '/v1/uploads/paradigms':
             if self.server.registry is None:
                 raise NotFound('paradigm registry unavailable')
-            return {'paradigms': self.server.registry.list()}
+            registry = self.server.registry
+            if registry.legacy and not self.supports_s3():
+                registry = registry.legacy
+            return {'paradigms': registry.list()}
         if method == "GET" and path == "/health":
             return {
                 "status": "ok",
@@ -119,7 +126,7 @@ class UploadHandler(BaseHTTPRequestHandler):
                 "prefix": self.storage.prefix + "/",
                 "destination": getattr(self.storage, "provider", None) or ("local-inbox" if hasattr(self.storage, "root") else ("cos" if self.storage.__class__.__name__=='CosStorage' else "tos")),
                 "storageTarget": getattr(self.storage, "destination", None),
-                "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only", "collection-resolution", "batch-confirmation", "storage-target-receipts"],
+                "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only", "collection-resolution", "batch-confirmation", "storage-target-receipts", "staggered-nas-routing"],
             }
         if method == "POST" and path == "/v1/uploads/resolve":
             return self.coordinator.resolve_collection(self.read_json().get("files"))
@@ -308,7 +315,8 @@ def main():
     if backend in ('cos', 's3'):
         from .paradigms import ParadigmRegistry
         registry = ParadigmRegistry(os.environ.get('PARADIGMS_API_URL', 'https://personnel.intra.omni-intel.cn/v1/capture/paradigms'), state, storage,
-                                    config_file=os.environ.get("UPLOAD_PARADIGMS_FILE"))
+                                    config_file=os.environ.get("UPLOAD_PARADIGMS_FILE"),
+                                    legacy_config_file=os.environ.get("UPLOAD_LEGACY_PARADIGMS_FILE"))
     server = UploadServer((host, port), coordinator, storage, registry)
     if backend == "tos" or os.environ.get("TLS_CERT"):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

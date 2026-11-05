@@ -356,3 +356,44 @@ def test_historical_cos_round_keeps_its_target_after_nas_switch(tmp_path, s3, mo
     for _, coordinator, storage in registry.routes.values():
         coordinator.db.close()
         storage.client.close()
+
+
+def test_staggered_clients_keep_cos_while_new_clients_get_nas(tmp_path, s3, monkeypatch):
+    from urllib.request import Request, urlopen
+    from unittest.mock import Mock
+    from oi_eegqc.upload_signer.cos_backend import CosStorage
+    from oi_eegqc.upload_destination import destination_id
+    old_target=dict(provider='cos',bucket='jianyu-1442740494',region='ap-beijing',prefix='rsvp')
+    old=paradigm(old_target)
+    legacy=tmp_path/'legacy.json'
+    legacy.write_text(json.dumps({'paradigms':[old]}))
+    active=tmp_path/'active.json'
+    active.write_text(json.dumps({'paradigms':[paradigm(s3.destination)]}))
+    monkeypatch.setattr(CosStorage,'from_env',classmethod(lambda cls,**kw: CosStorage(Mock(),**kw)))
+    registry=ParadigmRegistry(None,tmp_path/'signer.sqlite3',s3,config_file=active,legacy_config_file=legacy)
+    coordinator=UploadCoordinator(tmp_path/'default.sqlite3',s3)
+    server=UploadServer(('127.0.0.1',0),coordinator,s3,registry)
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    origin=f'http://127.0.0.1:{server.server_port}'
+    monkeypatch.setattr('oi_eegqc.upload_http.ORIGIN',origin)
+    def get(path,headers=None):
+        with urlopen(Request(origin+path,headers=headers or {})) as response:return json.load(response)
+    try:
+        assert get('/v1/uploads/paradigms')['paradigms']==[old]
+        client=SignClient()
+        assert client.paradigms()==[paradigm(s3.destination)]
+        client.paradigm='NAS-TEST'
+        client.destination=old_target
+        assert client.health()['storageTarget']==old_target
+        assert get('/health',{'X-EEG-Paradigm':'NAS-TEST'})['storageTarget']==old_target
+        client.destination=s3.destination
+        assert client.health()['storageTarget']==s3.destination
+        with pytest.raises(ValueError,match='not configured'):
+            registry.route_for_client('NAS-TEST','unknown-target',True)
+        assert registry.route_for_client('NAS-TEST',destination_id(old_target),True)[1].provider=='cos'
+    finally:
+        server.shutdown();server.server_close();thread.join(timeout=5);coordinator.db.close()
+        for current in (registry,registry.legacy):
+            for _,ledger,storage in current.routes.values():
+                ledger.db.close()
+                if storage.provider=='s3':storage.client.close()
