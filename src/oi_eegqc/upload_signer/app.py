@@ -126,6 +126,8 @@ class UploadHandler(BaseHTTPRequestHandler):
                 "prefix": self.storage.prefix + "/",
                 "destination": getattr(self.storage, "provider", None) or ("local-inbox" if hasattr(self.storage, "root") else ("cos" if self.storage.__class__.__name__=='CosStorage' else "tos")),
                 "storageTarget": getattr(self.storage, "destination", None),
+                **({"storageStateProtocol": "json-v1-read-write-only"}
+                   if getattr(self.storage, "provider", None) == "s3" else {}),
                 "capabilities": ["rounds", "multipart", "round-replacement", "staged-put", "intranet-only", "collection-resolution", "batch-confirmation", "storage-target-receipts", "staggered-nas-routing"],
             }
         if method == "POST" and path == "/v1/uploads/resolve":
@@ -197,6 +199,8 @@ class UploadHandler(BaseHTTPRequestHandler):
         return expires.isoformat().replace("+00:00", "Z")
 
     def legacy_sign(self):
+        if getattr(self.storage, "provider", None) == "s3":
+            raise Conflict("NAS uploads require the round protocol")
         body = self.read_json()
         upload_id = body.get("uploadId") or make_upload_id()
         if not isinstance(upload_id, str) or not UPLOAD_ID_RE.fullmatch(upload_id):
@@ -222,6 +226,8 @@ class UploadHandler(BaseHTTPRequestHandler):
         }
 
     def legacy_complete(self, upload_id):
+        if getattr(self.storage, "provider", None) == "s3":
+            raise Conflict("NAS uploads require the round protocol")
         self.coordinator.ensure_legacy_allowed(upload_id)
         key = f"{self.storage.prefix}/{upload_id}/_COMPLETE"
         return {"uploadId": upload_id, "objectKey": key, "putUrl": self.storage.sign_put(key)}

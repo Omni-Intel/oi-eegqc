@@ -112,6 +112,16 @@ def s3(monkeypatch):
     pytest.importorskip("boto3")
     pytest.importorskip("moto.server")
     from moto.server import ThreadedMotoServer
+    from botocore.client import BaseClient
+    call = BaseClient._make_api_call
+
+    def read_write_only(client, operation, params):
+        # Apply to every client, including those created by paradigm routing.
+        if operation in {"DeleteObject", "DeleteObjects", "AbortMultipartUpload"}:
+            pytest.fail(f"NAS uploads must not request {operation}")
+        return call(client, operation, params)
+
+    monkeypatch.setattr(BaseClient, "_make_api_call", read_write_only)
     monkeypatch.setenv("S3_ACCESS_KEY_ID", "test-access-key")
     monkeypatch.setenv("S3_SECRET_ACCESS_KEY", "test-secret-key")
     server = ThreadedMotoServer(ip_address="127.0.0.1", port=0, verbose=False)
@@ -168,14 +178,82 @@ def test_direct_s3_upload_publishes_bytes_and_completion_receipt(tmp_path, s3, m
         key = f"test-task/{result['upload_id']}/collection/数据.txt"
         assert s3.client.get_object(Bucket="oi-data", Key=key)["Body"].read() == b"raw recording"
         prefix = f"test-task/{result['upload_id']}/"
-        marker = s3.client.get_object(Bucket="oi-data", Key=prefix + "_COMPLETE")["Body"].read()
-        assert json.loads(marker)["roundId"] == result["round_id"]
+        marker = json.loads(s3.client.get_object(Bucket="oi-data", Key=prefix + "_UPLOAD_STATE.json")["Body"].read())
+        assert marker["state"] == "complete" and marker["roundId"] == result["round_id"]
         keys = [x["Key"] for x in s3.client.list_objects_v2(Bucket="oi-data")["Contents"]]
         assert prefix + "_UPDATING" not in keys
-        assert not any("/.staging/" in k for k in keys)
+        assert prefix + "_COMPLETE" not in keys
+        assert any("/.staging/" in k for k in keys)
         retried = UploadSession(store, store.load(), tmp_path / "app", lambda p: None)
         assert retried.run()["status"] == "completed"
         assert retried.transferred_files == 0 and retried.reused_files == 1
+
+
+def test_nas_state_overwrites_on_new_round_and_recovers_from_failed_completion(tmp_path, s3, monkeypatch):
+    coordinator = UploadCoordinator(tmp_path / 'state.sqlite3', s3)
+    content = b'recording bytes'
+    metadata = dict(path='recording/eeg.edf', size=len(content), sha256=hashlib.sha256(content).hexdigest())
+    first = coordinator.start_round(None, 'first-nas-request')
+    uid, rid = first['upload_id'], first['round_id']
+    key = f'test-task/{uid}/_UPLOAD_STATE.json'
+
+    def state():
+        return json.loads(s3.client.get_object(Bucket='oi-data', Key=key)['Body'].read())
+
+    try:
+        assert state()['state'] == 'updating' and state()['roundId'] == rid
+        coordinator.register_files(uid, rid, [metadata])
+        coordinator.seal_round(uid, rid, 1)
+        staged = f'test-task/.staging/{uid}/{rid}/{metadata["path"]}'
+        etag = s3.client.put_object(Bucket='oi-data', Key=staged, Body=content)['ETag']
+        coordinator.mark_single_complete(uid, rid, [dict(path=metadata['path'], size=len(content), etag=etag)])
+        coordinator.complete_round(uid, rid)
+        assert state()['state'] == 'complete'
+        # A late signed PUT changes only the staging copy; published bytes survive.
+        s3.client.put_object(Bucket='oi-data', Key=staged, Body=b'late retry')
+        assert s3.client.get_object(Bucket='oi-data', Key=f'test-task/{uid}/{metadata["path"]}')['Body'].read() == content
+
+        second = coordinator.start_round(uid, 'second-nas-request', replaces_request_id='first-nas-request')
+        new_rid = second['round_id']
+        assert state()['state'] == 'updating' and state()['roundId'] == new_rid
+        # An idempotent old completion cannot change the newer round's state.
+        coordinator.complete_round(uid, rid)
+        assert state()['state'] == 'updating' and state()['roundId'] == new_rid
+        coordinator.register_files(uid, new_rid, [metadata])
+        coordinator.seal_round(uid, new_rid, 1)
+        assert coordinator.round_status(uid, new_rid)['files'][0]['state'] == 'complete'
+        original = s3._marker
+
+        def unavailable(*args):
+            raise OSError('NAS write unavailable')
+
+        monkeypatch.setattr(s3, '_marker', unavailable)
+        with pytest.raises(OSError, match='unavailable'):
+            coordinator.complete_round(uid, new_rid)
+        assert coordinator.round_status(uid, new_rid)['state'] == 'sealed'
+        assert state()['state'] == 'updating'
+        monkeypatch.setattr(s3, '_marker', original)
+        coordinator.complete_round(uid, new_rid)
+        assert state()['state'] == 'complete' and state()['roundId'] == new_rid
+        assert coordinator.round_status(uid, new_rid)['state'] == 'complete'
+        with pytest.raises(ValueError, match='reserved'):
+            coordinator.register_files(uid, new_rid, [dict(metadata, path='recording/_UPLOAD_STATE.json')])
+    finally:
+        coordinator.db.close()
+
+
+def test_nas_rejects_legacy_marker_protocol(tmp_path, s3, monkeypatch):
+    with signer(tmp_path, s3, monkeypatch):
+        client = SignClient()
+        client.paradigm, client.destination = 'NAS-TEST', s3.destination
+        assert client.health()['storageStateProtocol'] == 'json-v1-read-write-only'
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        import oi_eegqc.upload_http as http
+        for path in ('/v1/uploads/sign', '/v1/uploads/20261105T000000Z-12345678/complete'):
+            with pytest.raises(HTTPError) as error:
+                urlopen(Request(http.ORIGIN + path, data=b'{}', headers={'X-EEG-Paradigm': 'NAS-TEST'}))
+            assert error.value.code == 409
 
 
 def test_mixed_nas_upload_isolates_cos_receipts_and_reuses_canonical_ids(tmp_path, s3, monkeypatch):
@@ -217,7 +295,8 @@ def test_mixed_nas_upload_isolates_cos_receipts_and_reuses_canonical_ids(tmp_pat
             prefix = child["destination"]["prefix"] + "/" + child["upload_id"] + "/"
             key = prefix + child["paradigm_code"] + "/eeg.txt"
             assert s3.client.get_object(Bucket="oi-data", Key=key)["Body"].read() == child["paradigm_code"].encode()
-            s3.client.head_object(Bucket="oi-data", Key=prefix + "_COMPLETE")
+            marker = json.loads(s3.client.get_object(Bucket="oi-data", Key=prefix + "_UPLOAD_STATE.json")["Body"].read())
+            assert marker['state'] == 'complete' and marker['roundId'] == child['round_id']
         resumed = MixedBatchStore(app, list(reversed(rows)))
         retry = UploadSession(resumed, resumed.load(), app, lambda _: None)
         assert retry.run()["status"] == "completed" and retry.transferred_files == 0
