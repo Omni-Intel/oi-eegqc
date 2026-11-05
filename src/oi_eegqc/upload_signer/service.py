@@ -56,7 +56,7 @@ def normalize_path(value):
     if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
         raise ValueError("file path must be relative")
     normalized = str(path) + ("/" if directory_marker else "")
-    if normalized in ("_COMPLETE", "_UPDATING") or normalized.endswith(("/_COMPLETE", "/_UPDATING")):
+    if normalized in ("_COMPLETE", "_UPDATING", "_UPLOAD_STATE.json") or normalized.endswith(("/_COMPLETE", "/_UPDATING", "/_UPLOAD_STATE.json")):
         raise ValueError("reserved file path")
     return normalized
 

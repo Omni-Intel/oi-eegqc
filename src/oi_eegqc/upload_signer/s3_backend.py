@@ -66,8 +66,11 @@ class S3Storage:
         )
 
     def begin_round(self, upload_id, round_id, started_at):
-        self.client.delete_object(Bucket=self.bucket, Key=self._key(f"{self.prefix}/{upload_id}/_COMPLETE"))
-        self._marker(upload_id, "_UPDATING", dict(uploadId=upload_id, roundId=round_id, startedAt=started_at))
+        # One overwritten state object avoids delete permissions and contradictory
+        # completion/updating markers. Readers must inspect state and roundId.
+        self._marker(upload_id, "_UPLOAD_STATE.json", dict(
+            version=1, state="updating", uploadId=upload_id, roundId=round_id, startedAt=started_at,
+        ))
 
     def promote(self, source, destination, etag):
         self.client.copy_object(
@@ -77,11 +80,14 @@ class S3Storage:
         )
 
     def discard_staged(self, key):
-        self.client.delete_object(Bucket=self.bucket, Key=self._key(key))
+        # Retain the source copy: successful publication never requires deletion.
+        # Keeping round-specific staging also protects final objects from late PUTs.
+        self._key(key)
 
     def finish_round(self, upload_id, round_id, completed_at):
-        self._marker(upload_id, "_COMPLETE", dict(uploadId=upload_id, roundId=round_id, completedAt=completed_at))
-        self.client.delete_object(Bucket=self.bucket, Key=self._key(f"{self.prefix}/{upload_id}/_UPDATING"))
+        self._marker(upload_id, "_UPLOAD_STATE.json", dict(
+            version=1, state="complete", uploadId=upload_id, roundId=round_id, completedAt=completed_at,
+        ))
 
     def create_multipart(self, key):
         return self.client.create_multipart_upload(Bucket=self.bucket, Key=self._key(key))["UploadId"]
