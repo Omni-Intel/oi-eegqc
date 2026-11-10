@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import secrets
 import stat
 from pathlib import Path
@@ -207,6 +208,29 @@ class BatchStore:
         except (OSError, ValueError, KeyError, TypeError):
             raise UploadError("上传状态无法读取，请保留应用数据目录并联系维护人员") from None
 
+    def purge_failed(self, root):
+        """Drop a failed batch for this folder so the next prepare starts from disk again.
+
+        A batch records size, mtime and sha256 of every file when it is prepared. Re-running
+        the scorer afterwards rewrites sidecars, so the stored batch can never match the folder
+        again and every retry fails with "BIDS 文件尚未整理完成或已变化". Deleting the stale
+        record is the only way out; it is safe because nothing was uploaded from it.
+        """
+        try:
+            pointer, record = self._folder_record(Path(root))
+        except Exception:
+            return False
+        if record.get("status") != "failed":
+            return False
+        batch_id = record.get("local_id")
+        try:
+            if pointer.exists():
+                pointer.unlink()
+            if batch_id and re.fullmatch(ID_PATTERN, batch_id):
+                shutil.rmtree(self.directory / batch_id, ignore_errors=True)
+        except OSError:
+            return False
+        return True
     def _folder_record(self, root):
         key = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
         pointer = self.directory / "folders" / (key + ".json")
@@ -252,7 +276,14 @@ class BatchStore:
                                    validate_bids=validate_bids)
         identity = lambda item: (item["source"], item["relative"], item["size"], item["mtime"],
                                  item["directory"], item.get("sha256"))
-        if [identity(item) for item in current] != [identity(item) for item in previous["entries"]]:
+        # 质检在建批次之后还会写报告、重导 BIDS 附属文件；这些新增文件不该让"已上传"变成
+        # 错误（线上每天上千条这种误报）。只核对上次真正上传过的文件：它们还在且没变，
+        # 就认为这一轮已经传完，新出现的附属文件不重复上传。
+        current_by_relative = {item["relative"]: item for item in current}
+        changed = [item for item in previous["entries"]
+                   if item["relative"] not in current_by_relative
+                   or identity(current_by_relative[item["relative"]]) != identity(item)]
+        if changed:
             raise UploadError("这轮数据已上传，但本地文件后来发生变化；不会重复上传，请联系维护人员核查")
         return previous
 

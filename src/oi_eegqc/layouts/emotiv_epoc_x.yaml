@@ -1,0 +1,30 @@
+layout_schema: oi-eegqc-layout-v1
+id: emotiv_epoc_x
+sdk: emotiv
+sdk_version: "0.2.4"
+n_channels: 14
+device_aliases:
+  - emotiv
+  - emotiv epoc x
+  - epoc x
+  - epocx
+source: >
+  Emotiv EPOC X 14-channel montage streamed through Cortex (256 Hz).
+notes: >
+  EPOC X exposes 14 EEG channels. No EOG channel is streamed; the two mastoid
+  references (P3/P4) are not part of the EEG stream.
+channels:
+  - {index: 0, name: AF3, edf_label: "AF3", kind: eeg}
+  - {index: 1, name: F7, edf_label: "F7", kind: eeg}
+  - {index: 2, name: F3, edf_label: "F3", kind: eeg}
+  - {index: 3, name: FC5, edf_label: "FC5", kind: eeg}
+  - {index: 4, name: T7, edf_label: "T7", kind: eeg}
+  - {index: 5, name: P7, edf_label: "P7", kind: eeg}
+  - {index: 6, name: O1, edf_label: "O1", kind: eeg}
+  - {index: 7, name: O2, edf_label: "O2", kind: eeg}
+  - {index: 8, name: P8, edf_label: "P8", kind: eeg}
+  - {index: 9, name: T8, edf_label: "T8", kind: eeg}
+  - {index: 10, name: FC6, edf_label: "FC6", kind: eeg}
+  - {index: 11, name: F4, edf_label: "F4", kind: eeg}
+  - {index: 12, name: F8, edf_label: "F8", kind: eeg}
+  - {index: 13, name: AF4, edf_label: "AF4", kind: eeg}

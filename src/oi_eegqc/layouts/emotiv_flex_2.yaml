@@ -1,0 +1,51 @@
+layout_schema: oi-eegqc-layout-v1
+id: emotiv_flex_2
+sdk: emotiv
+sdk_version: "0.2.4"
+n_channels: 32
+device_aliases:
+  - emotiv
+  - emotiv flex 2
+  - flex 2
+  - flex2
+  - f3000441
+source: >
+  Emotiv Flex 2 32-channel montage streamed through Cortex
+  (wss://127.0.0.1:6868, 256 Hz), channel order as reported by the EEG stream.
+notes: >
+  Flex 2 exposes 32 EEG channels with Emotiv's own 10-20 style labels (AF3/AF4,
+  F7/F8, P7/P8 ...). No dedicated EOG channel is streamed, so every channel is
+  scored as EEG; head-movement artefacts are expected on the fronto-polar rows.
+channels:
+  - {index: 0, name: AF3, edf_label: "AF3", kind: eeg}
+  - {index: 1, name: F7, edf_label: "F7", kind: eeg}
+  - {index: 2, name: F3, edf_label: "F3", kind: eeg}
+  - {index: 3, name: FC5, edf_label: "FC5", kind: eeg}
+  - {index: 4, name: T7, edf_label: "T7", kind: eeg}
+  - {index: 5, name: P7, edf_label: "P7", kind: eeg}
+  - {index: 6, name: O1, edf_label: "O1", kind: eeg}
+  - {index: 7, name: O2, edf_label: "O2", kind: eeg}
+  - {index: 8, name: P8, edf_label: "P8", kind: eeg}
+  - {index: 9, name: T8, edf_label: "T8", kind: eeg}
+  - {index: 10, name: FC6, edf_label: "FC6", kind: eeg}
+  - {index: 11, name: F4, edf_label: "F4", kind: eeg}
+  - {index: 12, name: F8, edf_label: "F8", kind: eeg}
+  - {index: 13, name: AF4, edf_label: "AF4", kind: eeg}
+  - {index: 14, name: Fz, edf_label: "Fz", kind: eeg}
+  - {index: 15, name: FC1, edf_label: "FC1", kind: eeg}
+  - {index: 16, name: C3, edf_label: "C3", kind: eeg}
+  - {index: 17, name: FC2, edf_label: "FC2", kind: eeg}
+  - {index: 18, name: C4, edf_label: "C4", kind: eeg}
+  - {index: 19, name: Cz, edf_label: "Cz", kind: eeg}
+  - {index: 20, name: CP1, edf_label: "CP1", kind: eeg}
+  - {index: 21, name: CP5, edf_label: "CP5", kind: eeg}
+  - {index: 22, name: CP2, edf_label: "CP2", kind: eeg}
+  - {index: 23, name: CP6, edf_label: "CP6", kind: eeg}
+  - {index: 24, name: P3, edf_label: "P3", kind: eeg}
+  - {index: 25, name: Pz, edf_label: "Pz", kind: eeg}
+  - {index: 26, name: P4, edf_label: "P4", kind: eeg}
+  - {index: 27, name: FT9, edf_label: "FT9", kind: eeg}
+  - {index: 28, name: FT10, edf_label: "FT10", kind: eeg}
+  - {index: 29, name: TP9, edf_label: "TP9", kind: eeg}
+  - {index: 30, name: TP10, edf_label: "TP10", kind: eeg}
+  - {index: 31, name: POz, edf_label: "POz", kind: eeg}

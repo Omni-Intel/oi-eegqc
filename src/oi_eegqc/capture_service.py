@@ -94,6 +94,12 @@ def complete(request, progress=lambda value: None, data_directory=None):
         progress({"phase": "preparing", "message": "正在核验文件与准备上传"})
         batch = store.completed_for(folder, validate_bids=False)
         if batch is None:
+            # A failed batch keeps the file hashes from before the last scoring pass, so it can
+            # never match again. Drop it and prepare fresh, otherwise every retry fails.
+            try:
+                store.purge_failed(folder)
+            except Exception:
+                pass
             batch = store.prepare([folder], None, progress=lambda name: progress({"phase": "preparing", "message": "正在核验 " + Path(name).name}))
             progress({"phase": "uploading", "message": "正在上传原始数据"})
             batch = UploadSession(store, batch, data_directory, lambda info: progress({"phase": "uploading", **info})).run()

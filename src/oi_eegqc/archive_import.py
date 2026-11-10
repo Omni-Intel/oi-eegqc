@@ -46,7 +46,7 @@ def _inspect_zip_quick(path):
         return {'has_eeg': True}
 
 
-def expand_inputs(paths, cache, cancelled=lambda: False, progress=lambda *args: None):
+def expand_inputs(paths, cache, cancelled=lambda: False, progress=lambda *args: None, depth=0):
     cache = Path(cache)
     cache.mkdir(parents=True, exist_ok=True)
     expanded = []
@@ -156,7 +156,25 @@ def expand_inputs(paths, cache, cancelled=lambda: False, progress=lambda *args: 
             expanded.extend(str(p) for p in children if p.is_dir())
             if any(p.is_file() for p in children):
                 expanded.append(str(target))
-    return list(dict.fromkeys(expanded))
+    result = list(dict.fromkeys(expanded))
+    # The field sometimes hands us a zip of zips ("未上传.zip" holds one archive per session).
+    # A directory that only contains archives and no session payload must be expanded again,
+    # otherwise the caller sees zero sessions and silently uploads nothing.
+    if depth < 2:
+        nested = [p for p in result if Path(p).is_dir() and any(Path(p).glob('*.zip'))]
+        if nested:
+            deeper = []
+            for directory in nested:
+                try:
+                    has_session = bool(read_sessions(directory))
+                except Exception:
+                    has_session = False
+                if not has_session:
+                    deeper.append(directory)
+            if deeper:
+                more = expand_inputs(deeper, cache, cancelled, progress, depth + 1)
+                result = list(dict.fromkeys([p for p in result if p not in deeper] + more))
+    return result
 
 
 def preferred_recordings(paths):
