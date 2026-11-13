@@ -153,6 +153,28 @@ def validate_bids_package(folder, cancelled=lambda: False, hash_cache=None):
         raise UploadError('BIDS 文件尚未整理完成或已变化，请在采集端重试质检后上传') from None
 
 
+def _same_entry(previous, current):
+    """Same local file, judged by content when both sides recorded a hash.
+
+    The uploader stores size, mtime and sha256. Re-running the scorer or the BIDS exporter
+    can rewrite a sidecar with identical bytes, which changes mtime but not the content; the
+    old comparison treated that as "文件发生变化" and blocked an already-finished upload.
+    Content wins when both hashes exist, mtime is only the fallback.
+    """
+    if previous.get('relative') != current.get('relative'):
+        return False
+    if previous.get('source') != current.get('source'):
+        return False
+    if bool(previous.get('directory')) != bool(current.get('directory')):
+        return False
+    if previous.get('size') != current.get('size'):
+        return False
+    before, after = previous.get('sha256'), current.get('sha256')
+    if before and after:
+        return before == after
+    return previous.get('mtime') == current.get('mtime')
+
+
 class BatchStore:
     def __init__(self, directory, paradigm=None):
         self.directory = Path(directory)
@@ -282,7 +304,7 @@ class BatchStore:
         current_by_relative = {item["relative"]: item for item in current}
         changed = [item for item in previous["entries"]
                    if item["relative"] not in current_by_relative
-                   or identity(current_by_relative[item["relative"]]) != identity(item)]
+                   or not _same_entry(item, current_by_relative[item["relative"]])]
         if changed:
             raise UploadError("这轮数据已上传，但本地文件后来发生变化；不会重复上传，请联系维护人员核查")
         return previous
@@ -295,8 +317,11 @@ class BatchStore:
         if any(row.get('final_score') is None for row in previous.get('imports', [])):
             return None
         current = scan_sources([root], cancelled, labels=previous.get('labels'), validate_bids=False)
-        identity = lambda e: (e['source'], e['relative'], e['size'], e['mtime'], e['directory'])
-        return previous if [identity(e) for e in current] == [identity(e) for e in previous['entries']] else None
+        current_by_relative = {e['relative']: e for e in current}
+        same = (len(current_by_relative) == len(previous['entries'])
+                and all(_same_entry(e, current_by_relative.get(e['relative'], {}))
+                        for e in previous['entries']))
+        return previous if same else None
 
     def prepare(self, roots, scored, cancelled=lambda: False, progress=lambda name: None, new_acquisition=False, completed=None):
         roots = normalize_roots(roots)

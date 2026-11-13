@@ -38,7 +38,7 @@ def complete(request, progress=lambda value: None, data_directory=None):
     plan = json.loads((folder / "plan.json").read_text(encoding="utf-8"))
     if meta.get("status") in (None, "preflight", "recording"):
         raise ValueError("采集尚未结束，不能上传仍在写入的数据")
-    if plan.get("mode") not in ("bcigo", "omnibci 32 channel") or not plan.get("platform_session_id"):
+    if plan.get("mode") not in ("bcigo", "omnibci 32 channel", "emotiv") or not plan.get("platform_session_id"):
         raise ValueError("仅已授权的真实采集可一站式上传")
     if meta.get("session_id") != plan.get("session_id"):
         raise ValueError("采集记录与实验计划不匹配")

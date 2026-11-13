@@ -139,3 +139,75 @@ def test_failed_scoring_and_unfinished_bids_still_upload_raw(tmp_path, monkeypat
     assert {Path(e['source']).name for e in batches[0]['entries']} >= {'recording.edf', 'bids-export.json', 'file-quality.json'}
     with pytest.raises(desktop_upload.UploadError, match='BIDS'):
         desktop_upload.BatchStore(tmp_path / 'gui').prepare([folder], {})
+
+def test_completed_folder_tolerates_mtime_only_change(tmp_path):
+    """内容没变、只是 mtime 变了（重新导出附属文件）不应判成"文件发生变化"。"""
+    import hashlib
+    import os
+    from oi_eegqc.desktop_upload import BatchStore
+
+    folder = tmp_path / 'round'
+    folder.mkdir()
+    recording = folder / 'recording.edf'
+    recording.write_bytes(b'identical bytes')
+    info = recording.stat()
+    digest = hashlib.sha256(recording.read_bytes()).hexdigest()
+    store = BatchStore(tmp_path / 'app' / 'uploads')
+    batch = store.prepare([folder], {recording: (info.st_size, info.st_mtime_ns, digest)})
+    batch['status'] = 'completed'
+    batch['upload_id'] = 'cloud-1'
+    for entry in batch['entries']:
+        entry['done'] = True
+    store.save(batch)
+
+    # 只改 mtime，内容不变
+    stat = recording.stat()
+    os.utime(recording, (stat.st_atime + 5, stat.st_mtime + 5))
+    assert store.completed_for(folder)['upload_id'] == 'cloud-1'
+
+
+def test_emotiv_session_can_reach_the_upload_engine(tmp_path, monkeypatch):
+    """capture_service 只放行 bcigo/omnibci 时，Emotiv 场次会被"仅已授权的真实采集"拒绝。"""
+    from oi_eegqc import capture_service, desktop_upload, intake
+
+    folder, recording = fixture_round(tmp_path)
+    plan = json.loads((folder / 'plan.json').read_text(encoding='utf-8'))
+    plan['mode'] = 'emotiv'
+    (folder / 'plan.json').write_text(json.dumps(plan), encoding='utf-8')
+
+    seen = {}
+
+    class Store:
+        def __init__(self, path): self.directory = Path(path)
+        def purge_failed(self, root): return False
+        def completed_for(self, root, validate_bids=True): return None
+        def prepare(self, roots, scored, progress): seen['prepare'] = True; return {'status': 'ready'}
+
+    class Session:
+        def __init__(self, *args, **kwargs): pass
+        def run(self): return {'status': 'completed', 'upload_id': 'cloud-emotiv'}
+
+    class Cache:
+        def __init__(self, path): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def digest(self, path):
+            stat = path.stat()
+            return 'a' * 64, (stat.st_size, stat.st_mtime_ns)
+        def lookup(self, digest, metadata): return None
+        def store(self, digest, metadata, report): pass
+
+    again = __import__('oi_eegqc.score_cache', fromlist=['ScoreCache'])
+
+    class Report:
+        def to_dict(self): return {'gqi': 90}
+
+    monkeypatch.setattr(again, 'ScoreCache', Cache)
+    monkeypatch.setattr(desktop_upload, 'BatchStore', Store)
+    monkeypatch.setattr(desktop_upload, 'UploadSession', Session)
+    monkeypatch.setattr(intake, 'score_file', lambda *a, **k: Report())
+    result = capture_service.complete({'schema': capture_service.SCHEMA, 'request_id': 'r1', 'folder': str(folder)},
+                                      data_directory=tmp_path / 'app')
+    assert result['upload_id'] == 'cloud-emotiv'
+    assert seen.get('prepare') is True
+
